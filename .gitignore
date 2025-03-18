@@ -63,3 +63,6 @@ random.*
 # project related
 docs/build
 docs/source/generated
+
+
+gif_data/

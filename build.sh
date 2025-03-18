@@ -1,5 +1,8 @@
 #!/bin/bash
 
+export CPLUS_INCLUDE_PATH=$(brew --prefix boost)/include:$CPLUS_INCLUDE_PATH
+
+
 # Produce format-specific C++ code
 ./ffcompile templates/$1.bt $1.cpp
 git checkout -- png.cpp
