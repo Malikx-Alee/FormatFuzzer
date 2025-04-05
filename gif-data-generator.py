@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-from PIL import Image
 
 # Paths
 OUTPUT_DIR = "./gif_data/"
@@ -13,31 +12,36 @@ GIF_FUZZER_CMD = "./gif-fuzzer fuzz"
 os.makedirs(PASSED_DIR, exist_ok=True)
 os.makedirs(FAILED_DIR, exist_ok=True)
 
-# Step 1: Generate 100 GIFs
-for i in range(1, 101):
-    gif_path = os.path.join(OUTPUT_DIR, f"out{i}.gif")
-    cmd = f"{GIF_FUZZER_CMD} {gif_path}"
-    subprocess.run(cmd, shell=True)
-    print(f"Generated: {gif_path}")
-
-# Step 2: Validate GIF files using Pillow
+# Step 1: Generate and Validate GIFs
 def is_valid_gif(file_path):
     try:
-        with Image.open(file_path) as img:
-            return img.format == "GIF"
+        result = subprocess.run(
+            ["identify", "-verbose", file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+        return "Elapsed" in result.stdout
     except Exception:
         return False
 
-# Step 3: Move files based on validation
-for i in range(1, 101):
-    gif_path = os.path.join(OUTPUT_DIR, f"out{i}.gif")
-    
-    if os.path.exists(gif_path):  # Ensure file exists
-        if is_valid_gif(gif_path):
-            shutil.move(gif_path, os.path.join(PASSED_DIR, f"out{i}.gif"))
-            print(f"Valid GIF: Moved to {PASSED_DIR}")
-        else:
-            shutil.move(gif_path, os.path.join(FAILED_DIR, f"out{i}.gif"))
-            print(f"Invalid GIF: Moved to {FAILED_DIR}")
+valid_count = 0
+attempt = 1  # Track total attempts to generate valid GIFs
 
-print("Processing complete!")
+while valid_count < 100:
+    gif_path = os.path.join(OUTPUT_DIR, f"out{attempt}.gif")
+    cmd = f"{GIF_FUZZER_CMD} {gif_path}"
+    subprocess.run(cmd, shell=True, check=True)
+    print(f"Generated: {gif_path}")
+    
+    if is_valid_gif(gif_path):
+        shutil.move(gif_path, os.path.join(PASSED_DIR, f"out{valid_count + 1}.gif"))
+        print(f"Valid GIF: Moved to {PASSED_DIR} as out{valid_count + 1}.gif")
+        valid_count += 1
+    else:
+        shutil.move(gif_path, os.path.join(FAILED_DIR, f"out{attempt}.gif"))
+        print(f"Invalid GIF: Moved to {FAILED_DIR}")
+    
+    attempt += 1
+
+print("Processing complete! 100 valid GIFs generated.")
