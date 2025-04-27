@@ -48,9 +48,9 @@ def parse_gif(file_path):
 
     return byte_ranges
 
-# Function to insert values into a nested dictionary
+# Function to insert values into a nested dictionary with special handling for arrays
 def insert_nested_dict(root, keys, value):
-    """ Recursively inserts values into a nested dictionary. """
+    """ Recursively inserts values into a nested dictionary with special handling for hierarchical arrays. """
     current = root
     for key in keys[:-1]:  # Traverse and create intermediate levels
         if key not in current:
@@ -62,11 +62,23 @@ def insert_nested_dict(root, keys, value):
 
     last_key = keys[-1]  # Final key where value should be stored
 
-    # Ensure it's a set to allow for unique values
-    if isinstance(current[last_key], collections.defaultdict):
-        # If it's a defaultdict, convert it to a set
-        current[last_key] = set()
-    current[last_key].add(value)
+    # Special handling for hierarchical keys like rgb~R, rgb~R_1, etc.
+    if "_" in last_key:
+        base_key, index = last_key.rsplit("_", 1)
+        if base_key not in current:
+            current[base_key] = []
+        # Ensure the list is large enough to accommodate the index
+        while len(current[base_key]) <= int(index):
+            current[base_key].append(None)
+        current[base_key][int(index)] = value
+    else:
+        if isinstance(current[last_key], collections.defaultdict):
+            # If it's a defaultdict, convert it to a set
+            current[last_key] = set()
+        if isinstance(current[last_key], list):
+            current[last_key].append(value)
+        else:
+            current[last_key] = [value]
 
 # Function to extract byte values from GIF file and store in nested structures
 def extract_bytes(file_path, byte_ranges):
@@ -99,7 +111,7 @@ def extract_bytes(file_path, byte_ranges):
 
 # Iterate over all passed GIFs and extract data
 for filename in os.listdir(PASSED_DIR):
-    if filename.endswith("2.gif"):
+    if filename.endswith(".gif"):
         gif_path = os.path.join(PASSED_DIR, filename)
         byte_ranges = parse_gif(gif_path)
         extract_bytes(gif_path, byte_ranges)
