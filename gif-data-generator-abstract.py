@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import collections
 import json
+import random
 
 # Paths
 OUTPUT_DIR = "./gif_data/"
@@ -57,8 +58,8 @@ def parse_gif(file_path):
                 attribute_keys = attribute.split("~")
 
                 # Skip if the attribute path has only two levels (e.g., "file~GifHeader")
-                if len(attribute_keys) <= 2:
-                    continue
+                # if len(attribute_keys) <= 2:
+                #     continue
 
                 # Only consider attributes where byte size is <= 8
                 if (end - start + 1) <= 8:
@@ -69,72 +70,46 @@ def parse_gif(file_path):
 
     return byte_ranges
 
-def parse_gif_reduced(file_path):
-    byte_ranges = []
-    try:
-        result = subprocess.run(
-            ["./gif-fuzzer", "parse", file_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True
-        )
-
-        for line in result.stdout.splitlines():
-            parts = line.split(",")
-            if len(parts) == 3:
-                start, end, attribute = int(parts[0]), int(parts[1]), parts[2]
-
-                # Split attribute into hierarchical keys
-                attribute_keys = attribute.split("~")
-
-                # Skip if the attribute path has only two levels (e.g., "file~GifHeader")
-                # if len(attribute_keys) <= 2:
-                #     continue
-
-                # Only consider attributes where byte size is <= 8
-                if (end - start + 1) >= 6:
-                    byte_ranges.append((start, end, attribute))
-
-    except Exception as e:
-        print(f"Error parsing {file_path}: {e}")
-
-    return byte_ranges
-
-
 # Function to insert values into a nested dictionary with special handling for arrays
-def insert_nested_dict(root, keys, value):
+def insert_nested_dict(root, originalKeys, value):
     """ Recursively inserts values into a nested dictionary with special handling for hierarchical arrays. """
     current = root
+
+    if "GifHeader" in originalKeys:
+        pass
+
+    keys = []
+    for key in originalKeys:
+        if "_" in key:
+            # If the key contains an underscore, split it
+            key = key.split("_")[0]
+        keys.append(key)
+
+
     for key in keys[:-1]:  # Traverse and create intermediate levels
         if key not in current:
             current[key] = collections.defaultdict(lambda: set())
         elif isinstance(current[key], set):
             # If the current level is a set, convert it to a defaultdict
             current[key] = collections.defaultdict(lambda: set())
+        elif isinstance(current[key], list):
+            print(f"Error: Attempting to access a list with a string key '{key}'")
+            raise TypeError(f"Invalid access: {key} is a list, not a dictionary.")
         current = current[key]
 
     last_key = keys[-1]  # Final key where value should be stored
 
-    # Special handling for hierarchical keys like rgb~R, rgb~R_1, etc.
-    if "_" in last_key:
-        base_key, index = last_key.rsplit("_", 1)
-        if base_key not in current:
-            current[base_key] = []
-        # Ensure the list is large enough to accommodate the index
-        while len(current[base_key]) <= int(index):
-            current[base_key].append(None)
-        if current[base_key][int(index)] != value:  # Ensure uniqueness
-            current[base_key][int(index)] = value
-    else:
-        if isinstance(current[last_key], collections.defaultdict):
-            # If it's a defaultdict, convert it to a set
-            current[last_key] = set()
-        if isinstance(current[last_key], list):
-            if value not in current[last_key]:  # Ensure uniqueness
-                current[last_key].append(value)
-        else:
-            current[last_key] = [value] if current[last_key] != value else current[last_key]
+    # Check if the current key is empty or null before replacing/assigning
+    if last_key not in current or not current[last_key]:
+        current[last_key] = []  # Initialize as a list if it doesn't exist or is empty
 
+    if isinstance(current[last_key], collections.defaultdict) and not current[last_key]:
+        # If it's a defaultdict, convert it to a set
+        current[last_key] = set()
+    elif isinstance(current[last_key], list):
+        # Use a set to ensure uniqueness, then convert back to a list
+        current[last_key] = list(set(current[last_key] + [value]))
+    
 
 # Function to extract byte values from GIF file and store in nested structures
 def extract_bytes(file_path, byte_ranges):
@@ -155,7 +130,7 @@ def extract_bytes(file_path, byte_ranges):
                     byte_values_ascii = "".join(byte_values_ascii)
 
                     attribute_keys = attribute.split("~")  # Split into hierarchical keys
-                    print(f"{file_path}: {attribute_keys} = {byte_values_hex} (hex) -> {byte_values_base10} (base 10) -> {byte_values_ascii} (ASCII)")
+                    # print(f"{file_path}: {attribute_keys} = {byte_values_hex} (hex) -> {byte_values_base10} (base 10) -> {byte_values_ascii} (ASCII)")
                     
                     # Insert into respective dictionaries
                     insert_nested_dict(nested_values_hex, attribute_keys, byte_values_hex)
@@ -166,11 +141,46 @@ def extract_bytes(file_path, byte_ranges):
         print(f"Error reading {file_path}: {e}")
 
 
+def overwrite_bytes(file_path, start, end):
+    """
+    Randomly overwrites bytes in a file between the given start and end positions.
+
+    :param file_path: Path to the file to modify.
+    :param start: Start position (inclusive) of the range to overwrite.
+    :param end: End position (inclusive) of the range to overwrite.
+    """
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    if start > end:
+        raise ValueError("Start position must be less than or equal to the end position.")
+
+    try:
+        with open(file_path, "r+b") as f:  # Open file in read/write binary mode
+            file_size = os.path.getsize(file_path)
+            
+            if start < 0 or end >= file_size:
+                raise ValueError(f"Start and end positions must be within the file size (0 to {file_size - 1}).")
+
+            # Seek to the start position
+            f.seek(start)
+
+            # Overwrite bytes with random values
+            for position in range(start, end + 1):
+                random_byte = random.randint(0, 255)  # Generate a random byte (0-255)
+                f.write(bytes([random_byte]))  # Write the random byte
+
+            print(f"Successfully overwrote bytes from position {start} to {end} in {file_path}.")
+
+    except Exception as e:
+        print(f"Error overwriting bytes in {file_path}: {e}")
+
 def abstract_gif(file_path, byte_ranges):
     for start, end, attribute in byte_ranges:
+        print(f"Abstracting {file_path} from {start} to {end}...")
         try:
             abstract_attempt = 1
-            while abstract_attempt <= 1:
+            while abstract_attempt <= 10:
                 try: 
                     outputfile = os.path.join(ABSTRACTED_DIR, "abstracted.gif")
                     # print(f"Abstracting {file_path} from {start} to {end}...")
@@ -186,6 +196,7 @@ def abstract_gif(file_path, byte_ranges):
                         print(f"Valid Abstracted GIF")
                         abstract_byte_ranges = parse_gif(outputfile)
                         extract_bytes(outputfile, abstract_byte_ranges)
+                        break
                     else:
                         print(f"Invalid Abstracted GIF")
                 except Exception as e:
@@ -194,7 +205,29 @@ def abstract_gif(file_path, byte_ranges):
                 abstract_attempt += 1
             # break
         except Exception as e:
-            print(f"Error parsing {file_path}: {e}")
+            print(f"Error abstract main {file_path}: {e}")
+
+        try:
+            random_overwrite_attempt = 1
+            while random_overwrite_attempt <= 10:
+                outputfile = os.path.join(ABSTRACTED_DIR, "overwrite.gif")
+                try: 
+                    shutil.copy(file_path, outputfile)
+                    overwrite_bytes(outputfile, start, end)
+
+                    if is_valid_gif(outputfile):
+                        print(f"Valid Overwrite GIF")
+                        abstract_byte_ranges = parse_gif(outputfile)
+                        extract_bytes(outputfile, abstract_byte_ranges)
+                    else:
+                        print(f"Invalid Overwrite GIF")
+                except Exception as e:
+                    print(f"Overwrite failed {file_path}: {e}")
+                
+                os.remove(outputfile)
+                random_overwrite_attempt += 1
+        except Exception as e:
+            print(f"Error overwriting main {file_path}: {e}")
 
     return byte_ranges
 
@@ -208,7 +241,7 @@ while valid_count <= 2:
     # subprocess.run(cmd, shell=True, check=True)
     # print(f"Generated: {gif_path}")
 
-    byte_ranges = parse_gif_reduced(gif_path)
+    byte_ranges = parse_gif(gif_path)
     abstract_gif(gif_path, byte_ranges)
     
     # if is_valid_gif(gif_path):
