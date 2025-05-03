@@ -70,6 +70,69 @@ def parse_gif(file_path):
 
     return byte_ranges
 
+
+def parse_gif_new(file_path):
+    byte_ranges = []
+    try:
+        result = subprocess.run(
+            ["./gif-fuzzer", "parse", file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+        # print("result")
+        # print(result.stdout)
+
+        current_parent_end = -1
+
+        lines = result.stdout.splitlines()
+        entries = []
+
+        # Step 1: Parse all lines into structured format
+        for line in lines:
+            parts = line.split(',')
+            if len(parts) < 3:
+                continue  # Skip bad lines
+            start, end, label = int(parts[0]), int(parts[1]), parts[2]
+            entries.append((start, end, label, line))
+
+        # Step 2: Sort entries by start byte
+        # Step 2: Sort by start ASCENDING and end DESCENDING
+        entries.sort(key=lambda x: (x[0], -x[1]))
+
+
+        for start, end, attribute, line in entries:
+            # parts = line.split(",")
+            # if len(parts) == 3:
+            #     start, end, attribute = int(parts[0]), int(parts[1]), parts[2]
+
+                # Split attribute into hierarchical keys
+                # attribute_keys = attribute.split("~")
+
+                # Skip if the attribute path has only two levels (e.g., "file~GifHeader")
+                # if len(attribute_keys) <= 2:
+                #     continue
+
+                # Only consider attributes where byte size is <= 8
+                # if (end - start + 1) <= 8:
+                #     byte_ranges.append((start, end, attribute))
+
+            if start == end and "_" in attribute:
+                continue
+            if (start > current_parent_end or end < current_parent_end) and end - start <= 8:
+                # No overlap with previous parent
+                byte_ranges.append((start, end, attribute))
+                current_parent_end = end
+            else:
+                # This entry is inside an earlier parent, so skip
+                continue
+
+    except Exception as e:
+        print(f"Error parsing {file_path}: {e}")
+
+    return byte_ranges
+
+
 # Function to insert values into a nested dictionary with special handling for arrays
 def insert_nested_dict(root, originalKeys, value):
     """ Recursively inserts values into a nested dictionary with special handling for hierarchical arrays. """
@@ -234,23 +297,10 @@ def abstract_gif(file_path, byte_ranges):
 valid_count = 0
 attempt = 1  # Track total attempts to generate valid GIFs
 
-while valid_count <= 2:
-    # gif_path = os.path.join(OUTPUT_DIR, f"out{attempt}.gif")
-    gif_path = os.path.join(PASSED_DIR, f"out.gif")
-    # cmd = f"{GIF_FUZZER_CMD} {gif_path}"
-    # subprocess.run(cmd, shell=True, check=True)
-    # print(f"Generated: {gif_path}")
-
+while valid_count <= 100:
+    gif_path = os.path.join(PASSED_DIR, f"out{attempt}.gif")
     byte_ranges = parse_gif(gif_path)
     abstract_gif(gif_path, byte_ranges)
-    
-    # if is_valid_gif(gif_path):
-    #     shutil.move(gif_path, os.path.join(PASSED_DIR, f"out{valid_count + 1}.gif"))
-    #     print(f"Valid GIF: Moved to {PASSED_DIR} as out{valid_count + 1}.gif")
-    #     valid_count += 1
-    # else:
-    #     shutil.move(gif_path, os.path.join(FAILED_DIR, f"out{attempt}.gif"))
-    #     print(f"Invalid GIF: Moved to {FAILED_DIR}")
     valid_count += 1
     attempt += 1
 
