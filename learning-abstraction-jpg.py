@@ -6,15 +6,16 @@ import json
 import random
 
 # Paths
-OUTPUT_DIR = "./gif_data/"
+file_type = "jpg"
+OUTPUT_DIR = f"./learning-data/{file_type}-data/"
 PASSED_DIR = os.path.join(OUTPUT_DIR, "passed/")
 ABSTRACTED_DIR = os.path.join(OUTPUT_DIR, "abstracted/")
 FAILED_DIR = os.path.join(OUTPUT_DIR, "failed/")
-GIF_FUZZER_CMD = "./gif-fuzzer fuzz"
-GIF_ABSTACT_CMD = "./gif-fuzzer abstract"
-STATS_FILE_HEX = os.path.join(OUTPUT_DIR, "gif_parsed_stats_hex.json")  # File for hex values
-STATS_FILE_BASE10 = os.path.join(OUTPUT_DIR, "gif_parsed_stats_base10.json")  # File for base 10 values
-STATS_FILE_ASCII = os.path.join(OUTPUT_DIR, "gif_parsed_stats_ascii.json")  # File for ASCII values
+GIF_FUZZER_CMD = f"./{file_type}-fuzzer fuzz"
+GIF_ABSTACT_CMD = f"./{file_type}-fuzzer abstract"
+STATS_FILE_HEX = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for hex values
+STATS_FILE_BASE10 = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for base 10 values
+STATS_FILE_ASCII = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_ascii.json")  # File for ASCII values
 
 # Nested dictionaries to store extracted values in different formats
 nested_values_hex = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
@@ -43,7 +44,7 @@ def parse_gif(file_path):
     byte_ranges = []
     try:
         result = subprocess.run(
-            ["./gif-fuzzer", "parse", file_path],
+            [f"./{file_type}-fuzzer", "parse", file_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True
@@ -75,7 +76,7 @@ def parse_gif_new(file_path):
     byte_ranges = []
     try:
         result = subprocess.run(
-            ["./gif-fuzzer", "parse", file_path],
+            [f"./{file_type}-fuzzer", "parse", file_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True
@@ -245,11 +246,11 @@ def abstract_gif(file_path, byte_ranges):
             abstract_attempt = 1
             while abstract_attempt <= 10:
                 try: 
-                    outputfile = os.path.join(ABSTRACTED_DIR, "abstracted.gif")
+                    outputfile = os.path.join(ABSTRACTED_DIR, f"abstracted.{file_type}")
                     # print(f"Abstracting {file_path} from {start} to {end}...")
                     # print(f"Output file: {outputfile}")
                     result = subprocess.run(
-                        ["./gif-fuzzer", "abstract", "--targetfile", file_path, "--targetstart", str(start), "--targetend", str(end), outputfile ],
+                        [f"./{file_type}-fuzzer", "abstract", "--targetfile", file_path, "--targetstart", str(start), "--targetend", str(end), outputfile ],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
                         text=True
@@ -273,7 +274,7 @@ def abstract_gif(file_path, byte_ranges):
         try:
             random_overwrite_attempt = 1
             while random_overwrite_attempt <= 10:
-                outputfile = os.path.join(ABSTRACTED_DIR, "overwrite.gif")
+                outputfile = os.path.join(ABSTRACTED_DIR, f"overwrite.{file_type}")
                 try: 
                     shutil.copy(file_path, outputfile)
                     overwrite_bytes(outputfile, start, end)
@@ -297,12 +298,16 @@ def abstract_gif(file_path, byte_ranges):
 valid_count = 0
 attempt = 1  # Track total attempts to generate valid GIFs
 
-while valid_count <= 100:
-    gif_path = os.path.join(PASSED_DIR, f"out{attempt}.gif")
+
+# List all files in the directory
+file_names = [f for f in os.listdir(PASSED_DIR) if os.path.isfile(os.path.join(PASSED_DIR, f))]
+
+# Print the file names
+for name in file_names:
+    gif_path = os.path.join(PASSED_DIR, f"{name}")
     byte_ranges = parse_gif(gif_path)
     abstract_gif(gif_path, byte_ranges)
-    valid_count += 1
-    attempt += 1
+
 
 # Convert sets to lists for JSON serialization
 def convert_sets_to_lists(obj):
