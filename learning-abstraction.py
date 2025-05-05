@@ -6,27 +6,38 @@ import json
 import random
 
 # Paths
-file_type = "jpg"
+# file_type = "avi"
+# file_type = "bmp"
+# file_type = "gif"
+# file_type = "jpg"
+# file_type = "png"
+# file_type = "midi"
+# file_type = "pcap"
+# file_type = "wav"
+# file_type = "mp3"
+# file_type = "mp4"
+file_type = "zip"
 OUTPUT_DIR = f"./learning-data/{file_type}-data/"
 PASSED_DIR = os.path.join(OUTPUT_DIR, "passed/")
 ABSTRACTED_DIR = os.path.join(OUTPUT_DIR, "abstracted/")
 FAILED_DIR = os.path.join(OUTPUT_DIR, "failed/")
 GIF_FUZZER_CMD = f"./{file_type}-fuzzer fuzz"
 GIF_ABSTACT_CMD = f"./{file_type}-fuzzer abstract"
-STATS_FILE_HEX = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for hex values
-STATS_FILE_BASE10 = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for base 10 values
-STATS_FILE_ASCII = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_ascii.json")  # File for ASCII values
+STATS_FILE_HEX = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for {file_type} hex values
+STATS_FILE_BASE10 = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for {file_type} base 10 values
+STATS_FILE_ASCII = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_ascii.json")  # File for {file_type} ASCII values
 
-# Nested dictionaries to store extracted values in different formats
+# Nested dictionaries to store extracted values in different formats for {file_type}
 nested_values_hex = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 nested_values_base10 = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 nested_values_ascii = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 
-# Ensure output directories exist
+# Ensure output directories exist for {file_type}
 os.makedirs(PASSED_DIR, exist_ok=True)
 os.makedirs(FAILED_DIR, exist_ok=True)
+os.makedirs(ABSTRACTED_DIR, exist_ok=True)
 
-# Validate GIFs
+# Validate {file_type} files
 def is_valid_gif(file_path):
     try:
         result = subprocess.run(
@@ -39,7 +50,7 @@ def is_valid_gif(file_path):
     except Exception:
         return False
     
-# Function to parse GIF and extract attributes with byte ranges
+# Function to parse {file_type} files and extract attributes with byte ranges
 def parse_gif(file_path):
     byte_ranges = []
     try:
@@ -57,10 +68,6 @@ def parse_gif(file_path):
 
                 # Split attribute into hierarchical keys
                 attribute_keys = attribute.split("~")
-
-                # Skip if the attribute path has only two levels (e.g., "file~GifHeader")
-                # if len(attribute_keys) <= 2:
-                #     continue
 
                 # Only consider attributes where byte size is <= 8
                 if (end - start + 1) <= 8:
@@ -81,8 +88,6 @@ def parse_gif_new(file_path):
             stderr=subprocess.DEVNULL,
             text=True
         )
-        # print("result")
-        # print(result.stdout)
 
         current_parent_end = -1
 
@@ -103,21 +108,6 @@ def parse_gif_new(file_path):
 
 
         for start, end, attribute, line in entries:
-            # parts = line.split(",")
-            # if len(parts) == 3:
-            #     start, end, attribute = int(parts[0]), int(parts[1]), parts[2]
-
-                # Split attribute into hierarchical keys
-                # attribute_keys = attribute.split("~")
-
-                # Skip if the attribute path has only two levels (e.g., "file~GifHeader")
-                # if len(attribute_keys) <= 2:
-                #     continue
-
-                # Only consider attributes where byte size is <= 8
-                # if (end - start + 1) <= 8:
-                #     byte_ranges.append((start, end, attribute))
-
             if start == end and "_" in attribute:
                 continue
             if (start > current_parent_end or end < current_parent_end) and end - start <= 8:
@@ -175,7 +165,7 @@ def insert_nested_dict(root, originalKeys, value):
         current[last_key] = list(set(current[last_key] + [value]))
     
 
-# Function to extract byte values from GIF file and store in nested structures
+# Function to extract byte values from {file_type} file and store in nested structures
 def extract_bytes(file_path, byte_ranges):
     try:
         with open(file_path, "rb") as f:
@@ -194,7 +184,6 @@ def extract_bytes(file_path, byte_ranges):
                     byte_values_ascii = "".join(byte_values_ascii)
 
                     attribute_keys = attribute.split("~")  # Split into hierarchical keys
-                    # print(f"{file_path}: {attribute_keys} = {byte_values_hex} (hex) -> {byte_values_base10} (base 10) -> {byte_values_ascii} (ASCII)")
                     
                     # Insert into respective dictionaries
                     insert_nested_dict(nested_values_hex, attribute_keys, byte_values_hex)
@@ -258,7 +247,7 @@ def abstract_gif(file_path, byte_ranges):
 
                     if is_valid_gif(outputfile):
                         print(f"Valid Abstracted GIF")
-                        abstract_byte_ranges = parse_gif(outputfile)
+                        abstract_byte_ranges = parse_gif_new(outputfile)
                         extract_bytes(outputfile, abstract_byte_ranges)
                         break
                     else:
@@ -281,7 +270,7 @@ def abstract_gif(file_path, byte_ranges):
 
                     if is_valid_gif(outputfile):
                         print(f"Valid Overwrite GIF")
-                        abstract_byte_ranges = parse_gif(outputfile)
+                        abstract_byte_ranges = parse_gif_new(outputfile)
                         extract_bytes(outputfile, abstract_byte_ranges)
                     else:
                         print(f"Invalid Overwrite GIF")
@@ -305,9 +294,8 @@ file_names = [f for f in os.listdir(PASSED_DIR) if os.path.isfile(os.path.join(P
 # Print the file names
 for name in file_names:
     gif_path = os.path.join(PASSED_DIR, f"{name}")
-    byte_ranges = parse_gif(gif_path)
+    byte_ranges = parse_gif_new(gif_path)
     abstract_gif(gif_path, byte_ranges)
-
 
 # Convert sets to lists for JSON serialization
 def convert_sets_to_lists(obj):
