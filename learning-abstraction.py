@@ -21,8 +21,6 @@ OUTPUT_DIR = f"./learning-data/{file_type}-data/"
 PASSED_DIR = os.path.join(OUTPUT_DIR, "passed/")
 ABSTRACTED_DIR = os.path.join(OUTPUT_DIR, "abstracted/")
 FAILED_DIR = os.path.join(OUTPUT_DIR, "failed/")
-GIF_FUZZER_CMD = f"./{file_type}-fuzzer fuzz"
-GIF_ABSTACT_CMD = f"./{file_type}-fuzzer abstract"
 STATS_FILE_HEX = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for {file_type} hex values
 STATS_FILE_BASE10 = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for {file_type} base 10 values
 STATS_FILE_ASCII = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_ascii.json")  # File for {file_type} ASCII values
@@ -32,54 +30,92 @@ nested_values_hex = collections.defaultdict(lambda: collections.defaultdict(lamb
 nested_values_base10 = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 nested_values_ascii = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 
+
+# Output Counts
+VALID_ABSTRACTIONS_COUNT = 0
+VALID_OVERWRITES_COUNT = 0
+
 # Ensure output directories exist for {file_type}
 os.makedirs(PASSED_DIR, exist_ok=True)
 os.makedirs(FAILED_DIR, exist_ok=True)
 os.makedirs(ABSTRACTED_DIR, exist_ok=True)
 
 # Validate {file_type} files
-def is_valid_gif(file_path):
+def is_valid_file(file_path):
+    """
+    Validates a file based on its type.
+
+    :param file_path: Path to the file to validate.
+    :param file_type: The type of the file (e.g., 'gif', 'zip', 'mp3').
+    :return: True if the file is valid, False otherwise.
+    """
     try:
-        result = subprocess.run(
-            ["identify", "-verbose", file_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True
-        )
-        return "Elapsed" in result.stdout
-    except Exception:
+        if file_type in ["gif", "jpg", "png", "bmp"]:
+            # Use ImageMagick's identify command for image files
+            result = subprocess.run(
+                ["identify", "-verbose", file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            return "Elapsed" in result.stdout
+
+        elif file_type == "zip":
+            # Validate zip files by checking if the file can be opened
+            import zipfile
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                return zip_ref.testzip() is None  # Returns None if no errors are found
+
+        elif file_type in ["mp3", "wav"]:
+            # Validate audio files using ffprobe (part of FFmpeg)
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", "-show_streams", file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            return "format_name" in result.stdout
+
+        elif file_type == "mp4":
+            # Validate video files using ffprobe
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", "-show_streams", file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            return "format_name" in result.stdout
+        
+        elif file_type == "avi":
+            # Validate AVI files using ffprobe
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", "-show_streams", file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            return "format_name=avi" in result.stdout  # Check if the format is AVI
+
+        elif file_type == "pcap":
+            # Validate pcap files using tshark
+            result = subprocess.run(
+                ["tshark", "-r", file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            return result.returncode == 0
+
+        else:
+            print(f"Validation for file type '{file_type}' is not implemented.")
+            return False
+
+    except Exception as e:
+        print(f"Error validating {file_type} file: {e}")
         return False
     
 # Function to parse {file_type} files and extract attributes with byte ranges
-def parse_gif(file_path):
-    byte_ranges = []
-    try:
-        result = subprocess.run(
-            [f"./{file_type}-fuzzer", "parse", file_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True
-        )
-
-        for line in result.stdout.splitlines():
-            parts = line.split(",")
-            if len(parts) == 3:
-                start, end, attribute = int(parts[0]), int(parts[1]), parts[2]
-
-                # Split attribute into hierarchical keys
-                attribute_keys = attribute.split("~")
-
-                # Only consider attributes where byte size is <= 8
-                if (end - start + 1) <= 8:
-                    byte_ranges.append((start, end, attribute))
-
-    except Exception as e:
-        print(f"Error parsing {file_path}: {e}")
-
-    return byte_ranges
-
-
-def parse_gif_new(file_path):
+def parse_file_new(file_path):
     byte_ranges = []
     try:
         result = subprocess.run(
@@ -129,9 +165,11 @@ def insert_nested_dict(root, originalKeys, value):
     """ Recursively inserts values into a nested dictionary with special handling for hierarchical arrays. """
     current = root
 
-    if "GifHeader" in originalKeys:
-        pass
+    if "frVersion" in originalKeys:
+        print("frVersion in keys")
 
+
+    # Clean keys by removing array indices if present
     keys = []
     for key in originalKeys:
         if "_" in key:
@@ -139,31 +177,43 @@ def insert_nested_dict(root, originalKeys, value):
             key = key.split("_")[0]
         keys.append(key)
 
-
+    # Navigate through all keys except the last one
     for key in keys[:-1]:  # Traverse and create intermediate levels
         if key not in current:
+            # Create new nested defaultdict if key doesn't exist
             current[key] = collections.defaultdict(lambda: set())
         elif isinstance(current[key], set):
-            # If the current level is a set, convert it to a defaultdict
+            # If the current level is a set, convert it to a defaultdict for deeper nesting
             current[key] = collections.defaultdict(lambda: set())
         elif isinstance(current[key], list):
-            print(f"Error: Attempting to access a list with a string key '{key}'")
-            raise TypeError(f"Invalid access: {key} is a list, not a dictionary.")
+            current[key] = collections.defaultdict(lambda: set())
+            # if not current[key]:  # Check if list is empty
+            #     current[key] = collections.defaultdict(lambda: set())  # Convert to dict with set
+            # else:
+            #     print(f"Error: Attempting to access a list with a string key '{key}'")
+        # Move to the next level
         current = current[key]
 
     last_key = keys[-1]  # Final key where value should be stored
 
-    # Check if the current key is empty or null before replacing/assigning
-    if last_key not in current or not current[last_key]:
-        current[last_key] = []  # Initialize as a list if it doesn't exist or is empty
-
-    if isinstance(current[last_key], collections.defaultdict) and not current[last_key]:
-        # If it's a defaultdict, convert it to a set
+    # Handle the final key insertion
+    if last_key not in current:
+        # Initialize as a list if it doesn't exist
         current[last_key] = set()
-    elif isinstance(current[last_key], list):
-        # Use a set to ensure uniqueness, then convert back to a list
-        current[last_key] = list(set(current[last_key] + [value]))
-    
+    # if isinstance(current[last_key], collections.defaultdict) and not current[last_key]:
+    #     # If it's an empty defaultdict, convert it to a list with the value
+    #     current[last_key] = [value]
+    # if isinstance(current[last_key], list):
+    #     # If it's already a list, add the value ensuring uniqueness
+    #     if value not in current[last_key]:
+    #         current[last_key].append(value)
+    if isinstance(current[last_key], set):
+        # If it's a set, add the value
+        current[last_key].add(value)
+    # else:
+    #     # For any other case, convert to list and add
+    #     current[last_key] = [current[last_key], value]
+
 
 # Function to extract byte values from {file_type} file and store in nested structures
 def extract_bytes(file_path, byte_ranges):
@@ -187,8 +237,8 @@ def extract_bytes(file_path, byte_ranges):
                     
                     # Insert into respective dictionaries
                     insert_nested_dict(nested_values_hex, attribute_keys, byte_values_hex)
-                    insert_nested_dict(nested_values_base10, attribute_keys, byte_values_base10)
-                    insert_nested_dict(nested_values_ascii, attribute_keys, byte_values_ascii)
+                    # insert_nested_dict(nested_values_base10, attribute_keys, byte_values_base10)
+                    # insert_nested_dict(nested_values_ascii, attribute_keys, byte_values_ascii)
 
     except Exception as e:
         print(f"Error reading {file_path}: {e}")
@@ -228,7 +278,8 @@ def overwrite_bytes(file_path, start, end):
     except Exception as e:
         print(f"Error overwriting bytes in {file_path}: {e}")
 
-def abstract_gif(file_path, byte_ranges):
+def abstract_file(file_path, byte_ranges):
+    global VALID_ABSTRACTIONS_COUNT, VALID_OVERWRITES_COUNT
     for start, end, attribute in byte_ranges:
         print(f"Abstracting {file_path} from {start} to {end}...")
         try:
@@ -245,13 +296,14 @@ def abstract_gif(file_path, byte_ranges):
                         text=True
                     )
 
-                    if is_valid_gif(outputfile):
-                        print(f"Valid Abstracted GIF")
-                        abstract_byte_ranges = parse_gif_new(outputfile)
+                    if is_valid_file(outputfile):
+                        print(f"Valid Abstracted {file_type}")
+                        abstract_byte_ranges = parse_file_new(outputfile)
                         extract_bytes(outputfile, abstract_byte_ranges)
+                        VALID_ABSTRACTIONS_COUNT += 1
                         break
                     else:
-                        print(f"Invalid Abstracted GIF")
+                        print(f"Invalid Abstracted {file_type}")
                 except Exception as e:
                     print(f"Error abstracting {file_path}: {e}")
                     
@@ -268,12 +320,13 @@ def abstract_gif(file_path, byte_ranges):
                     shutil.copy(file_path, outputfile)
                     overwrite_bytes(outputfile, start, end)
 
-                    if is_valid_gif(outputfile):
-                        print(f"Valid Overwrite GIF")
-                        abstract_byte_ranges = parse_gif_new(outputfile)
+                    if is_valid_file(outputfile):
+                        print(f"Valid Overwrite {file_type}")
+                        abstract_byte_ranges = parse_file_new(outputfile)
                         extract_bytes(outputfile, abstract_byte_ranges)
+                        VALID_OVERWRITES_COUNT += 1
                     else:
-                        print(f"Invalid Overwrite GIF")
+                        print(f"Invalid Overwrite {file_type}")
                 except Exception as e:
                     print(f"Overwrite failed {file_path}: {e}")
                 
@@ -285,7 +338,7 @@ def abstract_gif(file_path, byte_ranges):
     return byte_ranges
 
 valid_count = 0
-attempt = 1  # Track total attempts to generate valid GIFs
+attempt = 1  # Track total attempts to generate valid files
 
 
 # List all files in the directory
@@ -293,9 +346,9 @@ file_names = [f for f in os.listdir(PASSED_DIR) if os.path.isfile(os.path.join(P
 
 # Print the file names
 for name in file_names:
-    gif_path = os.path.join(PASSED_DIR, f"{name}")
-    byte_ranges = parse_gif_new(gif_path)
-    abstract_gif(gif_path, byte_ranges)
+    file_path = os.path.join(PASSED_DIR, f"{name}")
+    byte_ranges = parse_file_new(file_path)
+    abstract_file(file_path, byte_ranges)
 
 # Convert sets to lists for JSON serialization
 def convert_sets_to_lists(obj):
@@ -304,6 +357,10 @@ def convert_sets_to_lists(obj):
         return {k: convert_sets_to_lists(v) for k, v in obj.items()}
     elif isinstance(obj, set):
         return list(obj)
+    elif isinstance(obj, list):
+        return [convert_sets_to_lists(item) for item in obj]
+    elif isinstance(obj, collections.defaultdict):
+        return {k: convert_sets_to_lists(v) for k, v in obj.items()}
     return obj
 
 # Convert nested dictionaries to final stats
@@ -322,3 +379,5 @@ with open(STATS_FILE_ASCII, "w") as f:
     json.dump(final_stats_ascii, f, indent=4)
 
 print("Processing complete!")
+print(f"Valid Abstractions: {VALID_ABSTRACTIONS_COUNT}")
+print(f"Valid Overwrites: {VALID_OVERWRITES_COUNT}")

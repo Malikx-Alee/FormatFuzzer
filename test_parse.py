@@ -1,117 +1,82 @@
-your_string = """0,2,file~GifHeader~Signature
-3,5,file~GifHeader~Version
-0,5,file~GifHeader
-6,7,file~LogicalScreenDescriptor~Width
-8,9,file~LogicalScreenDescriptor~Height
-10,10,file~LogicalScreenDescriptor~PackedFields~GlobalColorTableFlag
-10,10,file~LogicalScreenDescriptor~PackedFields~ColorResolution
-10,10,file~LogicalScreenDescriptor~PackedFields~SortFlag
-10,10,file~LogicalScreenDescriptor~PackedFields~SizeOfGlobalColorTable
-10,10,file~LogicalScreenDescriptor~PackedFields
-11,11,file~LogicalScreenDescriptor~BackgroundColorIndex
-12,12,file~LogicalScreenDescriptor~PixelAspectRatio
-6,12,file~LogicalScreenDescriptor
-13,13,file~GlobalColorTable~rgb~R
-14,14,file~GlobalColorTable~rgb~G
-15,15,file~GlobalColorTable~rgb~B
-16,16,file~GlobalColorTable~rgb~R_1
-17,17,file~GlobalColorTable~rgb~G_1
-18,18,file~GlobalColorTable~rgb~B_1
-19,19,file~GlobalColorTable~rgb~R_2
-20,20,file~GlobalColorTable~rgb~G_2
-21,21,file~GlobalColorTable~rgb~B_2
-22,22,file~GlobalColorTable~rgb~R_3
-23,23,file~GlobalColorTable~rgb~G_3
-24,24,file~GlobalColorTable~rgb~B_3
-13,24,file~GlobalColorTable~rgb
-13,24,file~GlobalColorTable
-25,25,file~Data~ImageDescriptor~ImageSeperator
-26,27,file~Data~ImageDescriptor~ImageLeftPosition
-28,29,file~Data~ImageDescriptor~ImageTopPosition
-30,31,file~Data~ImageDescriptor~ImageWidth
-32,33,file~Data~ImageDescriptor~ImageHeight
-34,34,file~Data~ImageDescriptor~PackedFields~LocalColorTableFlag
-34,34,file~Data~ImageDescriptor~PackedFields~InterlaceFlag
-34,34,file~Data~ImageDescriptor~PackedFields~SortFlag
-34,34,file~Data~ImageDescriptor~PackedFields~Reserved
-34,34,file~Data~ImageDescriptor~PackedFields~SizeOfLocalColorTable
-34,34,file~Data~ImageDescriptor~PackedFields
-25,34,file~Data~ImageDescriptor,Optional
-35,35,file~Data~LocalColorTable~rgb~R
-36,36,file~Data~LocalColorTable~rgb~G
-37,37,file~Data~LocalColorTable~rgb~B
-38,38,file~Data~LocalColorTable~rgb~R_1
-39,39,file~Data~LocalColorTable~rgb~G_1
-40,40,file~Data~LocalColorTable~rgb~B_1
-41,41,file~Data~LocalColorTable~rgb~R_2
-42,42,file~Data~LocalColorTable~rgb~G_2
-43,43,file~Data~LocalColorTable~rgb~B_2
-44,44,file~Data~LocalColorTable~rgb~R_3
-45,45,file~Data~LocalColorTable~rgb~G_3
-46,46,file~Data~LocalColorTable~rgb~B_3
-47,47,file~Data~LocalColorTable~rgb~R_4
-48,48,file~Data~LocalColorTable~rgb~G_4
-49,49,file~Data~LocalColorTable~rgb~B_4
-50,50,file~Data~LocalColorTable~rgb~R_5
-51,51,file~Data~LocalColorTable~rgb~G_5
-52,52,file~Data~LocalColorTable~rgb~B_5
-53,53,file~Data~LocalColorTable~rgb~R_6
-54,54,file~Data~LocalColorTable~rgb~G_6
-55,55,file~Data~LocalColorTable~rgb~B_6
-56,56,file~Data~LocalColorTable~rgb~R_7
-57,57,file~Data~LocalColorTable~rgb~G_7
-58,58,file~Data~LocalColorTable~rgb~B_7
-35,58,file~Data~LocalColorTable~rgb
-35,58,file~Data~LocalColorTable
-59,59,file~Data~ImageData~LZWMinimumCodeSize
-60,60,file~Data~ImageData~DataSubBlocks~DataSubBlock~Size
-61,127,file~Data~ImageData~DataSubBlocks~DataSubBlock~Data
-60,127,file~Data~ImageData~DataSubBlocks~DataSubBlock,Optional
-128,128,file~Data~ImageData~DataSubBlocks~DataSubBlock_1~Size
-129,222,file~Data~ImageData~DataSubBlocks~DataSubBlock_1~Data
-128,222,file~Data~ImageData~DataSubBlocks~DataSubBlock_1,Optional
-223,223,file~Data~ImageData~DataSubBlocks~DataSubBlock_2~Size
-224,247,file~Data~ImageData~DataSubBlocks~DataSubBlock_2~Data
-223,247,file~Data~ImageData~DataSubBlocks~DataSubBlock_2,Optional
-248,248,file~Data~ImageData~DataSubBlocks~DataSubBlock_3~Size
-249,390,file~Data~ImageData~DataSubBlocks~DataSubBlock_3~Data
-248,390,file~Data~ImageData~DataSubBlocks~DataSubBlock_3,Optional
-391,391,file~Data~ImageData~DataSubBlocks~DataSubBlock_4~Size
-392,507,file~Data~ImageData~DataSubBlocks~DataSubBlock_4~Data
-391,507,file~Data~ImageData~DataSubBlocks~DataSubBlock_4,Optional
-508,508,file~Data~ImageData~DataSubBlocks~DataSubBlock_5~Size
-509,638,file~Data~ImageData~DataSubBlocks~DataSubBlock_5~Data
-508,638,file~Data~ImageData~DataSubBlocks~DataSubBlock_5,Optional
-639,639,file~Data~ImageData~DataSubBlocks~DataSubBlock_6~Size
-640,763,file~Data~ImageData~DataSubBlocks~DataSubBlock_6~Data
-639,763,file~Data~ImageData~DataSubBlocks~DataSubBlock_6,Optional
-764,764,file~Data~ImageData~DataSubBlocks~DataSubBlock_7~Size
-765,858,file~Data~ImageData~DataSubBlocks~DataSubBlock_7~Data
-764,858,file~Data~ImageData~DataSubBlocks~DataSubBlock_7,Optional
-859,859,file~Data~ImageData~DataSubBlocks~DataSubBlock_8~Size
-860,948,file~Data~ImageData~DataSubBlocks~DataSubBlock_8~Data
-859,948,file~Data~ImageData~DataSubBlocks~DataSubBlock_8,Optional
-949,949,file~Data~ImageData~DataSubBlocks~DataSubBlock_9~Size
-950,1096,file~Data~ImageData~DataSubBlocks~DataSubBlock_9~Data
-949,1096,file~Data~ImageData~DataSubBlocks~DataSubBlock_9,Optional
-1097,1097,file~Data~ImageData~DataSubBlocks~DataSubBlock_10~Size
-1098,1251,file~Data~ImageData~DataSubBlocks~DataSubBlock_10~Data
-1097,1251,file~Data~ImageData~DataSubBlocks~DataSubBlock_10,Optional
-1252,1252,file~Data~ImageData~DataSubBlocks~DataSubBlock_11~Size
-1253,1506,file~Data~ImageData~DataSubBlocks~DataSubBlock_11~Data
-1252,1506,file~Data~ImageData~DataSubBlocks~DataSubBlock_11,Optional
-1507,1507,file~Data~ImageData~DataSubBlocks~DataSubBlock_12~Size
-1508,1624,file~Data~ImageData~DataSubBlocks~DataSubBlock_12~Data
-1507,1624,file~Data~ImageData~DataSubBlocks~DataSubBlock_12,Optional
-1625,1625,file~Data~ImageData~DataSubBlocks~DataSubBlock_13~Size
-1626,1697,file~Data~ImageData~DataSubBlocks~DataSubBlock_13~Data
-1625,1697,file~Data~ImageData~DataSubBlocks~DataSubBlock_13,Optional
-1698,1698,file~Data~ImageData~DataSubBlocks~BlockTerminator,Optional
-60,1698,file~Data~ImageData~DataSubBlocks
-59,1698,file~Data~ImageData
-25,1698,file~Data,Appendable
-1699,1699,file~Trailer~GIFTrailer
-1699,1699,file~Trailer
+your_string = """0,3,file~record~frSignature
+4,4,file~record~frVersion~Version
+5,5,file~record~frVersion~HostOS
+4,5,file~record~frVersion
+6,7,file~record~frFlags
+8,9,file~record~frCompression
+10,11,file~record~frFileTime
+12,13,file~record~frFileDate
+14,17,file~record~frCrc
+18,21,file~record~frCompressedSize
+22,25,file~record~frUncompressedSize
+26,27,file~record~frFileNameLength
+28,29,file~record~frExtraFieldLength
+30,37,file~record~frFileName
+FSeek from 38 to 28
+28,29,file~record~frExtraFieldLength_1
+FSeek from 30 to 38
+38,2047,file~record~frData
+FSeek from 2048 to 14
+14,17,file~record~frCrc_1
+FSeek from 18 to 2048
+0,2047,file~record,Optional
+Generated record 0
+2048,2051,file~dirEntry~deSignature
+2052,2052,file~dirEntry~deVersionMadeBy~Version
+2053,2053,file~dirEntry~deVersionMadeBy~HostOS
+2052,2053,file~dirEntry~deVersionMadeBy
+2054,2054,file~dirEntry~deVersionToExtract~Version
+2055,2055,file~dirEntry~deVersionToExtract~HostOS
+2054,2055,file~dirEntry~deVersionToExtract
+2056,2057,file~dirEntry~deFlags
+2058,2059,file~dirEntry~deCompression
+2060,2061,file~dirEntry~deFileTime
+2062,2063,file~dirEntry~deFileDate
+2064,2067,file~dirEntry~deCrc
+2068,2071,file~dirEntry~deCompressedSize
+2072,2075,file~dirEntry~deUncompressedSize
+2076,2077,file~dirEntry~deFileNameLength
+2078,2079,file~dirEntry~deExtraFieldLength
+2080,2081,file~dirEntry~deFileCommentLength
+2082,2083,file~dirEntry~deDiskNumberStart
+2084,2085,file~dirEntry~deInternalAttributes
+2086,2089,file~dirEntry~deExternalAttributes
+2090,2093,file~dirEntry~deHeaderOffset
+2094,2101,file~dirEntry~deFileName
+2102,2103,file~dirEntry~deExtraField~efHeaderID
+2104,2105,file~dirEntry~deExtraField~efDataSize
+102106,2109,file~dirEntry~deExtraField~Reserved
+2110,2111,file~dirEntry~deExtraField~Tag
+2112,2113,file~dirEntry~deExtraField~Size
+2114,2117,file~dirEntry~deExtraField~Mtime~dwLowDateTime
+2118,2121,file~dirEntry~deExtraField~Mtime~dwHighDateTime
+2114,2121,file~dirEntry~deExtraField~Mtime
+2122,2125,file~dirEntry~deExtraField~Atime~dwLowDateTime
+2126,2129,file~dirEntry~deExtraField~Atime~dwHighDateTime
+2122,2129,file~dirEntry~deExtraField~Atime
+2130,2133,file~dirEntry~deExtraField~Ctime~dwLowDateTime
+2134,2137,file~dirEntry~deExtraField~Ctime~dwHighDateTime
+2130,2137,file~dirEntry~deExtraField~Ctime
+FSeek from 2138 to 2112
+2112,2113,file~dirEntry~deExtraField~Size_1
+FSeek from 2114 to 2138
+FSeek from 2138 to 2104
+2104,2105,file~dirEntry~deExtraField~efDataSize_1
+FSeek from 2106 to 2138
+2102,2137,file~dirEntry~deExtraField
+FSeek from 2138 to 2078
+2078,2079,file~dirEntry~deExtraFieldLength_1
+FSeek from 2080 to 2138
+2048,2137,file~dirEntry,Optional
+2138,2141,file~endLocator~elSignature
+2142,2143,file~endLocator~elDiskNumber
+2144,2145,file~endLocator~elStartDiskNumber
+2146,2147,file~endLocator~elEntriesOnDisk
+2148,2149,file~endLocator~elEntriesInDirectory
+2150,2153,file~endLocator~elDirectorySize
+2154,2157,file~endLocator~elDirectoryOffset
+2158,2159,file~endLocator~elCommentLength
+2138,2159,file~endLocator,Optional
 """
 
 lines = your_string.splitlines()
@@ -149,15 +114,76 @@ for start, end, label, line in entries:
     if start == end and "_" in label:
         continue
 
-    if (start > current_parent_end or end < current_parent_end) and end - start <= 8:
-        # No overlap with previous parent
-        filtered.append(line)
-        current_parent_end = end
-    else:
-        # This entry is inside an earlier parent, so skip
-        continue
+    # if (start > current_parent_end or end < current_parent_end) and end - start <= 8:
+    #     # No overlap with previous parent
+    #     filtered.append(line)
+    #     current_parent_end = end
+    # else:
+    #     # This entry is inside an earlier parent, so skip
+    #     continue
 
 # `filtered` now has your required lines
 
 print("Filtered Entries:")
 print("\n".join(filtered))
+
+
+# Filtered Entries:
+# 0,3,file~record~frSignature
+# 4,5,file~record~frVersion
+# 4,4,file~record~frVersion~Version
+# 5,5,file~record~frVersion~HostOS
+# 6,7,file~record~frFlags
+# 8,9,file~record~frCompression
+# 10,11,file~record~frFileTime
+# 12,13,file~record~frFileDate
+# 14,17,file~record~frCrc
+# 18,21,file~record~frCompressedSize
+# 22,25,file~record~frUncompressedSize
+# 26,27,file~record~frFileNameLength
+# 28,29,file~record~frExtraFieldLength
+# 30,37,file~record~frFileName
+# 2048,2051,file~dirEntry~deSignature
+# 2052,2053,file~dirEntry~deVersionMadeBy
+# 2052,2052,file~dirEntry~deVersionMadeBy~Version
+# 2053,2053,file~dirEntry~deVersionMadeBy~HostOS
+# 2054,2055,file~dirEntry~deVersionToExtract
+# 2054,2054,file~dirEntry~deVersionToExtract~Version
+# 2055,2055,file~dirEntry~deVersionToExtract~HostOS
+# 2056,2057,file~dirEntry~deFlags
+# 2058,2059,file~dirEntry~deCompression
+# 2060,2061,file~dirEntry~deFileTime
+# 2062,2063,file~dirEntry~deFileDate
+# 2064,2067,file~dirEntry~deCrc
+# 2068,2071,file~dirEntry~deCompressedSize
+# 2072,2075,file~dirEntry~deUncompressedSize
+# 2076,2077,file~dirEntry~deFileNameLength
+# 2078,2079,file~dirEntry~deExtraFieldLength
+# 2080,2081,file~dirEntry~deFileCommentLength
+# 2082,2083,file~dirEntry~deDiskNumberStart
+# 2084,2085,file~dirEntry~deInternalAttributes
+# 2086,2089,file~dirEntry~deExternalAttributes
+# 2090,2093,file~dirEntry~deHeaderOffset
+# 2094,2101,file~dirEntry~deFileName
+# 2102,2103,file~dirEntry~deExtraField~efHeaderID
+# 2104,2105,file~dirEntry~deExtraField~efDataSize
+# 2110,2111,file~dirEntry~deExtraField~Tag
+# 2112,2113,file~dirEntry~deExtraField~Size
+# 2114,2121,file~dirEntry~deExtraField~Mtime
+# 2114,2117,file~dirEntry~deExtraField~Mtime~dwLowDateTime
+# 2118,2121,file~dirEntry~deExtraField~Mtime~dwHighDateTime
+# 2122,2129,file~dirEntry~deExtraField~Atime
+# 2122,2125,file~dirEntry~deExtraField~Atime~dwLowDateTime
+# 2126,2129,file~dirEntry~deExtraField~Atime~dwHighDateTime
+# 2130,2137,file~dirEntry~deExtraField~Ctime
+# 2130,2133,file~dirEntry~deExtraField~Ctime~dwLowDateTime
+# 2134,2137,file~dirEntry~deExtraField~Ctime~dwHighDateTime
+# 2138,2141,file~endLocator~elSignature
+# 2142,2143,file~endLocator~elDiskNumber
+# 2144,2145,file~endLocator~elStartDiskNumber
+# 2146,2147,file~endLocator~elEntriesOnDisk
+# 2148,2149,file~endLocator~elEntriesInDirectory
+# 2150,2153,file~endLocator~elDirectorySize
+# 2154,2157,file~endLocator~elDirectoryOffset
+# 2158,2159,file~endLocator~elCommentLength
+# 102106,2109,file~dirEntry~deExtraField~Reserved
