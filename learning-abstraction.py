@@ -14,21 +14,21 @@ import random
 # file_type = "midi"
 # file_type = "pcap"
 # file_type = "wav"
-# file_type = "mp3"
-# file_type = "mp4"
-file_type = "zip"
-OUTPUT_DIR = f"./learning-data/{file_type}-data/"
-PASSED_DIR = os.path.join(OUTPUT_DIR, "passed/")
-ABSTRACTED_DIR = os.path.join(OUTPUT_DIR, "abstracted/")
-FAILED_DIR = os.path.join(OUTPUT_DIR, "failed/")
-STATS_FILE_HEX = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for {file_type} hex values
-STATS_FILE_BASE10 = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for {file_type} base 10 values
-STATS_FILE_ASCII = os.path.join(OUTPUT_DIR, f"{file_type}_parsed_values_ascii.json")  # File for {file_type} ASCII values
+file_type = "mp4"
+# file_type = "zip"
+DATA_DIR = f"./learning-data/{file_type}-data/"
+RESULTS_OUTPUT_DIR = f"./learning-data/results/original"
+PASSED_DIR = os.path.join(DATA_DIR, "passed/")
+ABSTRACTED_DIR = os.path.join(DATA_DIR, "abstracted/")
+FAILED_DIR = os.path.join(DATA_DIR, "failed/")
+STATS_FILE_HEX = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for {file_type} hex values
+# STATS_FILE_BASE10 = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for {file_type} base 10 values
+# STATS_FILE_ASCII = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_ascii.json")  # File for {file_type} ASCII values
 
 # Nested dictionaries to store extracted values in different formats for {file_type}
 nested_values_hex = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
-nested_values_base10 = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
-nested_values_ascii = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
+# nested_values_base10 = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
+# nested_values_ascii = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 
 
 # Output Counts
@@ -106,6 +106,19 @@ def is_valid_file(file_path):
             )
             return result.returncode == 0
 
+        elif file_type == "midi":
+            # Validate MIDI files using timidity (matching the checker script)
+            with open(file_path, 'rb') as f:
+                result = subprocess.run(
+                    ["timidity", "-", "-Ol", "-o", "/dev/null"],
+                    stdin=f,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+            # Check that there are no error messages starting with "-:"
+            return not any(line.startswith("-:") for line in result.stdout.splitlines())
+
         else:
             print(f"Validation for file type '{file_type}' is not implemented.")
             return False
@@ -165,16 +178,17 @@ def insert_nested_dict(root, originalKeys, value):
     """ Recursively inserts values into a nested dictionary with special handling for hierarchical arrays. """
     current = root
 
-    if "frVersion" in originalKeys:
-        print("frVersion in keys")
-
-
     # Clean keys by removing array indices if present
     keys = []
     for key in originalKeys:
         if "_" in key:
             # If the key contains an underscore, split it
-            key = key.split("_")[0]
+            parts = key.split("_")
+            # Check if the second part is a number
+            if parts[1].isdigit():
+                # If it's a number, only keep the first part
+                key = parts[0]
+            # If it's not a number, keep the whole key
         keys.append(key)
 
     # Navigate through all keys except the last one
@@ -365,18 +379,18 @@ def convert_sets_to_lists(obj):
 
 # Convert nested dictionaries to final stats
 final_stats_hex = convert_sets_to_lists(nested_values_hex)
-final_stats_base10 = convert_sets_to_lists(nested_values_base10)
-final_stats_ascii = convert_sets_to_lists(nested_values_ascii)
+# final_stats_base10 = convert_sets_to_lists(nested_values_base10)
+# final_stats_ascii = convert_sets_to_lists(nested_values_ascii)
 
 # Save results to JSON files
 with open(STATS_FILE_HEX, "w") as f:
     json.dump(final_stats_hex, f, indent=4)
 
-with open(STATS_FILE_BASE10, "w") as f:
-    json.dump(final_stats_base10, f, indent=4)
+# with open(STATS_FILE_BASE10, "w") as f:
+#     json.dump(final_stats_base10, f, indent=4)
 
-with open(STATS_FILE_ASCII, "w") as f:
-    json.dump(final_stats_ascii, f, indent=4)
+# with open(STATS_FILE_ASCII, "w") as f:
+#     json.dump(final_stats_ascii, f, indent=4)
 
 print("Processing complete!")
 print(f"Valid Abstractions: {VALID_ABSTRACTIONS_COUNT}")
