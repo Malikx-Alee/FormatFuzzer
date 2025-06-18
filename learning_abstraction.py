@@ -7,19 +7,20 @@ import random
 
 # Paths
 # file_type = "avi"
-# file_type = "bmp"
+file_type = "bmp"
 # file_type = "gif"
 # file_type = "jpg"
 # file_type = "png"
 # file_type = "midi"
 # file_type = "pcap"
 # file_type = "wav"
-file_type = "mp4"
+# file_type = "mp4"
 # file_type = "zip"
 DATA_DIR = f"./learning-data/{file_type}-data/"
 RESULTS_OUTPUT_DIR = f"./learning-data/results/original"
 PASSED_DIR = os.path.join(DATA_DIR, "passed/")
 ABSTRACTED_DIR = os.path.join(DATA_DIR, "abstracted/")
+ABSTRACTED_SPECIAL_DIR = os.path.join(DATA_DIR, "abstracted_special/")
 FAILED_DIR = os.path.join(DATA_DIR, "failed/")
 STATS_FILE_HEX = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for {file_type} hex values
 # STATS_FILE_BASE10 = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for {file_type} base 10 values
@@ -30,15 +31,41 @@ nested_values_hex = collections.defaultdict(lambda: collections.defaultdict(lamb
 # nested_values_base10 = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 # nested_values_ascii = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 
+# Blacklist for attributes that have been found to be larger than 8 bytes
+BLACKLISTED_ATTRIBUTES = set()
 
 # Output Counts
 VALID_ABSTRACTIONS_COUNT = 0
+VALID_ABSTRACTIONS_SPECIAL_COUNT = 0
 VALID_OVERWRITES_COUNT = 0
 
 # Ensure output directories exist for {file_type}
 os.makedirs(PASSED_DIR, exist_ok=True)
 os.makedirs(FAILED_DIR, exist_ok=True)
 os.makedirs(ABSTRACTED_DIR, exist_ok=True)
+os.makedirs(ABSTRACTED_SPECIAL_DIR, exist_ok=True)
+
+# Convert sets to lists for JSON serialization
+def convert_sets_to_lists(obj):
+    """ Recursively converts sets to lists in a nested dictionary. """
+    if isinstance(obj, dict):
+        return {k: convert_sets_to_lists(v) for k, v in obj.items()}
+    elif isinstance(obj, set):
+        return list(obj)
+    elif isinstance(obj, list):
+        return [convert_sets_to_lists(item) for item in obj]
+    elif isinstance(obj, collections.defaultdict):
+        return {k: convert_sets_to_lists(v) for k, v in obj.items()}
+    return obj
+
+def clean_attribute_key(attribute):
+    """Extracts the last part after '~' and removes trailing _<number> if present."""
+    key = attribute.split("~")[-1]
+    if "_" in key:
+        parts = key.split("_")
+        if len(parts) > 1 and parts[1].isdigit():
+            key = parts[0]
+    return key
 
 # Validate {file_type} files
 def is_valid_file(file_path):
@@ -126,7 +153,22 @@ def is_valid_file(file_path):
     except Exception as e:
         print(f"Error validating {file_type} file: {e}")
         return False
-    
+
+def remove_nested_key_by_label(nested_dict, label):
+    """
+    Remove a key from nested_dict following the path described by label.
+    The label is a '~'-separated path, and the last part is the key to remove.
+    """
+    keys = label.split("~")
+    d = nested_dict
+    for k in keys[:-1]:
+        if k in d and isinstance(d[k], dict):
+            d = d[k]
+        else:
+            return  # Path does not exist, nothing to remove
+    d.pop(keys[-1], None)  # Remove the last key if present
+
+
 # Function to parse {file_type} files and extract attributes with byte ranges
 def parse_file_new(file_path):
     byte_ranges = []
@@ -150,14 +192,25 @@ def parse_file_new(file_path):
                 continue  # Skip bad lines
             start, end, label = int(parts[0]), int(parts[1]), parts[2]
             entries.append((start, end, label, line))
+            
+            # Add to blacklist if size > 8 bytes
+            if end - start > 8:
+                blocked_key = clean_attribute_key(label)
+                BLACKLISTED_ATTRIBUTES.add(blocked_key)
+                # Remove from nested_values_hex using the label path
+                remove_nested_key_by_label(nested_values_hex, label)
+
+                
 
         # Step 2: Sort entries by start byte
         # Step 2: Sort by start ASCENDING and end DESCENDING
         entries.sort(key=lambda x: (x[0], -x[1]))
 
-
         for start, end, attribute, line in entries:
             if start == end and "_" in attribute:
+                continue
+            # Skip if attribute is in blacklist
+            if clean_attribute_key(attribute) in BLACKLISTED_ATTRIBUTES:
                 continue
             if (start > current_parent_end or end < current_parent_end) and end - start <= 8:
                 # No overlap with previous parent
@@ -293,7 +346,14 @@ def overwrite_bytes(file_path, start, end):
         print(f"Error overwriting bytes in {file_path}: {e}")
 
 def abstract_file(file_path, byte_ranges):
-    global VALID_ABSTRACTIONS_COUNT, VALID_OVERWRITES_COUNT
+    global VALID_ABSTRACTIONS_COUNT, VALID_ABSTRACTIONS_SPECIAL_COUNT, VALID_OVERWRITES_COUNT
+    
+    # Get original attributes before abstraction
+    original_attributes = set()
+    for _, _, attribute in byte_ranges:
+        original_attributes.add(clean_attribute_key(attribute))
+    
+    
     for start, end, attribute in byte_ranges:
         print(f"Abstracting {file_path} from {start} to {end}...")
         try:
@@ -301,8 +361,6 @@ def abstract_file(file_path, byte_ranges):
             while abstract_attempt <= 10:
                 try: 
                     outputfile = os.path.join(ABSTRACTED_DIR, f"abstracted.{file_type}")
-                    # print(f"Abstracting {file_path} from {start} to {end}...")
-                    # print(f"Output file: {outputfile}")
                     result = subprocess.run(
                         [f"./{file_type}-fuzzer", "abstract", "--targetfile", file_path, "--targetstart", str(start), "--targetend", str(end), outputfile ],
                         stdout=subprocess.PIPE,
@@ -313,6 +371,22 @@ def abstract_file(file_path, byte_ranges):
                     if is_valid_file(outputfile):
                         print(f"Valid Abstracted {file_type}")
                         abstract_byte_ranges = parse_file_new(outputfile)
+                        
+                        # Check for new attributes
+                        new_attributes_found = False
+                        for _, _, new_attr in abstract_byte_ranges:
+                            cleaned_attr = clean_attribute_key(new_attr)
+                            if cleaned_attr not in original_attributes:
+                                new_attributes_found = True
+                                break
+                        
+                        # If new attributes found, save to special directory
+                        if new_attributes_found:
+                            special_file = os.path.join(ABSTRACTED_SPECIAL_DIR, f"special_{new_attr}_{start}_{end}.{file_type}")
+                            shutil.copy(outputfile, special_file)
+                            VALID_ABSTRACTIONS_SPECIAL_COUNT += 1
+                            print(f"New attributes found! Saved to {special_file}")
+                        
                         extract_bytes(outputfile, abstract_byte_ranges)
                         VALID_ABSTRACTIONS_COUNT += 1
                         break
@@ -322,7 +396,6 @@ def abstract_file(file_path, byte_ranges):
                     print(f"Error abstracting {file_path}: {e}")
                     
                 abstract_attempt += 1
-            # break
         except Exception as e:
             print(f"Error abstract main {file_path}: {e}")
 
@@ -337,6 +410,21 @@ def abstract_file(file_path, byte_ranges):
                     if is_valid_file(outputfile):
                         print(f"Valid Overwrite {file_type}")
                         abstract_byte_ranges = parse_file_new(outputfile)
+                        
+                        # Check for new attributes
+                        new_attributes_found = False
+                        for _, _, new_attr in abstract_byte_ranges:
+                            cleaned_attr = clean_attribute_key(new_attr)
+                            if cleaned_attr not in original_attributes:
+                                new_attributes_found = True
+                                break
+                        
+                        # If new attributes found, save to special directory
+                        if new_attributes_found:
+                            special_file = os.path.join(ABSTRACTED_SPECIAL_DIR, f"special_overwrite_{new_attr}_{start}_{end}.{file_type}")
+                            shutil.copy(outputfile, special_file)
+                            print(f"New attributes found in overwrite! Saved to {special_file}")
+                            
                         extract_bytes(outputfile, abstract_byte_ranges)
                         VALID_OVERWRITES_COUNT += 1
                     else:
@@ -351,47 +439,47 @@ def abstract_file(file_path, byte_ranges):
 
     return byte_ranges
 
-valid_count = 0
-attempt = 1  # Track total attempts to generate valid files
+
+def main():
+    # List all files in the directory
+    file_names = [f for f in os.listdir(PASSED_DIR) if os.path.isfile(os.path.join(PASSED_DIR, f))]
+
+    # Print the file names
+    for name in file_names:
+        file_path = os.path.join(PASSED_DIR, f"{name}")
+        byte_ranges = parse_file_new(file_path)
+        abstract_file(file_path, byte_ranges)
 
 
-# List all files in the directory
-file_names = [f for f in os.listdir(PASSED_DIR) if os.path.isfile(os.path.join(PASSED_DIR, f))]
+    # List all files in the directory
+    file_names = [f for f in os.listdir(ABSTRACTED_SPECIAL_DIR) if os.path.isfile(os.path.join(ABSTRACTED_SPECIAL_DIR, f))]
 
-# Print the file names
-for name in file_names:
-    file_path = os.path.join(PASSED_DIR, f"{name}")
-    byte_ranges = parse_file_new(file_path)
-    abstract_file(file_path, byte_ranges)
+    # Print the file names
+    for name in file_names:
+        file_path = os.path.join(ABSTRACTED_SPECIAL_DIR, f"{name}")
+        byte_ranges = parse_file_new(file_path)
+        abstract_file(file_path, byte_ranges)
 
-# Convert sets to lists for JSON serialization
-def convert_sets_to_lists(obj):
-    """ Recursively converts sets to lists in a nested dictionary. """
-    if isinstance(obj, dict):
-        return {k: convert_sets_to_lists(v) for k, v in obj.items()}
-    elif isinstance(obj, set):
-        return list(obj)
-    elif isinstance(obj, list):
-        return [convert_sets_to_lists(item) for item in obj]
-    elif isinstance(obj, collections.defaultdict):
-        return {k: convert_sets_to_lists(v) for k, v in obj.items()}
-    return obj
+    # Convert nested dictionaries to final stats
+    final_stats_hex = convert_sets_to_lists(nested_values_hex)
+    # final_stats_base10 = convert_sets_to_lists(nested_values_base10)
+    # final_stats_ascii = convert_sets_to_lists(nested_values_ascii)
 
-# Convert nested dictionaries to final stats
-final_stats_hex = convert_sets_to_lists(nested_values_hex)
-# final_stats_base10 = convert_sets_to_lists(nested_values_base10)
-# final_stats_ascii = convert_sets_to_lists(nested_values_ascii)
+    # Save results to JSON files
+    with open(STATS_FILE_HEX, "w") as f:
+        json.dump(final_stats_hex, f, indent=4)
 
-# Save results to JSON files
-with open(STATS_FILE_HEX, "w") as f:
-    json.dump(final_stats_hex, f, indent=4)
+    # with open(STATS_FILE_BASE10, "w") as f:
+    #     json.dump(final_stats_base10, f, indent=4)
 
-# with open(STATS_FILE_BASE10, "w") as f:
-#     json.dump(final_stats_base10, f, indent=4)
+    # with open(STATS_FILE_ASCII, "w") as f:
+    #     json.dump(final_stats_ascii, f, indent=4)
 
-# with open(STATS_FILE_ASCII, "w") as f:
-#     json.dump(final_stats_ascii, f, indent=4)
+    print("Processing complete!")
+    print(f"Valid Abstractions: {VALID_ABSTRACTIONS_COUNT}")
+    print(f"VALID_ABSTRACTIONS_SPECIAL_COUNT: {VALID_ABSTRACTIONS_SPECIAL_COUNT}")
+    print(f"Valid Overwrites: {VALID_OVERWRITES_COUNT}")
 
-print("Processing complete!")
-print(f"Valid Abstractions: {VALID_ABSTRACTIONS_COUNT}")
-print(f"Valid Overwrites: {VALID_OVERWRITES_COUNT}")
+
+if __name__ == "__main__":
+    main()
