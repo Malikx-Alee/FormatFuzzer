@@ -1,8 +1,9 @@
 import os
 import json
 
-RESULTS_DIR = "./learning-data/results/original"
-TRANSFORMED_RESULTS_DIR = "./learning-data/results/flattened/"
+file_type = 'bmp'
+RESULTS_DIR = f"./learning-data/results/{file_type}"
+TRANSFORMED_RESULTS_DIR = f"./learning-data/results/{file_type}/"
 os.makedirs(TRANSFORMED_RESULTS_DIR, exist_ok=True)
 
 def flatten_json(y, out=None):

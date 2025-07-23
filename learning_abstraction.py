@@ -7,8 +7,8 @@ import random
 
 # Paths
 # file_type = "avi"
-file_type = "bmp"
-# file_type = "gif"
+# file_type = "bmp"
+file_type = "gif"
 # file_type = "jpg"
 # file_type = "png"
 # file_type = "midi"
@@ -17,12 +17,12 @@ file_type = "bmp"
 # file_type = "mp4"
 # file_type = "zip"
 DATA_DIR = f"./learning-data/{file_type}-data/"
-RESULTS_OUTPUT_DIR = f"./learning-data/results/original"
+RESULTS_OUTPUT_DIR = f"./learning-data/results/{file_type}"
 PASSED_DIR = os.path.join(DATA_DIR, "passed/")
 ABSTRACTED_DIR = os.path.join(DATA_DIR, "abstracted/")
 ABSTRACTED_SPECIAL_DIR = os.path.join(DATA_DIR, "abstracted_special/")
 FAILED_DIR = os.path.join(DATA_DIR, "failed/")
-STATS_FILE_HEX = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_hex.json")  # File for {file_type} hex values
+STATS_FILE_HEX = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_hex_original.json")  # File for {file_type} hex values
 # STATS_FILE_BASE10 = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_base10.json")  # File for {file_type} base 10 values
 # STATS_FILE_ASCII = os.path.join(RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_ascii.json")  # File for {file_type} ASCII values
 
@@ -44,6 +44,7 @@ os.makedirs(PASSED_DIR, exist_ok=True)
 os.makedirs(FAILED_DIR, exist_ok=True)
 os.makedirs(ABSTRACTED_DIR, exist_ok=True)
 os.makedirs(ABSTRACTED_SPECIAL_DIR, exist_ok=True)
+os.makedirs(RESULTS_OUTPUT_DIR, exist_ok=True)
 
 # Convert sets to lists for JSON serialization
 def convert_sets_to_lists(obj):
@@ -154,19 +155,19 @@ def is_valid_file(file_path):
         print(f"Error validating {file_type} file: {e}")
         return False
 
-def remove_nested_key_by_label(nested_dict, label):
-    """
-    Remove a key from nested_dict following the path described by label.
-    The label is a '~'-separated path, and the last part is the key to remove.
-    """
-    keys = label.split("~")
-    d = nested_dict
-    for k in keys[:-1]:
-        if k in d and isinstance(d[k], dict):
-            d = d[k]
-        else:
-            return  # Path does not exist, nothing to remove
-    d.pop(keys[-1], None)  # Remove the last key if present
+# def remove_nested_key_by_label(nested_dict, label):
+#     """
+#     Remove a key from nested_dict following the path described by label.
+#     The label is a '~'-separated path, and the last part is the key to remove.
+#     """
+#     keys = label.split("~")
+#     d = nested_dict
+#     for k in keys[:-1]:
+#         if k in d and isinstance(d[k], dict):
+#             d = d[k]
+#         else:
+#             return  # Path does not exist, nothing to remove
+#     d.pop(keys[-1], None)  # Remove the last key if present
 
 
 # Function to parse {file_type} files and extract attributes with byte ranges
@@ -198,7 +199,7 @@ def parse_file_new(file_path):
                 blocked_key = clean_attribute_key(label)
                 BLACKLISTED_ATTRIBUTES.add(blocked_key)
                 # Remove from nested_values_hex using the label path
-                remove_nested_key_by_label(nested_values_hex, label)
+                # remove_nested_key_by_label(nested_values_hex, label)
 
                 
 
