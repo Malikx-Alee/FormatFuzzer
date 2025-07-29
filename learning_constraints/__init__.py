@@ -10,6 +10,7 @@ Main Components:
 - validators: File validation for different formats
 - parsers: File structure parsing and byte extraction
 - mutators: File mutation through smart abstraction and random overwrites
+- transformers: Result transformation and JSON flattening
 - utils: Utility functions and helpers
 - main: Main orchestrator for the complete process
 
@@ -18,19 +19,28 @@ Usage:
 
     # Create orchestrator for GIF files
     orchestrator = LearningConstraintsOrchestrator(file_type="gif")
-    
+
     # Run the complete process
     results = orchestrator.run_complete_process()
-    
+
     # Or process individual files/directories
     orchestrator.process_file("path/to/file.gif")
     orchestrator.process_directory("path/to/directory")
+
+    # Use individual components
+    from learning_constraints import FileParser, FileMutator, ResultTransformer, GlobalState
+
+    state = GlobalState()
+    parser = FileParser(state)
+    mutator = FileMutator(state)
+    transformer = ResultTransformer()
 """
 
 from .config import Config, GlobalState
-from .validators import FileValidator, is_valid_file
-from .parsers import FileParser, parse_file_new, extract_bytes
-from .mutators import FileMutator, abstract_file
+from .validators import FileValidator
+from .parsers import FileParser
+from .mutators import FileMutator
+from .transformers import ResultTransformer
 from .main import LearningConstraintsOrchestrator, main
 from .utils import (
     convert_sets_to_lists,
@@ -87,6 +97,7 @@ __all__ = [
     'FileValidator',
     'FileParser',
     'FileMutator',
+    'ResultTransformer',
     
     # Convenience functions
     'main',
@@ -101,10 +112,4 @@ __all__ = [
     'overwrite_bytes_randomly',
     'extract_byte_values',
     'validate_byte_range',
-    
-    # Backward compatibility functions
-    'is_valid_file',
-    'parse_file_new',
-    'extract_bytes',
-    'abstract_file',
 ]

@@ -21,7 +21,7 @@ class Config:
     RESULTS_OUTPUT_DIR = f"./testcases_4_learn/results/{FILE_TYPE}"
     
     # Subdirectories
-    PASSED_DIR = os.path.join(DATA_DIR, "passed/")
+    PASSED_DIR = os.path.join(DATA_DIR, "valid_files/")
     ABSTRACTED_DIR = os.path.join(DATA_DIR, "abstracted/")
     ABSTRACTED_SPECIAL_DIR = os.path.join(DATA_DIR, "abstracted_special/")
     FAILED_DIR = os.path.join(DATA_DIR, "failed/")
@@ -73,7 +73,7 @@ class Config:
         cls.FILE_TYPE = file_type
         cls.DATA_DIR = f"./testcases_4_learn/{file_type}/"
         cls.RESULTS_OUTPUT_DIR = f"./testcases_4_learn/results/{file_type}"
-        cls.PASSED_DIR = os.path.join(cls.DATA_DIR, "passed/")
+        cls.PASSED_DIR = os.path.join(cls.DATA_DIR, "valid_files/")
         cls.ABSTRACTED_DIR = os.path.join(cls.DATA_DIR, "abstracted/")
         cls.ABSTRACTED_SPECIAL_DIR = os.path.join(cls.DATA_DIR, "abstracted_special/")
         cls.FAILED_DIR = os.path.join(cls.DATA_DIR, "failed/")

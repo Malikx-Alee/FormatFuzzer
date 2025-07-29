@@ -26,8 +26,8 @@ def main():
     """Simple main function that takes file type and max files as command line arguments."""
 
     # Default values
-    file_type = "png"
-    max_files = 1
+    file_type = "bmp"
+    max_files = None
 
     # Check if file type was provided as argument
     if len(sys.argv) > 1:
@@ -65,11 +65,11 @@ def main():
     # Check if data directory exists
     if not os.path.exists(Config.PASSED_DIR):
         print(f"\nWarning: Data directory {Config.PASSED_DIR} does not exist.")
-        print("Please ensure you have files in the passed directory before running.")
+        print("Please ensure you have files in the valid_files directory before running.")
         print("\nCreating directories...")
         Config.ensure_directories_exist()
         print(f"Created: {Config.PASSED_DIR}")
-        print("Please add some files to the passed directory and run again.")
+        print("Please add some files to the valid_files directory and run again.")
         return
 
     try:
@@ -81,6 +81,9 @@ def main():
             print("\n" + "=" * 60)
             print("PROCESSING COMPLETED SUCCESSFULLY!")
             print("=" * 60)
+            print(f"Valid files processed: {results['passed_files']['successful']}/{results['passed_files']['total']}")
+            print(f"Special files processed: {results['special_files']['successful']}/{results['special_files']['total']}")
+            print(f"Result files transformed: {results['transformed_files']['successful']}/{results['transformed_files']['total']}")
         else:
             print("Process failed or was interrupted.")
 

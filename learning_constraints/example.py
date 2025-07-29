@@ -52,20 +52,20 @@ def example_individual_file_processing():
     
     orchestrator = LearningConstraintsOrchestrator(file_type="gif")
     
-    # Check if the passed directory exists
+    # Check if the valid_files directory exists
     if os.path.exists(Config.PASSED_DIR):
         print(f"Processing files from: {Config.PASSED_DIR}")
-        
-        # Process all files in the passed directory
+
+        # Process all files in the valid_files directory
         successful, total = orchestrator.process_directory(Config.PASSED_DIR)
         print(f"Successfully processed {successful}/{total} files")
-        
+
         # Save results
         orchestrator.save_results()
         orchestrator.print_statistics()
     else:
         print(f"Directory {Config.PASSED_DIR} does not exist.")
-        print("Please ensure you have files in the passed directory before running this example.")
+        print("Please ensure you have files in the valid_files directory before running this example.")
 
 
 def example_component_usage():
@@ -105,7 +105,7 @@ def example_component_usage():
             print(f"File attributes: {attributes}")
     else:
         print(f"Example file {example_file} not found.")
-        print("Please place a valid GIF file in the passed directory.")
+        print("Please place a valid GIF file in the valid_files directory.")
 
 
 def example_configuration():
@@ -165,9 +165,9 @@ def example_with_logging():
             print(f"Processing {example_file} with detailed logging...")
             orchestrator.process_file(example_file)
         else:
-            print("No files found in passed directory for logging example.")
+            print("No files found in valid_files directory for logging example.")
     else:
-        print("Passed directory not found for logging example.")
+        print("Valid_files directory not found for logging example.")
 
 
 def main():

@@ -15,12 +15,14 @@ try:
     from .config import Config, GlobalState
     from .parsers import FileParser
     from .mutators import FileMutator
+    from .transformers import ResultTransformer
     from .utils import convert_sets_to_lists
 except ImportError:
     # Fallback for direct execution
     from learning_constraints.config import Config, GlobalState
     from learning_constraints.parsers import FileParser
     from learning_constraints.mutators import FileMutator
+    from learning_constraints.transformers import ResultTransformer
     from learning_constraints.utils import convert_sets_to_lists
 
 
@@ -57,6 +59,7 @@ class LearningConstraintsOrchestrator:
         self.global_state = GlobalState()
         self.parser = FileParser(self.global_state)
         self.mutator = FileMutator(self.global_state)
+        self.transformer = ResultTransformer()
 
         files_info = f"all files" if max_files is None else f"up to {max_files} files"
         self.logger.info(f"Initialized Learning Constraints Orchestrator for {Config.FILE_TYPE} files ({files_info})")
@@ -159,7 +162,32 @@ class LearningConstraintsOrchestrator:
 
         except Exception as e:
             self.logger.error(f"Error saving results: {e}")
-    
+
+    def transform_results(self, output_suffix="_flattened"):
+        """
+        Transform the saved results by flattening JSON structures.
+
+        Args:
+            output_suffix (str): Suffix to add to transformed file names
+
+        Returns:
+            tuple: (successful_count, total_count)
+        """
+        try:
+            self.logger.info("Transforming results...")
+            successful, total = self.transformer.transform_results_directory(output_suffix=output_suffix)
+
+            if successful > 0:
+                self.logger.info(f"Successfully transformed {successful}/{total} result files")
+            else:
+                self.logger.warning("No files were transformed")
+
+            return successful, total
+
+        except Exception as e:
+            self.logger.error(f"Error transforming results: {e}")
+            return 0, 0
+
     def print_statistics(self):
         """Print processing statistics."""
         stats = self.global_state.get_stats()
@@ -183,8 +211,8 @@ class LearningConstraintsOrchestrator:
         """
         self.logger.info("Starting complete learning constraints process")
         
-        # Process files from the passed directory
-        self.logger.info("Processing files from passed directory")
+        # Process files from the valid_files directory
+        self.logger.info("Processing files from valid_files directory")
         passed_successful, passed_total = self.process_directory(Config.PASSED_DIR)
 
         # Process files from the abstracted special directory (use remaining quota if any)
@@ -203,15 +231,19 @@ class LearningConstraintsOrchestrator:
         
         # Save results
         self.save_results()
-        
+
+        # Transform results
+        transform_successful, transform_total = self.transform_results()
+
         # Print statistics
         self.print_statistics()
-        
+
         self.logger.info("Learning constraints process completed")
         
         return {
             'passed_files': {'successful': passed_successful, 'total': passed_total},
             'special_files': {'successful': special_successful, 'total': special_total},
+            'transformed_files': {'successful': transform_successful, 'total': transform_total},
             'stats': self.global_state.get_stats()
         }
 

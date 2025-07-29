@@ -178,16 +178,4 @@ class FileValidator:
             return False
 
 
-# Convenience function for backward compatibility
-def is_valid_file(file_path, file_type=None):
-    """
-    Convenience function that delegates to FileValidator.is_valid_file.
-    
-    Args:
-        file_path (str): Path to the file to validate
-        file_type (str, optional): The type of the file
-        
-    Returns:
-        bool: True if the file is valid, False otherwise
-    """
-    return FileValidator.is_valid_file(file_path, file_type)
+

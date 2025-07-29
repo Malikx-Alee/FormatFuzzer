@@ -154,36 +154,4 @@ class FileParser:
         return False, None
 
 
-# Convenience functions for backward compatibility
-def parse_file_new(file_path, global_state=None):
-    """
-    Convenience function for parsing files.
-    
-    Args:
-        file_path (str): Path to the file to parse
-        global_state (GlobalState, optional): Global state object
-        
-    Returns:
-        list: List of byte ranges
-    """
-    if global_state is None:
-        global_state = GlobalState()
-    
-    parser = FileParser(global_state)
-    return parser.parse_file_structure(file_path)
 
-
-def extract_bytes(file_path, byte_ranges, global_state=None):
-    """
-    Convenience function for extracting bytes.
-    
-    Args:
-        file_path (str): Path to the file
-        byte_ranges (list): List of byte ranges
-        global_state (GlobalState, optional): Global state object
-    """
-    if global_state is None:
-        global_state = GlobalState()
-    
-    parser = FileParser(global_state)
-    parser.extract_bytes_from_file(file_path, byte_ranges)

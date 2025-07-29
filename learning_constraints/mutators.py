@@ -240,21 +240,4 @@ class FileMutator:
         return byte_ranges
 
 
-# Convenience function for backward compatibility
-def abstract_file(file_path, byte_ranges, global_state=None):
-    """
-    Convenience function for mutating files (backward compatibility).
 
-    Args:
-        file_path (str): Path to the file to mutate
-        byte_ranges (list): List of byte ranges
-        global_state (GlobalState, optional): Global state object
-
-    Returns:
-        list: The original byte ranges
-    """
-    if global_state is None:
-        global_state = GlobalState()
-
-    mutator = FileMutator(global_state)
-    return mutator.mutate_file_completely(file_path, byte_ranges)
