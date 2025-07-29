@@ -105,7 +105,7 @@ class FileMutator:
         shutil.copy(source_path, special_file_path)
         self.global_state.valid_abstractions_special_count += 1
         
-        print(f"New attributes found in {operation_type} mutation! Saved to {special_file_path}")
+        # print(f"New attributes found in {operation_type} mutation! Saved to {special_file_path}")
         return special_file_path
     
     def process_smart_abstraction_mutation_attempt(self, file_path, start, end, original_attributes):
@@ -127,7 +127,7 @@ class FileMutator:
             try:
                 if self.smart_abstraction_mutation(file_path, start, end, output_file):
                     if self.validator.is_valid_file(output_file):
-                        print(f"Valid Smart Abstraction Mutation {Config.FILE_TYPE}")
+                        # print(f"Valid Smart Abstraction Mutation {Config.FILE_TYPE}")
 
                         # Parse the mutated file
                         mutated_byte_ranges = self.parser.parse_file_structure(output_file)
@@ -147,7 +147,8 @@ class FileMutator:
 
                         return True
                     else:
-                        print(f"Invalid Smart Abstraction Mutation {Config.FILE_TYPE}")
+                        # print(f"Invalid Smart Abstraction Mutation {Config.FILE_TYPE}")
+                        pass
 
             except Exception as e:
                 print(f"Error in smart abstraction mutation attempt {attempt} for {file_path}: {e}")
@@ -173,7 +174,7 @@ class FileMutator:
             try:
                 if self.random_overwrite_mutation(file_path, start, end, output_file):
                     if self.validator.is_valid_file(output_file):
-                        print(f"Valid Random Overwrite Mutation {Config.FILE_TYPE}")
+                        # print(f"Valid Random Overwrite Mutation {Config.FILE_TYPE}")
 
                         # Parse the mutated file
                         mutated_byte_ranges = self.parser.parse_file_structure(output_file)
@@ -197,7 +198,8 @@ class FileMutator:
 
                         return True
                     else:
-                        print(f"Invalid Random Overwrite Mutation {Config.FILE_TYPE}")
+                        # print(f"Invalid Random Overwrite Mutation {Config.FILE_TYPE}")
+                        pass
 
             except Exception as e:
                 print(f"Error in random overwrite mutation attempt {attempt} for {file_path}: {e}")
@@ -223,7 +225,7 @@ class FileMutator:
         original_attributes = self.parser.get_file_attributes(byte_ranges)
 
         for start, end, attribute in byte_ranges:
-            print(f"Mutating {file_path} from {start} to {end}...")
+            # print(f"Mutating {file_path} from {start} to {end}...")
 
             # Try smart abstraction-based mutation
             try:

@@ -129,7 +129,7 @@ def overwrite_bytes_randomly(file_path, start, end):
                 random_byte = random.randint(0, 255)  # Generate a random byte (0-255)
                 f.write(bytes([random_byte]))  # Write the random byte
 
-            print(f"Successfully overwrote bytes from position {start} to {end} in {file_path}.")
+            # print(f"Successfully overwrote bytes from position {start} to {end} in {file_path}.")
 
     except Exception as e:
         print(f"Error overwriting bytes in {file_path}: {e}")
@@ -164,13 +164,13 @@ def extract_byte_values(file_data, start, end):
 def validate_byte_range(start, end, file_size, max_size=8):
     """
     Validate that a byte range is within acceptable bounds.
-    
+
     Args:
         start (int): Start position
         end (int): End position
         file_size (int): Size of the file
         max_size (int): Maximum allowed range size
-        
+
     Returns:
         bool: True if valid, False otherwise
     """
@@ -181,3 +181,39 @@ def validate_byte_range(start, end, file_size, max_size=8):
     if end - start > max_size:
         return False
     return True
+
+
+def remove_attribute_from_nested_dict(root, attribute_label):
+    """
+    Remove all entries for a specific attribute from nested_values_hex.
+    This function removes entries based on the cleaned attribute key, which means
+    it will remove all variations of the attribute (e.g., attr_1, attr_2, etc.)
+
+    Args:
+        root: The root nested dictionary (nested_values_hex)
+        attribute_label (str): The attribute label (e.g., "file~dirEntry_5~deExtraField~efHeaderID")
+    """
+    # Get the cleaned attribute key (last part after '~', without array indices)
+    cleaned_key = clean_attribute_key(attribute_label)
+
+    def _remove_from_dict(current_dict, target_key):
+        """Recursively search and remove target_key from all levels of the dictionary."""
+        keys_to_remove = []
+
+        for key, value in current_dict.items():
+            if key == target_key:
+                # Mark this key for removal
+                keys_to_remove.append(key)
+            elif isinstance(value, dict):
+                # Recursively search in nested dictionaries
+                _remove_from_dict(value, target_key)
+                # If the nested dict becomes empty after removal, mark it for removal too
+                if not value:
+                    keys_to_remove.append(key)
+
+        # Remove marked keys
+        for key in keys_to_remove:
+            current_dict.pop(key, None)
+
+    # Start the recursive removal
+    _remove_from_dict(root, cleaned_key)

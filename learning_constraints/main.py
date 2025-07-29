@@ -75,7 +75,7 @@ class LearningConstraintsOrchestrator:
             bool: True if processing was successful, False otherwise
         """
         try:
-            self.logger.info(f"Processing file: {file_path}")
+            # self.logger.info(f"Processing file: {file_path}")
             
             # Parse the file to get byte ranges
             byte_ranges = self.parser.parse_file_structure(file_path)
@@ -128,7 +128,7 @@ class LearningConstraintsOrchestrator:
         successful_count = 0
         for i, file_name in enumerate(file_names, 1):
             file_path = os.path.join(directory_path, file_name)
-            self.logger.info(f"Processing file {i}/{len(file_names)}: {file_name}")
+            self.logger.info(f"Processing file {i}/{len(file_names)}: {file_path}")
             if self.process_file(file_path):
                 successful_count += 1
 
@@ -152,7 +152,7 @@ class LearningConstraintsOrchestrator:
                 "blacklisted_attributes": list(self.global_state.blacklisted_attributes),
                 "total_count": len(self.global_state.blacklisted_attributes),
                 "file_type": Config.FILE_TYPE,
-                "description": "Attributes that were blacklisted due to size > 8 bytes"
+                "description": f"Attributes that were blacklisted due to size > {Config.MAX_ATTRIBUTE_SIZE_BYTES} bytes"
             }
 
             with open(Config.BLACKLISTED_ATTRIBUTES_FILE, "w") as f:

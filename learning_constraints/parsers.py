@@ -4,7 +4,7 @@ Contains functions for parsing files and extracting byte ranges.
 """
 import subprocess
 from .config import Config, GlobalState
-from .utils import clean_attribute_key, insert_nested_dict, extract_byte_values
+from .utils import clean_attribute_key, insert_nested_dict, extract_byte_values, remove_attribute_from_nested_dict
 
 
 class FileParser:
@@ -56,7 +56,11 @@ class FileParser:
                     # Add to blacklist if size > max allowed bytes
                     if end - start > Config.MAX_ATTRIBUTE_SIZE_BYTES:
                         blocked_key = clean_attribute_key(label)
-                        self.global_state.blacklisted_attributes.add(blocked_key)
+                        # Check if this is a new attribute being blacklisted
+                        if blocked_key not in self.global_state.blacklisted_attributes:
+                            self.global_state.blacklisted_attributes.add(blocked_key)
+                            # Remove any previously added values for this attribute from nested_values_hex
+                            remove_attribute_from_nested_dict(self.global_state.nested_values_hex, label)
                         
                 except ValueError:
                     # Skip lines with invalid integer values

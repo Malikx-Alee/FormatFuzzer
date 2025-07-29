@@ -26,7 +26,7 @@ def main():
     """Simple main function that takes file type and max files as command line arguments."""
 
     # Default values
-    file_type = "bmp"
+    file_type = "png"
     max_files = None
 
     # Check if file type was provided as argument
