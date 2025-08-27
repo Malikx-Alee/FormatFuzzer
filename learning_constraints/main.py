@@ -163,6 +163,44 @@ class LearningConstraintsOrchestrator:
         except Exception as e:
             self.logger.error(f"Error saving results: {e}")
 
+    def save_template_results(self, template_values):
+        """Save the mined template values to a separate JSON file."""
+        try:
+            # Convert sets to lists for JSON serialization
+            final_template_values = convert_sets_to_lists(template_values)
+
+            # Define the template results file path
+            template_file_path = os.path.join(Config.RESULTS_OUTPUT_DIR, f"{Config.FILE_TYPE}_template_values.json")
+
+            # Save template results to JSON file
+            with open(template_file_path, "w") as f:
+                json.dump(final_template_values, f, indent=4)
+
+            self.logger.info(f"Template values saved to {template_file_path}")
+
+            # Also create a flattened version using the transformer
+            self.transform_template_results(template_file_path)
+
+        except Exception as e:
+            self.logger.error(f"Error saving template results: {e}")
+
+    def transform_template_results(self, template_file_path):
+        """Transform the template results to flattened format."""
+        try:
+            # Use the existing transformer to flatten the template results
+            flattened_count, _ = self.transformer.transform_specific_files(
+                file_patterns=[template_file_path],
+                output_suffix="_flattened"
+            )
+
+            if flattened_count > 0:
+                self.logger.info(f"Template values transformed and flattened successfully")
+            else:
+                self.logger.warning(f"Failed to transform template values")
+
+        except Exception as e:
+            self.logger.error(f"Error transforming template results: {e}")
+
     def transform_results(self, output_suffix="_flattened"):
         """
         Transform the saved results by flattening JSON structures.
@@ -205,12 +243,22 @@ class LearningConstraintsOrchestrator:
     def run_complete_process(self):
         """
         Run the complete learning abstraction process.
-        
-        This processes files from the passed directory, then processes any special files
-        that were generated, and finally saves the results.
+
+        This mines interesting values from template first, then processes files from the
+        passed directory, then processes any special files that were generated, and finally saves the results.
         """
         self.logger.info("Starting complete learning constraints process")
-        
+
+        # Mine interesting values from template first
+        self.logger.info("Mining interesting values from template")
+        template_mining_success, template_values = self.parser.mine_interesting_values_from_template()
+        if template_mining_success:
+            self.logger.info("Successfully mined interesting values from template")
+            # Save template values to a separate file
+            self.save_template_results(template_values)
+        else:
+            self.logger.warning("Failed to mine interesting values from template, continuing with file processing")
+
         # Process files from the valid_files directory
         self.logger.info("Processing files from valid_files directory")
         passed_successful, passed_total = self.process_directory(Config.PASSED_DIR)

@@ -3,6 +3,9 @@ File parsing module for the learning constraints system.
 Contains functions for parsing files and extracting byte ranges.
 """
 import subprocess
+import re
+import json
+import collections
 from .config import Config, GlobalState
 from .utils import clean_attribute_key, insert_nested_dict, extract_byte_values, remove_attribute_from_nested_dict
 
@@ -143,11 +146,11 @@ class FileParser:
     def check_for_new_attributes(self, byte_ranges, original_attributes):
         """
         Check if any new attributes are found in the byte ranges.
-        
+
         Args:
             byte_ranges (list): List of tuples (start, end, attribute)
             original_attributes (set): Set of original attribute keys
-            
+
         Returns:
             tuple: (bool, str) - (has_new_attributes, first_new_attribute_found)
         """
@@ -156,6 +159,135 @@ class FileParser:
             if cleaned_attr not in original_attributes:
                 return True, cleaned_attr
         return False, None
+
+    def mine_interesting_values_from_template(self):
+        """
+        Mine interesting values from the template using ffcompile command.
+        This runs before processing valid files to populate nested_values_hex with template values.
+
+        Returns:
+            tuple: (success: bool, mined_values: dict) - success status and mined template values
+        """
+        try:
+            # Construct the ffcompile command
+            template_file = f"templates/{Config.FILE_TYPE}.bt"
+            output_file = f"{Config.FILE_TYPE}.cpp"
+
+            print(f"Mining interesting values from template: {template_file}")
+
+            result = subprocess.run(
+                ["./ffcompile", template_file, output_file],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            # Parse the output to extract mined interesting values
+            output_lines = result.stdout.splitlines()
+            stderr_lines = result.stderr.splitlines()
+
+            # Combine stdout and stderr for parsing (ffcompile might output to either)
+            all_lines = output_lines + stderr_lines
+
+            # Look for the "Mined interesting values:" section
+            mining_started = False
+
+            # Create a separate nested structure for template values only
+            template_values = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
+
+            for line in all_lines:
+                line = line.strip()
+
+                if "Mined interesting values:" in line:
+                    mining_started = True
+                    print("Found mined interesting values section")
+                    continue
+
+                if not mining_started:
+                    continue
+
+                # Stop parsing when we hit other sections
+                if any(section in line for section in ["File stat functions found:", "Lookahead functions found:", "Finished creating"]):
+                    break
+
+                # Parse attribute lines - handle both object and array formats
+                if ":" in line and (("{" in line) or ("[" in line)):
+                    try:
+                        # Split on the first colon to separate attribute name from values
+                        attr_name, values_str = line.split(":", 1)
+                        attr_name = attr_name.strip()
+                        values_str = values_str.strip()
+
+                        # Handle both dictionary format (objects) and list format (arrays)
+                        if values_str.startswith("{"):
+                            # Dictionary/Object format: {'0': ['0x8950'], '1': ['0x4E47']}
+                            values_dict = eval(values_str)  # Safe since we control the input
+                            for key, value_list in values_dict.items():
+                                if isinstance(value_list, list):
+                                    for value in value_list:
+                                        # Clean the value (remove quotes and 0x prefix if present)
+                                        clean_value = value.strip('"\'')
+                                        if clean_value.startswith('0x'):
+                                            clean_value = clean_value[2:]  # Remove 0x prefix
+
+                                        # Create attribute path: attr_name~key (no "template" prefix for separate storage)
+                                        attribute_keys = [attr_name, key]
+                                        insert_nested_dict(
+                                            template_values,
+                                            attribute_keys,
+                                            clean_value
+                                        )
+                                else:
+                                    # Single value case
+                                    clean_value = str(value_list).strip('"\'')
+                                    if clean_value.startswith('0x'):
+                                        clean_value = clean_value[2:]
+
+                                    attribute_keys = [attr_name, key]
+                                    insert_nested_dict(
+                                        template_values,
+                                        attribute_keys,
+                                        clean_value
+                                    )
+
+                        elif values_str.startswith("["):
+                            # List/Array format: ['"IHDR"', '"tEXt"', '"PLTE"']
+                            values_list = eval(values_str)  # Safe since we control the input
+
+                            # Clean all values in the array
+                            cleaned_values = []
+                            for value in values_list:
+                                clean_value = value.strip('"\'')
+                                if clean_value.startswith('0x'):
+                                    clean_value = clean_value[2:]  # Remove 0x prefix
+                                cleaned_values.append(clean_value)
+
+                            # Store the entire array as a single entry in template_values
+                            # Create attribute path: attr_name (no "template" prefix for separate storage)
+                            final_key = attr_name
+
+                            # For arrays, store as a set containing all array values
+                            if final_key not in template_values:
+                                template_values[final_key] = set()
+
+                            # Add all cleaned values to the set
+                            for clean_value in cleaned_values:
+                                template_values[final_key].add(clean_value)
+
+                        print(f"Mined values for {attr_name}")
+
+                    except Exception as e:
+                        print(f"Error parsing line '{line}': {e}")
+                        continue
+
+            print("Successfully mined interesting values from template")
+
+            # Return the separate template values
+            return True, dict(template_values)
+
+        except Exception as e:
+            print(f"Error mining interesting values from template: {e}")
+            return False, {}
 
 
 
