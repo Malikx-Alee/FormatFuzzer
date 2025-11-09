@@ -141,6 +141,15 @@ class LearningConstraintsOrchestrator:
             # Convert nested dictionaries to final stats
             final_stats_hex = convert_sets_to_lists(self.global_state.nested_values_hex)
 
+            # Integrate checksum algorithms into the final hex results (no separate file)
+            if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False) and self.global_state.checksum_algorithms:
+                try:
+                    # Merge into final stats under a dedicated key BEFORE writing
+                    final_stats_hex["checksum_algorithms"] = self.global_state.checksum_algorithms
+                    self.logger.info("Checksum algorithms integrated into final hex results")
+                except Exception as ce:
+                    self.logger.warning(f"Integrating checksum algorithms failed: {ce}")
+
             # Save hex results to JSON file
             with open(Config.STATS_FILE_HEX, "w") as f:
                 json.dump(final_stats_hex, f, indent=4)

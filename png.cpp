@@ -109,7 +109,7 @@ class uint16_array_class {
 public:
 	int64 _startof = 0;
 	std::size_t _sizeof = 0;
-	std::vector<uint16> operator () () { return value; }
+	std::vector<uint16>& operator () () { return value; }
 	uint16 operator [] (int index) {
 		assert_cond((unsigned)index < value.size(), "array index out of bounds");
 		return value[index];
@@ -248,7 +248,7 @@ class char_array_class {
 public:
 	int64 _startof = 0;
 	std::size_t _sizeof = 0;
-	std::string operator () () { return value; }
+	std::string& operator () () { return value; }
 	char operator [] (int index) {
 		assert_cond((unsigned)index < value.size(), "array index out of bounds");
 		return value[index];
@@ -658,7 +658,7 @@ class PNG_PALETTE_PIXEL_array_class {
 public:
 	int64 _startof = 0;
 	std::size_t _sizeof = 0;
-	std::vector<PNG_PALETTE_PIXEL*> operator () () { return value; }
+	std::vector<PNG_PALETTE_PIXEL*>& operator () () { return value; }
 	PNG_PALETTE_PIXEL operator [] (int index) {
 		assert_cond((unsigned)index < value.size(), "array index out of bounds");
 		return *value[index];
@@ -1420,7 +1420,7 @@ class byte_array_class {
 public:
 	int64 _startof = 0;
 	std::size_t _sizeof = 0;
-	std::vector<byte> operator () () { return value; }
+	std::vector<byte>& operator () () { return value; }
 	byte operator [] (int index) {
 		assert_cond((unsigned)index < value.size(), "array index out of bounds");
 		return value[index];
@@ -1672,7 +1672,7 @@ class ubyte_array_class {
 public:
 	int64 _startof = 0;
 	std::size_t _sizeof = 0;
-	std::vector<ubyte> operator () () { return value; }
+	std::vector<ubyte>& operator () () { return value; }
 	ubyte operator [] (int index) {
 		assert_cond((unsigned)index < value.size(), "array index out of bounds");
 		return value[index];
@@ -2706,166 +2706,6 @@ PNG_CHUNK_FDAT* PNG_CHUNK_FDAT::generate() {
 }
 
 
-
-int ZEXPORT compress3(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen, int level, int windowBits)
-{
-    z_stream stream;
-    int err;
-    const uInt max = (uInt)-1;
-    uLong left;
-
-    left = *destLen;
-    *destLen = 0;
-
-    stream.zalloc = (alloc_func)0;
-    stream.zfree = (free_func)0;
-    stream.opaque = (voidpf)0;
-
-    err = deflateInit2(&stream, level, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY);
-    if (err != Z_OK) return err;
-
-    stream.next_out = dest;
-    stream.avail_out = 0;
-    stream.next_in = (z_const Bytef *)source;
-    stream.avail_in = 0;
-
-    do {
-        if (stream.avail_out == 0) {
-            stream.avail_out = left > (uLong)max ? max : (uInt)left;
-            left -= stream.avail_out;
-        }
-        if (stream.avail_in == 0) {
-            stream.avail_in = sourceLen > (uLong)max ? max : (uInt)sourceLen;
-            sourceLen -= stream.avail_in;
-        }
-        err = deflate(&stream, sourceLen ? Z_NO_FLUSH : Z_FINISH);
-    } while (err == Z_OK);
-
-    *destLen = stream.total_out;
-    deflateEnd(&stream);
-    return err == Z_STREAM_END ? Z_OK : err;
-}
-
-
-
-std::string compress_data(std::string data, int level, int windowBits) {
-	unsigned long data_len = data.size();
-	unsigned long comp_len = 2 * compressBound(data_len);
-	unsigned char* compressed = (unsigned char*) malloc(comp_len);
-	compress3(compressed, &comp_len, (const Bytef*) data.c_str(), data_len, level, windowBits);
-	if (windowBits == 8 && compressed[0] == 0x18) {
-		compressed[0] = 0x08;
-		if (compressed[1] == 0x19)
-			compressed[1] = 0x1d;
-		if (compressed[1] == 0x57)
-			compressed[1] = 0x5b;
-		if (compressed[1] == 0x95)
-			compressed[1] = 0x99;
-		if (compressed[1] == 0xd3)
-			compressed[1] = 0xd7;
-	}
-	std::string compressed_str((char*) compressed, comp_len);
-	free(compressed);
-	return compressed_str;
-}
-
-std::string generate_data(uint32 width, uint32 height, PNG_COLOR_SPACE_TYPE color, ubyte bit_depth, PNG_INTERLACE_METHOD interlace) {
-	int channels_per_pixel[] = {1, 0, 3, 1, 2, 0, 4};
-	int bits_per_pixel = 0;
-	if (0 <= color && color <= 6)
-		bits_per_pixel = channels_per_pixel[color] * bit_depth;
-	assert_cond(bits_per_pixel, "Invalid color");
-	const unsigned max_size = 16384;
-	assert_cond(width <= max_size && height <= max_size && bits_per_pixel * width * height <= 4 * max_size, "image dimensions too large");
-	std::string data;
-	data.reserve(max_size);
-	unsigned char uncompressed[max_size];
-	unsigned long data_len = max_size;
-	if (!file_acc.generate) {
-		int res = uncompress(uncompressed, &data_len, &file_acc.file_buffer[file_acc.file_pos], ::g->length());
-		assert_cond (res == Z_OK, "failed to uncompress IDAT data");
-	}
-
-	int interlacing[7][4] = {{0, 8, 0, 8},
-		                 {4, 8, 0, 8},
-		                 {0, 4, 4, 8},
-		                 {2, 4, 0, 4},
-		                 {0, 2, 2, 4},
-		                 {1, 2, 0, 2},
-		                 {0, 1, 1, 2}};
-
-	if (!interlace) {
-		for (unsigned y = 0; y < height; ++y) {
-			assert_cond(data.length() < max_size, "image dimensions too large");
-			unsigned char current_byte = uncompressed[data.length()];
-			if (!file_acc.generate)
-				file_acc.parse = [&current_byte](unsigned char* file_buf) -> long long { return current_byte; };
-			unsigned char filter_type = file_acc.rand_int(5, file_acc.parse);
-			data += filter_type;
-			int bytes_per_scanline = (bits_per_pixel * width + 7)/8;
-			if (file_acc.generate) {
-				data += file_acc.rand_bytes(bytes_per_scanline);
-			} else {
-				memcpy(&file_acc.rand_buffer[file_acc.rand_pos], &uncompressed[data.length()], bytes_per_scanline);
-				file_acc.rand_pos += bytes_per_scanline;
-				std::string s((char*)&uncompressed[data.length()], bytes_per_scanline);
-				data += s;
-			}
-		}
-	} else {
-		for (unsigned pass = 0; pass < 7; ++pass) {
-			int pixels_per_scanline = (width - interlacing[pass][0] + interlacing[pass][1] - 1)/interlacing[pass][1];
-			if (!pixels_per_scanline)
-				continue;
-			int scanlines_per_pass = (height - interlacing[pass][2] + interlacing[pass][3] - 1)/interlacing[pass][3];
-			int bytes_per_scanline = (bits_per_pixel * pixels_per_scanline + 7)/8;
-			for (int y = 0; y < scanlines_per_pass; ++y) {
-				assert_cond(data.length() < max_size, "image dimensions too large");
-				unsigned char current_byte = uncompressed[data.length()];
-				if (!file_acc.generate)
-					file_acc.parse = [&current_byte](unsigned char* file_buf) -> long long { return current_byte; };
-				unsigned char filter_type = file_acc.rand_int(5, file_acc.parse);
-				data += filter_type;
-				if (file_acc.generate) {
-					data += file_acc.rand_bytes(bytes_per_scanline);
-				} else {
-					memcpy(&file_acc.rand_buffer[file_acc.rand_pos], &uncompressed[data.length()], bytes_per_scanline);
-					file_acc.rand_pos += bytes_per_scanline;
-					std::string s((char*)&uncompressed[data.length()], bytes_per_scanline);
-					data += s;
-				}
-			}
-		}
-	}
-
-	int windowBits = 15;
-	if (!file_acc.generate) {
-		assert_cond(data_len == data.length(), "wrong length for uncompressed IDAT data");
-		file_acc.parse = NULL;
-		std::string compressed((char*)&file_acc.file_buffer[file_acc.file_pos], ::g->length());
-		int cinfo = (unsigned) compressed[0] >> 4;
-		if (0 <= cinfo && cinfo <= 7)
-			windowBits = cinfo + 8;
-		for (int l = 0; l < 10; ++l) {
-			std::string candidate = compress_data(data, l, windowBits);
-			if (candidate == compressed) {
-				file_acc.parse = [l](unsigned char* file_buf) -> long long { return l + 1; };
-				break;
-			}
-		}
-		assert_cond(!!file_acc.parse, "failed to find working compression level");
-	}
-	int level = file_acc.rand_int(11, file_acc.parse) - 1;
-	file_acc.parse = NULL;
-	if (!file_acc.generate) {
-		file_acc.parse = [windowBits](unsigned char* file_buf) -> long long { return windowBits - 8; };
-	}
-	windowBits = file_acc.rand_int(8, file_acc.parse) + 8;
-	return compress_data(data, level, windowBits);
-}
-
-
-
 PNG_CHUNK* PNG_CHUNK::generate() {
 	if (generated == 1) {
 		PNG_CHUNK* new_instance = new PNG_CHUNK(instances);
@@ -2929,18 +2769,8 @@ PNG_CHUNK* PNG_CHUNK::generate() {
 	if ((type().cname() == "fdAT")) {
 		GENERATE_VAR(fdat, ::g->fdat.generate());
 	} else {
-	if ((type().cname() == "IDAT")) {
-		std::string compressed_data = generate_data(::g->chunk()[0].ihdr().width(), ::g->chunk()[0].ihdr().height(), (PNG_COLOR_SPACE_TYPE) ::g->chunk()[0].ihdr().color_type(), ::g->chunk()[0].ihdr().bits(), (PNG_INTERLACE_METHOD) ::g->chunk()[0].ihdr().interlace_method());
-		std::vector<std::string> good_data = { compressed_data };
-		bool evil = file_acc.set_evil_bit(false);
-		start_generation("data");
-		file_acc.file_string(good_data);
-		end_generation();
-		file_acc.set_evil_bit(evil);
-	} else {
 	if (((length() > 0) && (type().cname() != "IEND"))) {
 		GENERATE_VAR(data, ::g->data_.generate(length()));
-	};
 	};
 	};
 	};

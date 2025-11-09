@@ -25,7 +25,7 @@ python run_learning_constraints.py png 10
 ## Documentation
 
 For comprehensive documentation, usage examples, and detailed explanations, see:
-**[LEARNING_CONSTRAINTS_COMPREHENSIVE_README.md](../LEARNING_CONSTRAINTS_COMPREHENSIVE_README.md)**
+**[README_LEARNING_CONSTRAINTS_COMPREHENSIVE.md](../README_LEARNING_CONSTRAINTS_COMPREHENSIVE.md)**
 
 ## Supported File Types
 

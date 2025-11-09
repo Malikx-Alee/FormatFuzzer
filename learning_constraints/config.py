@@ -19,22 +19,27 @@ class Config:
     # Base directories
     DATA_DIR = f"./testcases_4_learn/{FILE_TYPE}/"
     RESULTS_OUTPUT_DIR = f"./testcases_4_learn/results/{FILE_TYPE}"
-    
+
     # Subdirectories
     PASSED_DIR = os.path.join(DATA_DIR, "valid_files/")
     ABSTRACTED_DIR = os.path.join(DATA_DIR, "abstracted/")
     ABSTRACTED_SPECIAL_DIR = os.path.join(DATA_DIR, "abstracted_special/")
     FAILED_DIR = os.path.join(DATA_DIR, "failed/")
-    
+
     # Output files
     STATS_FILE_HEX = os.path.join(RESULTS_OUTPUT_DIR, f"{FILE_TYPE}_parsed_values_hex_original.json")
     BLACKLISTED_ATTRIBUTES_FILE = os.path.join(RESULTS_OUTPUT_DIR, f"{FILE_TYPE}_blacklisted_attributes.json")
-    
+    # Checksum detection output
+    CHECKSUM_ALGO_FILE = os.path.join(RESULTS_OUTPUT_DIR, f"{FILE_TYPE}_checksum_algorithms.json")
+
     # Processing limits
     MAX_ATTRIBUTE_SIZE_BYTES = 8
     MAX_ABSTRACTION_ATTEMPTS = 10
     MAX_OVERWRITE_ATTEMPTS = 10
-    
+
+    # Feature toggles
+    ENABLE_CHECKSUM_DETECTION = True
+
     # Validation tools configuration
     VALIDATION_TOOLS = {
         "images": ["gif", "jpg", "png", "bmp"],
@@ -44,12 +49,12 @@ class Config:
         "network": ["pcap"],
         "music": ["midi"]
     }
-    
+
     @classmethod
     def get_fuzzer_executable(cls):
         """Get the fuzzer executable name for current file type."""
         return f"./{cls.FILE_TYPE}-fuzzer"
-    
+
     @classmethod
     def ensure_directories_exist(cls):
         """Create all necessary directories if they don't exist."""
@@ -60,10 +65,10 @@ class Config:
             cls.ABSTRACTED_SPECIAL_DIR,
             cls.RESULTS_OUTPUT_DIR
         ]
-        
+
         for directory in directories:
             os.makedirs(directory, exist_ok=True)
-    
+
     @classmethod
     def set_file_type(cls, file_type):
         """Change the current file type and update all related paths."""
@@ -79,31 +84,40 @@ class Config:
         cls.FAILED_DIR = os.path.join(cls.DATA_DIR, "failed/")
         cls.STATS_FILE_HEX = os.path.join(cls.RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_hex_original.json")
         cls.BLACKLISTED_ATTRIBUTES_FILE = os.path.join(cls.RESULTS_OUTPUT_DIR, f"{file_type}_blacklisted_attributes.json")
+        cls.CHECKSUM_ALGO_FILE = os.path.join(cls.RESULTS_OUTPUT_DIR, f"{file_type}_checksum_algorithms.json")
 
 
 class GlobalState:
     """Global state management for the learning constraints process."""
-    
+
     def __init__(self):
         # Nested dictionaries to store extracted values
         self.nested_values_hex = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
-        
+
         # Blacklist for attributes that have been found to be larger than max size
         self.blacklisted_attributes = set()
-        
+
+        # Detected checksum algorithms and metadata
+        # Structure:
+        # {
+        #   "by_chunk_type": { "IHDR": ["CRC-32"], ... }
+        # }
+        self.checksum_algorithms = {"by_chunk_type": {}}
+
         # Output counts
         self.valid_abstractions_count = 0
         self.valid_abstractions_special_count = 0
         self.valid_overwrites_count = 0
-    
+
     def reset(self):
         """Reset all state variables."""
         self.nested_values_hex.clear()
         self.blacklisted_attributes.clear()
+        self.checksum_algorithms = {"by_chunk_type": {}}
         self.valid_abstractions_count = 0
         self.valid_abstractions_special_count = 0
         self.valid_overwrites_count = 0
-    
+
     def get_stats(self):
         """Get current statistics."""
         return {
