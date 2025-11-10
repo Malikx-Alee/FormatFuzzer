@@ -2070,7 +2070,7 @@ public:
 
 	globals_class() :
 		btPngSignature_element(false),
-		btPngSignature(btPngSignature_element, { { 0, {{0x8950}} }, { 1, {{0x4E47}} }, { 2, {{0x0D0A}} }, { 3, {{0x1A0A}} } }),
+		btPngSignature(btPngSignature_element, (std::unordered_map<int, std::vector<uint16>>) { { 0, {{0x8950}} }, { 1, {{0x4E47}} }, { 2, {{0x0D0A}} }, { 3, {{0x1A0A}} } }),
 		sig(PNG_SIGNATURE_sig_instances),
 		length(2),
 		cname_element(false),
