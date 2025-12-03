@@ -6,6 +6,9 @@ import subprocess
 import re
 import json
 import collections
+import binascii
+import zlib
+import logging
 from .config import Config, GlobalState
 from .utils import clean_attribute_key, insert_nested_dict, extract_byte_values, remove_attribute_from_nested_dict, detect_checksum_algorithm_first
 
@@ -21,6 +24,7 @@ class FileParser:
             global_state (GlobalState): The global state object
         """
         self.global_state = global_state
+        self.logger = logging.getLogger(__name__)
 
     def parse_file_structure(self, file_path):
         """
@@ -30,9 +34,12 @@ class FileParser:
             file_path (str): Path to the file to parse
 
         Returns:
-            list: List of tuples (start, end, attribute) representing byte ranges
+            tuple: (original_byte_ranges, filtered_byte_ranges)
+                - original_byte_ranges: List of all byte ranges including those > MAX_ATTRIBUTE_SIZE_BYTES
+                - filtered_byte_ranges: List of byte ranges after filtering (current implementation)
         """
         byte_ranges = []
+        original_byte_ranges = []
 
         try:
             result = subprocess.run(
@@ -43,6 +50,7 @@ class FileParser:
             )
 
             current_parent_end = -1
+            original_current_parent_end = -1
             lines = result.stdout.splitlines()
             entries = []
 
@@ -72,10 +80,29 @@ class FileParser:
             # Step 2: Sort entries by start byte (ascending) and end byte (descending)
             entries.sort(key=lambda x: (x[0], -x[1]))
 
-            # Step 3: Filter overlapping ranges and blacklisted attributes
+            # Step 3: Build original_byte_ranges (without size filtering, but with overlap filtering)
             for start, end, attribute, line in entries:
+                # Skip if start == end and attribute has underscore followed by a number (e.g., "field_0", "item_123")
                 if start == end and "_" in attribute:
-                    continue
+                    # Check if underscore is followed by a number
+                    parts = attribute.split("_")
+                    if len(parts) > 1 and parts[-1].isdigit():
+                        continue
+
+                # Check for overlap with previous parent (no size constraint)
+                if start > original_current_parent_end or end < original_current_parent_end:
+                    # No overlap with previous parent
+                    original_byte_ranges.append((start, end, attribute))
+                    original_current_parent_end = end
+
+            # Step 4: Filter overlapping ranges and blacklisted attributes for filtered_byte_ranges
+            for start, end, attribute, line in entries:
+                # Skip if start == end and attribute has underscore followed by a number (e.g., "field_0", "item_123")
+                if start == end and "_" in attribute:
+                    # Check if underscore is followed by a number
+                    parts = attribute.split("_")
+                    if len(parts) > 1 and parts[-1].isdigit():
+                        continue
 
                 # Skip if attribute is in blacklist
                 if clean_attribute_key(attribute) in self.global_state.blacklisted_attributes:
@@ -91,16 +118,20 @@ class FileParser:
         except Exception as e:
             print(f"Error parsing {file_path}: {e}")
 
-        return byte_ranges
+        return original_byte_ranges, byte_ranges
 
-    def extract_bytes_from_file(self, file_path, byte_ranges):
+    def extract_bytes_from_file(self, file_path, byte_ranges, original_byte_ranges=None):
         """
         Extract byte values from a file based on the provided byte ranges.
 
         Args:
             file_path (str): Path to the file to extract bytes from
-            byte_ranges (list): List of tuples (start, end, attribute)
+            byte_ranges (list): List of tuples (start, end, attribute) - filtered ranges
+            original_byte_ranges (list): List of all byte ranges including large ones (optional)
         """
+        # If original_byte_ranges is not provided, use byte_ranges as fallback
+        if original_byte_ranges is None:
+            original_byte_ranges = byte_ranges
         try:
             with open(file_path, "rb") as f:
                 file_data = f.read()  # Read entire file into memory
@@ -124,6 +155,41 @@ class FileParser:
                                 attribute_keys,
                                 byte_values['hex']
                             )
+
+                            # Detect PNG compression method from IHDR chunk
+                            # PNG IHDR structure: width(4) + height(4) + bit_depth(1) + color_type(1) + compression(1) + filter(1) + interlace(1)
+                            if Config.FILE_TYPE == "png":
+                                last_key = attribute_keys[-1]
+                                # Check if we're in the IHDR chunk and just parsed the bits field
+                                if last_key == "compr_method" and len(attribute_keys) >= 3 and "ihdr" in attribute_keys:
+                                    # The compression method is 2 bytes after bits: bits(1) + color_type(1) + compression(1)
+                                    # So compression is at position: end + 1 + 1 + 1 = end + 3
+                                    # compr_offset = end + 3
+                                    # if compr_offset < len(file_data):
+                                    compr_method_value = file_data[end]
+                                    method_name = self._get_png_compression_method_name(compr_method_value)
+                                    # Only log if this compression method hasn't been detected yet
+                                    if str(compr_method_value) not in self.global_state.checksum_algorithms["compression_methods"]:
+                                        self.global_state.checksum_algorithms["compression_methods"][str(compr_method_value)] = method_name
+                                        self.logger.info(f"[PNG] Detected compression method: {compr_method_value} ({method_name})")
+                                    else:
+                                        # Still update the dict in case it was set to a different name
+                                        self.global_state.checksum_algorithms["compression_methods"][str(compr_method_value)] = method_name
+
+                            # Detect BMP compression method from BITMAPINFOHEADER
+                            if Config.FILE_TYPE == "bmp":
+                                last_key = attribute_keys[-1]
+                                if last_key == "biCompression" and len(attribute_keys) >= 2:
+                                    # Extract compression method value (4 bytes, little-endian)
+                                    compr_method_value = int.from_bytes(file_data[start:end + 1], "little")
+                                    method_name = self._get_bmp_compression_method_name(compr_method_value)
+                                    # Only log if this compression method hasn't been detected yet
+                                    if str(compr_method_value) not in self.global_state.checksum_algorithms["compression_methods"]:
+                                        self.global_state.checksum_algorithms["compression_methods"][str(compr_method_value)] = method_name
+                                        self.logger.info(f"[BMP] Detected compression method: {compr_method_value} ({method_name})")
+                                    else:
+                                        # Still update the dict in case it was set to a different name
+                                        self.global_state.checksum_algorithms["compression_methods"][str(compr_method_value)] = method_name
 
                             # If checksum detection is enabled, verify algorithms during parsing (PNG focus)
                             if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False):
@@ -187,37 +253,125 @@ class FileParser:
                                                     pass
 
                                     elif Config.FILE_TYPE == "zip" and last_key in ("frCrc", "deCrc"):
-                                        # ZIP: compute once per type per file. Types: 'record' (local file header) and 'dirEntry' (central directory)
+                                        # ZIP: compute for each record/dirEntry element and aggregate under recordCrc/dirEntryCrc
+                                        # Only process frCrc once and deCrc once per file
                                         try:
                                             expected_crc_bytes = bytes.fromhex(byte_values['hex'])
                                             if last_key == "frCrc":
-                                                chunk_label = "record"
-                                                if chunk_label not in seen_chunk_types_for_file:
-                                                    # Find data span for this record
-                                                    data_start = None
-                                                    data_end = None
-                                                    for s2, e2, attr2 in byte_ranges:
-                                                        if attr2.startswith("file~record~frData"):
-                                                            data_start, data_end = s2, e2
+                                                # Use a unified key "recordCrc" for all record elements
+                                                unified_key = "recordCrc"
+
+                                                # Only process frCrc once per file
+                                                if "frCrc" not in seen_chunk_types_for_file:
+                                                    # Extract the record element identifier from the current attribute
+                                                    # attribute_keys is like ['file', 'record', 'frCrc'] or ['file', 'record_1', 'frCrc']
+                                                    record_element = attribute_keys[1] if len(attribute_keys) > 1 else "record"
+                                                    chunk_label = record_element  # e.g., "record", "record_1", "record_2"
+                                                    first_match = None
+
+                                                    # Always extract compression method to track it
+                                                    record_prefix = f"file~{record_element}"
+                                                    frdata_prefix = f"{record_prefix}~frData"
+                                                    frmethod_prefix = f"{record_prefix}~frCompression"
+
+                                                    frdata_start = None
+                                                    frdata_end = None
+                                                    frmethod_value = None
+
+                                                    # Find frData and frCompression in original_byte_ranges
+                                                    for s2, e2, attr2 in original_byte_ranges:
+                                                        if attr2.startswith(frdata_prefix):
+                                                            frdata_start, frdata_end = s2, e2
+                                                        elif attr2.startswith(frmethod_prefix):
+                                                            # Extract compression method (2 bytes, little-endian)
+                                                            method_bytes = file_data[s2:e2 + 1]
+                                                            if len(method_bytes) == 2:
+                                                                frmethod_value = int.from_bytes(method_bytes, "little")
+
+                                                        # Exit early if we have both values
+                                                        if frdata_start is not None and frmethod_value is not None:
                                                             break
-                                                    if data_start is not None and data_end is not None and data_end >= data_start:
-                                                        checksum_input = file_data[data_start:data_end + 1]
-                                                        print(f"[ChecksumDetect][ZIP] type={chunk_label} data_range=({data_start},{data_end}) expected={byte_values['hex']}")
-                                                        first_match = detect_checksum_algorithm_first(checksum_input, expected_crc_bytes)
-                                                        print(f"[ChecksumDetect][ZIP] match={first_match}")
-                                                        matches = [first_match] if first_match else []
-                                                        existing = self.global_state.checksum_algorithms["by_chunk_type"].get(chunk_label, [])
-                                                        merged = sorted(set(existing + matches))
-                                                        self.global_state.checksum_algorithms["by_chunk_type"][chunk_label] = merged
-                                                        seen_chunk_types_for_file.add(chunk_label)
+
+                                                    # Track compression method in global state
+                                                    if frmethod_value is not None:
+                                                        method_name = self._get_compression_method_name(frmethod_value)
+                                                        # Only log if this compression method hasn't been detected yet
+                                                        if str(frmethod_value) not in self.global_state.checksum_algorithms["compression_methods"]:
+                                                            self.global_state.checksum_algorithms["compression_methods"][str(frmethod_value)] = method_name
+                                                            self.logger.info(f"[ZIP] Detected compression method: {frmethod_value} ({method_name})")
+                                                        else:
+                                                            # Still update the dict in case it was set to a different name
+                                                            self.global_state.checksum_algorithms["compression_methods"][str(frmethod_value)] = method_name
+
+                                                    # Check if we should validate by decompressing
+                                                    if getattr(Config, "ZIP_VALIDATE_CHECKSUM_WITH_DECOMPRESSION", False):
+                                                        if frdata_start is not None and frdata_end is not None and frmethod_value is not None:
+                                                            compressed_data = file_data[frdata_start:frdata_end + 1]
+
+                                                            try:
+                                                                # Decompress based on compression method
+                                                                uncompressed_data = self._decompress_zip_data(compressed_data, frmethod_value)
+
+                                                                if uncompressed_data is not None:
+                                                                    # Validate checksum on uncompressed data
+                                                                    # Try both big-endian and little-endian
+                                                                    expected_bytes = expected_crc_bytes
+                                                                    if len(expected_bytes) == 4:
+                                                                        be = expected_bytes
+                                                                        le = expected_bytes[::-1]
+                                                                    else:
+                                                                        be = expected_bytes
+                                                                        le = expected_bytes
+
+                                                                    # Try BE first, then LE
+                                                                    first_match = detect_checksum_algorithm_first(uncompressed_data, be)
+                                                                    if not first_match and len(expected_bytes) == 4:
+                                                                        first_match = detect_checksum_algorithm_first(uncompressed_data, le)
+
+                                                                    method_name = self._get_compression_method_name(frmethod_value)
+                                                                    print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value}({method_name}) validated={first_match}")
+                                                                else:
+                                                                    print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value} unsupported")
+                                                            except Exception as decomp_err:
+                                                                print(f"[ChecksumDetect][ZIP] element={chunk_label} decompression failed: {decomp_err}")
+
+                                                    # If decompression is disabled or failed, assume CRC-32 per ZIP spec
+                                                    if first_match is None:
+                                                        # NOTE: In ZIP files, frCrc is the CRC32 of the UNCOMPRESSED data.
+                                                        # According to ZIP specification, CRC-32 is always used for file data.
+                                                        first_match = "CRC-32"
+                                                        if frmethod_value is not None:
+                                                            method_name = self._get_compression_method_name(frmethod_value)
+                                                            print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value}({method_name}) assumed=CRC-32 (ZIP spec)")
+                                                        else:
+                                                            print(f"[ChecksumDetect][ZIP] element={chunk_label} assumed=CRC-32 (ZIP spec: CRC over uncompressed data)")
+
+                                                    # Aggregate under unified key "recordCrc"
+                                                    if first_match:
+                                                        existing = self.global_state.checksum_algorithms["by_chunk_type"].get(unified_key, [])
+                                                        merged = sorted(set(existing + [first_match]))
+                                                        self.global_state.checksum_algorithms["by_chunk_type"][unified_key] = merged
+
+                                                    # Mark frCrc as processed for this file
+                                                    seen_chunk_types_for_file.add("frCrc")
                                             else:  # deCrc in central directory
-                                                chunk_label = "dirEntry"
-                                                if chunk_label not in seen_chunk_types_for_file:
-                                                    # Prefer to mirror the local record's algorithm for this file if already known
-                                                    record_algos = self.global_state.checksum_algorithms["by_chunk_type"].get("record")
+                                                # Use a unified key "dirEntryCrc" for all dirEntry elements
+                                                unified_key = "dirEntryCrc"
+
+                                                # Only process deCrc once per file
+                                                if "deCrc" not in seen_chunk_types_for_file:
+                                                    # Extract the dirEntry element identifier
+                                                    direntry_element = attribute_keys[1] if len(attribute_keys) > 1 else "dirEntry"
+                                                    chunk_label = direntry_element  # e.g., "dirEntry", "dirEntry_1"
+
+                                                    # Mirror from recordCrc (all records use the same algorithm set)
+                                                    record_algos = self.global_state.checksum_algorithms["by_chunk_type"].get("recordCrc")
                                                     if record_algos:
-                                                        self.global_state.checksum_algorithms["by_chunk_type"][chunk_label] = list(record_algos)
-                                                        seen_chunk_types_for_file.add(chunk_label)
+                                                        self.global_state.checksum_algorithms["by_chunk_type"][unified_key] = list(record_algos)
+                                                        print(f"[ChecksumDetect][ZIP] element={chunk_label} mirrored to {unified_key}: {record_algos}")
+
+                                                    # Mark deCrc as processed for this file
+                                                    seen_chunk_types_for_file.add("deCrc")
                                         except Exception as zde:
                                             print(f"[ChecksumDetect][ZIP][ERROR] {zde}")
                                             pass
@@ -394,5 +548,126 @@ class FileParser:
             print(f"Error mining interesting values from template: {e}")
             return False, {}
 
+    def _get_compression_method_name(self, method_value):
+        """
+        Get the name of a ZIP compression method.
+
+        Args:
+            method_value (int): The compression method value
+
+        Returns:
+            str: The name of the compression method
+        """
+        compression_methods = {
+            0: "STORED",
+            1: "SHRUNK",
+            2: "REDUCED_1",
+            3: "REDUCED_2",
+            4: "REDUCED_3",
+            5: "REDUCED_4",
+            6: "IMPLODED",
+            7: "RESERVED",
+            8: "DEFLATE",
+            9: "DEFLATE64",
+            10: "PKWARE_IMPLODE",
+            11: "RESERVED",
+            12: "BZIP2",
+            13: "RESERVED",
+            14: "LZMA",
+            15: "RESERVED",
+            16: "RESERVED",
+            17: "RESERVED",
+            18: "IBM_TERSE",
+            19: "IBM_LZ77",
+            20: "ZSTD_DEPRECATED",
+            93: "ZSTD",
+            94: "MP3",
+            95: "XZ",
+            96: "JPEG",
+            97: "WAVPACK",
+            98: "PPMD",
+            99: "AE-x"
+        }
+        return compression_methods.get(method_value, f"UNKNOWN_{method_value}")
+
+    def _get_png_compression_method_name(self, method_value):
+        """
+        Get the name of a PNG compression method.
+
+        Args:
+            method_value (int): The compression method value
+
+        Returns:
+            str: The name of the compression method
+        """
+        compression_methods = {
+            0: "DEFLATE"
+        }
+        return compression_methods.get(method_value, f"UNKNOWN_{method_value}")
+
+    def _get_bmp_compression_method_name(self, method_value):
+        """
+        Get the name of a BMP compression method.
+
+        Args:
+            method_value (int): The compression method value
+
+        Returns:
+            str: The name of the compression method
+        """
+        compression_methods = {
+            0: "BI_RGB",
+            1: "BI_RLE8",
+            2: "BI_RLE4",
+            3: "BI_BITFIELDS",
+            4: "BI_JPEG",
+            5: "BI_PNG",
+            6: "BI_ALPHABITFIELDS",
+            11: "BI_CMYK",
+            12: "BI_CMYKRLE8",
+            13: "BI_CMYKRLE4"
+        }
+        return compression_methods.get(method_value, f"UNKNOWN_{method_value}")
+
+    def _decompress_zip_data(self, compressed_data, method_value):
+        """
+        Decompress ZIP data based on compression method.
+
+        Args:
+            compressed_data (bytes): The compressed data
+            method_value (int): The compression method value
+
+        Returns:
+            bytes or None: The uncompressed data, or None if unsupported/failed
+        """
+        try:
+            if method_value == 0:
+                # STORED (no compression)
+                return compressed_data
+            elif method_value == 8:
+                # DEFLATE
+                return zlib.decompress(compressed_data, -zlib.MAX_WBITS)
+            elif method_value == 12:
+                # BZIP2
+                try:
+                    import bz2
+                    return bz2.decompress(compressed_data)
+                except ImportError:
+                    print(f"[ZIP] BZIP2 decompression not available (bz2 module not found)")
+                    return None
+            elif method_value == 14:
+                # LZMA
+                try:
+                    import lzma
+                    return lzma.decompress(compressed_data)
+                except ImportError:
+                    print(f"[ZIP] LZMA decompression not available (lzma module not found)")
+                    return None
+            else:
+                # Unsupported compression method
+                return None
+        except Exception as e:
+            print(f"[ZIP] Decompression failed for method {method_value}: {e}")
+            return None
 
 

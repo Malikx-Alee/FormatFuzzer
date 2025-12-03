@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import sys
+import time
 
 # Add parent directory to path for direct execution
 if __name__ == "__main__":
@@ -38,20 +39,28 @@ class LearningConstraintsOrchestrator:
             log_level: Logging level
             max_files (int, optional): Maximum number of files to process. If None, process all files
         """
-        # Set up logging
-        logging.basicConfig(
-            level=log_level,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
-        
         # Set file type if provided
         if file_type:
             Config.set_file_type(file_type)
-        
+
+        # Initialize logging with timestamp-based directory
+        log_file = Config.initialize_logging(file_type)
+
+        # Set up logging to both file and console
+        logging.basicConfig(
+            level=log_level,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler()
+            ],
+            force=True  # Override any existing configuration
+        )
+        self.logger = logging.getLogger(__name__)
+
         # Ensure directories exist
         Config.ensure_directories_exist()
-        
+
         # Store max_files parameter
         self.max_files = max_files
 
@@ -63,38 +72,41 @@ class LearningConstraintsOrchestrator:
 
         files_info = f"all files" if max_files is None else f"up to {max_files} files"
         self.logger.info(f"Initialized Learning Constraints Orchestrator for {Config.FILE_TYPE} files ({files_info})")
-    
+        self.logger.info(f"Log file: {log_file}")
+        self.logger.info(f"Results will be saved to: {Config.CURRENT_RESULTS_DIR}")
+
     def process_file(self, file_path):
         """
         Process a single file through the complete abstraction pipeline.
-        
+
         Args:
             file_path (str): Path to the file to process
-            
+
         Returns:
             bool: True if processing was successful, False otherwise
         """
         try:
             # self.logger.info(f"Processing file: {file_path}")
-            
+
             # Parse the file to get byte ranges
-            byte_ranges = self.parser.parse_file_structure(file_path)
-            
+            original_byte_ranges, byte_ranges = self.parser.parse_file_structure(file_path)
+
             if not byte_ranges:
                 self.logger.warning(f"No byte ranges found for {file_path}")
                 return False
-            
-            self.logger.info(f"Found {len(byte_ranges)} byte ranges in {file_path}")
-            
+
+            self.logger.info(f"Found {len(original_byte_ranges)} original byte ranges")
+            self.logger.info(f"Found {len(byte_ranges)} filtered byte ranges")
+
             # Perform mutation on the file
-            self.mutator.mutate_file_completely(file_path, byte_ranges)
-            
+            self.mutator.mutate_file_completely(file_path, byte_ranges, original_byte_ranges)
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error processing file {file_path}: {e}")
             return False
-    
+
     def process_directory(self, directory_path, max_files=None):
         """
         Process files in a directory.
@@ -134,9 +146,9 @@ class LearningConstraintsOrchestrator:
 
         self.logger.info(f"Successfully processed {successful_count}/{len(file_names)} files")
         return successful_count, len(file_names)
-    
+
     def save_results(self):
-        """Save the collected results to JSON files."""
+        """Save the collected results to JSON files in the log directory."""
         try:
             # Convert nested dictionaries to final stats
             final_stats_hex = convert_sets_to_lists(self.global_state.nested_values_hex)
@@ -150,11 +162,14 @@ class LearningConstraintsOrchestrator:
                 except Exception as ce:
                     self.logger.warning(f"Integrating checksum algorithms failed: {ce}")
 
-            # Save hex results to JSON file
-            with open(Config.STATS_FILE_HEX, "w") as f:
-                json.dump(final_stats_hex, f, indent=4)
-
-            self.logger.info(f"Hex results saved to {Config.STATS_FILE_HEX}")
+            # Save hex results to log directory
+            if Config.CURRENT_RESULTS_DIR:
+                log_hex_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_parsed_values_hex_original.json")
+                with open(log_hex_file, "w") as f:
+                    json.dump(final_stats_hex, f, indent=4)
+                self.logger.info(f"Hex results saved to {log_hex_file}")
+            else:
+                self.logger.warning("Log directory not initialized, results not saved!")
 
             # Save blacklisted attributes to JSON file
             blacklisted_data = {
@@ -164,31 +179,35 @@ class LearningConstraintsOrchestrator:
                 "description": f"Attributes that were blacklisted due to size > {Config.MAX_ATTRIBUTE_SIZE_BYTES} bytes"
             }
 
-            with open(Config.BLACKLISTED_ATTRIBUTES_FILE, "w") as f:
-                json.dump(blacklisted_data, f, indent=4)
-
-            self.logger.info(f"Blacklisted attributes saved to {Config.BLACKLISTED_ATTRIBUTES_FILE}")
+            # Save to log directory
+            if Config.CURRENT_RESULTS_DIR:
+                log_blacklist_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_blacklisted_attributes.json")
+                with open(log_blacklist_file, "w") as f:
+                    json.dump(blacklisted_data, f, indent=4)
+                self.logger.info(f"Blacklisted attributes saved to {log_blacklist_file}")
+            else:
+                self.logger.warning("Log directory not initialized, blacklisted attributes not saved!")
 
         except Exception as e:
             self.logger.error(f"Error saving results: {e}")
 
     def save_template_results(self, template_values):
-        """Save the mined template values to a separate JSON file."""
+        """Save the mined template values to a separate JSON file in the log directory."""
         try:
             # Convert sets to lists for JSON serialization
             final_template_values = convert_sets_to_lists(template_values)
 
-            # Define the template results file path
-            template_file_path = os.path.join(Config.RESULTS_OUTPUT_DIR, f"{Config.FILE_TYPE}_template_values.json")
+            # Save to log directory
+            if Config.CURRENT_RESULTS_DIR:
+                log_template_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_template_values.json")
+                with open(log_template_file, "w") as f:
+                    json.dump(final_template_values, f, indent=4)
+                self.logger.info(f"Template values saved to {log_template_file}")
 
-            # Save template results to JSON file
-            with open(template_file_path, "w") as f:
-                json.dump(final_template_values, f, indent=4)
-
-            self.logger.info(f"Template values saved to {template_file_path}")
-
-            # Also create a flattened version using the transformer
-            self.transform_template_results(template_file_path)
+                # Also create a flattened version using the transformer
+                self.transform_template_results(log_template_file)
+            else:
+                self.logger.warning("Log directory not initialized, template values not saved!")
 
         except Exception as e:
             self.logger.error(f"Error saving template results: {e}")
@@ -212,7 +231,7 @@ class LearningConstraintsOrchestrator:
 
     def transform_results(self, output_suffix="_flattened"):
         """
-        Transform the saved results by flattening JSON structures.
+        Transform the saved results by flattening JSON structures in the log directory.
 
         Args:
             output_suffix (str): Suffix to add to transformed file names
@@ -222,23 +241,58 @@ class LearningConstraintsOrchestrator:
         """
         try:
             self.logger.info("Transforming results...")
-            successful, total = self.transformer.transform_results_directory(output_suffix=output_suffix)
 
-            if successful > 0:
-                self.logger.info(f"Successfully transformed {successful}/{total} result files")
+            # Transform in log directory
+            if Config.CURRENT_RESULTS_DIR:
+                successful, total = self.transformer.transform_results_directory(
+                    results_dir=Config.CURRENT_RESULTS_DIR,
+                    output_suffix=output_suffix
+                )
+                if successful > 0:
+                    self.logger.info(f"Successfully transformed {successful}/{total} result files")
+                else:
+                    self.logger.warning("No files were transformed")
+                return successful, total
             else:
-                self.logger.warning("No files were transformed")
-
-            return successful, total
+                self.logger.warning("Log directory not initialized, results not transformed!")
+                return 0, 0
 
         except Exception as e:
             self.logger.error(f"Error transforming results: {e}")
             return 0, 0
 
+    def log_crc_values(self):
+        """Log detected checksum algorithms (by chunk type) before printing statistics."""
+        try:
+            if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False):
+                algos = self.global_state.checksum_algorithms or {}
+                by_type = algos.get("by_chunk_type", {}) if isinstance(algos, dict) else {}
+
+                if Config.FILE_TYPE == "zip":
+                    print("\n----- ZIP checksum algorithms (by_chunk_type) -----")
+                    print(f"recordCrc: {by_type.get('recordCrc')}")
+                    print(f"dirEntryCrc: {by_type.get('dirEntryCrc')}")
+
+                    # Show compression methods found
+                    compression_methods = algos.get("compression_methods", {})
+                    if compression_methods:
+                        print("\n----- ZIP compression methods found -----")
+                        for method_id, method_name in sorted(compression_methods.items(), key=lambda x: int(x[0])):
+                            print(f"  {method_id}: {method_name}")
+                else:
+                    print("\n----- Checksum algorithms (by_chunk_type) -----")
+                    if isinstance(by_type, dict) and by_type:
+                        for k, v in by_type.items():
+                            print(f"{k}: {v}")
+                    else:
+                        print("<none>")
+        except Exception as e:
+            print(f"[ChecksumAlgo LOG][ERROR] {e}")
+
     def print_statistics(self):
         """Print processing statistics."""
         stats = self.global_state.get_stats()
-        
+
         print("\n" + "="*50)
         print("PROCESSING STATISTICS")
         print("="*50)
@@ -248,7 +302,7 @@ class LearningConstraintsOrchestrator:
         print(f"Valid Overwrites: {stats['valid_overwrites']}")
         print(f"Blacklisted Attributes: {stats['blacklisted_attributes']}")
         print("="*50)
-    
+
     def run_complete_process(self):
         """
         Run the complete learning abstraction process.
@@ -256,6 +310,8 @@ class LearningConstraintsOrchestrator:
         This mines interesting values from template first, then processes files from the
         passed directory, then processes any special files that were generated, and finally saves the results.
         """
+        # Start timing
+        start_time = time.time()
         self.logger.info("Starting complete learning constraints process")
 
         # Mine interesting values from template first
@@ -273,35 +329,63 @@ class LearningConstraintsOrchestrator:
         passed_successful, passed_total = self.process_directory(Config.PASSED_DIR)
 
         # Process files from the abstracted special directory (use remaining quota if any)
+        abstracted_special_dir = Config.CURRENT_ABSTRACTED_SPECIAL_DIR
+
         remaining_files = None
         if self.max_files is not None:
             remaining_files = max(0, self.max_files - passed_total)
             if remaining_files > 0:
                 self.logger.info(f"Processing files from abstracted special directory (up to {remaining_files} files)")
-                special_successful, special_total = self.process_directory(Config.ABSTRACTED_SPECIAL_DIR, remaining_files)
+                special_successful, special_total = self.process_directory(abstracted_special_dir, remaining_files)
             else:
                 self.logger.info("Skipping abstracted special directory - file limit reached")
                 special_successful, special_total = 0, 0
         else:
             self.logger.info("Processing files from abstracted special directory")
-            special_successful, special_total = self.process_directory(Config.ABSTRACTED_SPECIAL_DIR)
-        
+            special_successful, special_total = self.process_directory(abstracted_special_dir)
+
         # Save results
         self.save_results()
 
         # Transform results
         transform_successful, transform_total = self.transform_results()
 
+        # Log CRCs (e.g., for ZIP) before printing statistics
+        try:
+            self.log_crc_values()
+        except Exception:
+            pass
+
         # Print statistics
         self.print_statistics()
 
-        self.logger.info("Learning constraints process completed")
-        
+        # Calculate and log total time
+        end_time = time.time()
+        total_time = end_time - start_time
+
+        # Format time in a human-readable way
+        if total_time < 60:
+            time_str = f"{total_time:.2f} seconds"
+        elif total_time < 3600:
+            minutes = int(total_time // 60)
+            seconds = total_time % 60
+            time_str = f"{minutes} minutes {seconds:.2f} seconds"
+        else:
+            hours = int(total_time // 3600)
+            minutes = int((total_time % 3600) // 60)
+            seconds = total_time % 60
+            time_str = f"{hours} hours {minutes} minutes {seconds:.2f} seconds"
+
+        self.logger.info(f"Learning constraints process completed in {time_str}")
+        print(f"\nTotal processing time: {time_str}")
+
         return {
             'passed_files': {'successful': passed_successful, 'total': passed_total},
             'special_files': {'successful': special_successful, 'total': special_total},
             'transformed_files': {'successful': transform_successful, 'total': transform_total},
-            'stats': self.global_state.get_stats()
+            'stats': self.global_state.get_stats(),
+            'total_time': total_time,
+            'total_time_formatted': time_str
         }
 
 
@@ -311,10 +395,10 @@ def main(max_files=None):
         # Create orchestrator and run the complete process
         orchestrator = LearningConstraintsOrchestrator(file_type="png", max_files=max_files)
         results = orchestrator.run_complete_process()
-        
+
         print("\nProcessing complete!")
         return results
-        
+
     except KeyboardInterrupt:
         print("\nProcess interrupted by user")
         return None

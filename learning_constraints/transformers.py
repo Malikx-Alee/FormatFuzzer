@@ -60,28 +60,51 @@ class ResultTransformer:
     def transform_json_file(self, input_path, output_path):
         """
         Transform a single JSON file by flattening its structure.
-        
+
         Args:
             input_path (str): Path to the input JSON file
             output_path (str): Path to save the transformed JSON file
-            
+
         Returns:
             bool: True if transformation was successful, False otherwise
         """
         try:
             with open(input_path, 'r') as f:
                 data = json.load(f)
-            
+
+            # Extract special keys before flattening
+            checksum_algorithms = data.pop("checksum_algorithms", None)
+
             # Flatten and merge
             flattened_data = self.flatten_json(data)
-            
+
+            # Add special keys back to flattened data
+            if checksum_algorithms:
+                # Add checksum algorithms (keep nested structure for by_chunk_type)
+                if "by_chunk_type" in checksum_algorithms:
+                    for chunk_type, algorithms in checksum_algorithms["by_chunk_type"].items():
+                        # Convert list to single value if only one algorithm
+                        if isinstance(algorithms, list) and len(algorithms) == 1:
+                            flattened_data[chunk_type] = algorithms[0]
+                        else:
+                            flattened_data[chunk_type] = algorithms
+
+                # Add compression methods as a separate top-level key (as a set/list)
+                if "compression_methods" in checksum_algorithms:
+                    compression_methods = checksum_algorithms["compression_methods"]
+                    # Convert dict values to a set (unique values only)
+                    if compression_methods:
+                        flattened_data["compressionMethods"] = list(set(compression_methods.values()))
+                        # Also add the numeric method values (keys)
+                        flattened_data["compressionMethodsValues"] = sorted([int(k) for k in compression_methods.keys()])
+
             # Write the flattened data to a new file
             with open(output_path, 'w') as f:
                 json.dump(flattened_data, f, indent=4)
-            
+
             self.logger.info(f"Transformed {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error transforming {input_path}: {e}")
             return False
@@ -104,8 +127,13 @@ class ResultTransformer:
             self.logger.warning(f"Results directory does not exist: {results_dir}")
             return 0, 0
 
-        # Only process the hex values file
-        hex_file = Config.STATS_FILE_HEX
+        # Determine the hex file path based on the results directory
+        if results_dir == Config.RESULTS_OUTPUT_DIR:
+            # Use the standard config path
+            hex_file = Config.STATS_FILE_HEX
+        else:
+            # Construct path for custom directory (e.g., log directory)
+            hex_file = os.path.join(results_dir, f"{Config.FILE_TYPE}_parsed_values_hex_original.json")
 
         if not os.path.exists(hex_file):
             self.logger.warning(f"Hex values file does not exist: {hex_file}")

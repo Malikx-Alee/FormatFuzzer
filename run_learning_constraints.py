@@ -26,8 +26,8 @@ def main():
     """Simple main function that takes file type and max files as command line arguments."""
 
     # Default values
-    file_type = "zip"
-    max_files = None
+    file_type = "bmp"
+    max_files = 1
 
     # Check if file type was provided as argument
     if len(sys.argv) > 1:
@@ -84,6 +84,8 @@ def main():
             print(f"Valid files processed: {results['passed_files']['successful']}/{results['passed_files']['total']}")
             print(f"Special files processed: {results['special_files']['successful']}/{results['special_files']['total']}")
             print(f"Result files transformed: {results['transformed_files']['successful']}/{results['transformed_files']['total']}")
+            if 'total_time_formatted' in results:
+                print(f"Total time: {results['total_time_formatted']}")
         else:
             print("Process failed or was interrupted.")
 
