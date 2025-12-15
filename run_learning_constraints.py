@@ -3,13 +3,13 @@
 Simple runner script for the Learning Constraints module.
 
 Usage:
-    python run_learning_constraints.py [file_type] [max_files]
+    python run_learning_constraints.py <file_type> [max_files] [source_dir]
 
 Examples:
-    python run_learning_constraints.py                # Uses default file type (gif), process all files
-    python run_learning_constraints.py png            # Process all PNG files
-    python run_learning_constraints.py jpg 5          # Process only 5 JPG files
-    python run_learning_constraints.py gif 10         # Process only 10 GIF files
+    python run_learning_constraints.py png                    # Process all PNG files from default directory
+    python run_learning_constraints.py jpg 5                  # Process only 5 JPG files
+    python run_learning_constraints.py gif /path/to/files     # Process all GIF files from custom directory
+    python run_learning_constraints.py bmp 5 /path/to/files   # Process 5 BMP files from custom directory
 """
 
 import sys
@@ -23,25 +23,41 @@ from learning_constraints import (
 
 
 def main():
-    """Simple main function that takes file type and max files as command line arguments."""
+    """Simple main function that takes file type, max files, and source directory as command line arguments."""
+
+    # Check if file type was provided as argument (required)
+    if len(sys.argv) < 2:
+        print("Error: file_type argument is required.")
+        print("Usage: python run_learning_constraints.py <file_type> [max_files] [source_dir]")
+        print(f"Supported types: {', '.join(get_supported_file_types())}")
+        sys.exit(1)
+
+    file_type = sys.argv[1].lower()
 
     # Default values
-    file_type = "bmp"
-    max_files = 1
+    max_files = None
+    source_dir = None
 
-    # Check if file type was provided as argument
-    if len(sys.argv) > 1:
-        file_type = sys.argv[1].lower()
-
-    # Check if max_files was provided as argument
+    # Parse optional arguments - detect if second arg is max_files (integer) or source_dir (path)
     if len(sys.argv) > 2:
+        arg2 = sys.argv[2]
         try:
-            max_files = int(sys.argv[2])
+            max_files = int(arg2)
             if max_files <= 0:
                 print("Error: max_files must be a positive integer.")
                 sys.exit(1)
         except ValueError:
-            print("Error: max_files must be a valid integer.")
+            # Not an integer, treat as source_dir
+            source_dir = arg2
+            if not os.path.isdir(source_dir):
+                print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
+                sys.exit(1)
+
+    # Check if source_dir was provided as third argument
+    if len(sys.argv) > 3:
+        source_dir = sys.argv[3]
+        if not os.path.isdir(source_dir):
+            print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
             sys.exit(1)
 
     # Validate file type
@@ -55,26 +71,25 @@ def main():
     set_file_type(file_type)
 
     files_info = f"all files" if max_files is None else f"up to {max_files} files"
+    effective_source_dir = source_dir if source_dir else Config.DATA_DIR
     print(f"Learning Constraints - Processing {file_type.upper()} files ({files_info})")
     print("=" * 60)
-    print(f"Data directory: {Config.DATA_DIR}")
-    print(f"Results directory: {Config.RESULTS_OUTPUT_DIR}")
+    print(f"Source directory: {effective_source_dir}")
+    print(f"Results directory: ./logs/<timestamp>_{file_type}/results/")
     if max_files is not None:
         print(f"File limit: {max_files} files")
 
-    # Check if data directory exists
-    if not os.path.exists(Config.PASSED_DIR):
-        print(f"\nWarning: Data directory {Config.PASSED_DIR} does not exist.")
-        print("Please ensure you have files in the valid_files directory before running.")
-        print("\nCreating directories...")
-        Config.ensure_directories_exist()
-        print(f"Created: {Config.PASSED_DIR}")
-        print("Please add some files to the valid_files directory and run again.")
+    # Check if source directory exists
+    if not os.path.exists(effective_source_dir):
+        print(f"\nWarning: Source directory {effective_source_dir} does not exist.")
+        if source_dir is None:
+            print("Please ensure you have files in the data directory before running.")
+            print(f"Expected directory: {Config.DATA_DIR}")
         return
 
     try:
         # Create orchestrator and run
-        orchestrator = LearningConstraintsOrchestrator(file_type=file_type, max_files=max_files)
+        orchestrator = LearningConstraintsOrchestrator(file_type=file_type, max_files=max_files, source_dir=source_dir)
         results = orchestrator.run_complete_process()
 
         if results:

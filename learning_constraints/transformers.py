@@ -114,26 +114,21 @@ class ResultTransformer:
         Transform the hex values JSON file in the results directory.
 
         Args:
-            results_dir (str, optional): Directory containing JSON files. If None, uses Config.RESULTS_OUTPUT_DIR
+            results_dir (str, optional): Directory containing JSON files. If None, uses Config.CURRENT_RESULTS_DIR
             output_suffix (str): Suffix to add to transformed file names
 
         Returns:
             tuple: (successful_count, total_count)
         """
         if results_dir is None:
-            results_dir = Config.RESULTS_OUTPUT_DIR
+            results_dir = Config.CURRENT_RESULTS_DIR
 
-        if not os.path.exists(results_dir):
+        if results_dir is None or not os.path.exists(results_dir):
             self.logger.warning(f"Results directory does not exist: {results_dir}")
             return 0, 0
 
-        # Determine the hex file path based on the results directory
-        if results_dir == Config.RESULTS_OUTPUT_DIR:
-            # Use the standard config path
-            hex_file = Config.STATS_FILE_HEX
-        else:
-            # Construct path for custom directory (e.g., log directory)
-            hex_file = os.path.join(results_dir, f"{Config.FILE_TYPE}_parsed_values_hex_original.json")
+        # Construct path for hex file
+        hex_file = os.path.join(results_dir, f"{Config.FILE_TYPE}_parsed_values_hex_original.json")
 
         if not os.path.exists(hex_file):
             self.logger.warning(f"Hex values file does not exist: {hex_file}")
@@ -151,37 +146,31 @@ class ResultTransformer:
         self.logger.info(f"Transformation complete! Processed {successful_count}/1 hex values file")
         return successful_count, 1
     
-    def transform_specific_files(self, file_patterns=None, output_suffix="_flattened"):
+    def transform_specific_files(self, file_patterns, output_suffix="_flattened"):
         """
         Transform specific JSON files based on patterns.
 
         Args:
-            file_patterns (list, optional): List of file patterns to transform.
-                                          If None, transforms only the hex values file
+            file_patterns (list): List of file paths to transform
             output_suffix (str): Suffix to add to transformed file names
 
         Returns:
             tuple: (successful_count, total_count)
         """
-        if file_patterns is None:
-            file_patterns = [
-                Config.STATS_FILE_HEX
-            ]
-        
         successful_count = 0
         total_count = 0
-        
+
         for file_path in file_patterns:
             if os.path.exists(file_path):
                 total_count += 1
                 output_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}{output_suffix}.json"
                 output_path = os.path.join(os.path.dirname(file_path), output_filename)
-                
+
                 if self.transform_json_file(file_path, output_path):
                     successful_count += 1
             else:
                 self.logger.warning(f"File not found: {file_path}")
-        
+
         return successful_count, total_count
 
 

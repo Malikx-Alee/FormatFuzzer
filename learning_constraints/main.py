@@ -30,7 +30,7 @@ except ImportError:
 class LearningConstraintsOrchestrator:
     """Main orchestrator class for the learning constraints process."""
 
-    def __init__(self, file_type=None, log_level=logging.INFO, max_files=None):
+    def __init__(self, file_type=None, log_level=logging.INFO, max_files=None, source_dir=None):
         """
         Initialize the orchestrator.
 
@@ -38,6 +38,7 @@ class LearningConstraintsOrchestrator:
             file_type (str, optional): File type to process. If None, uses Config.FILE_TYPE
             log_level: Logging level
             max_files (int, optional): Maximum number of files to process. If None, process all files
+            source_dir (str, optional): Custom source directory for reading files. If None, uses Config.DATA_DIR
         """
         # Set file type if provided
         if file_type:
@@ -58,11 +59,11 @@ class LearningConstraintsOrchestrator:
         )
         self.logger = logging.getLogger(__name__)
 
-        # Ensure directories exist
-        Config.ensure_directories_exist()
-
         # Store max_files parameter
         self.max_files = max_files
+
+        # Store source directory (use Config.DATA_DIR as default)
+        self.source_dir = source_dir if source_dir else Config.DATA_DIR
 
         # Initialize global state and components
         self.global_state = GlobalState()
@@ -72,6 +73,7 @@ class LearningConstraintsOrchestrator:
 
         files_info = f"all files" if max_files is None else f"up to {max_files} files"
         self.logger.info(f"Initialized Learning Constraints Orchestrator for {Config.FILE_TYPE} files ({files_info})")
+        self.logger.info(f"Source directory: {self.source_dir}")
         self.logger.info(f"Log file: {log_file}")
         self.logger.info(f"Results will be saved to: {Config.CURRENT_RESULTS_DIR}")
 
@@ -324,9 +326,9 @@ class LearningConstraintsOrchestrator:
         else:
             self.logger.warning("Failed to mine interesting values from template, continuing with file processing")
 
-        # Process files from the valid_files directory
-        self.logger.info("Processing files from valid_files directory")
-        passed_successful, passed_total = self.process_directory(Config.PASSED_DIR)
+        # Process files from the source directory
+        self.logger.info(f"Processing files from source directory: {self.source_dir}")
+        passed_successful, passed_total = self.process_directory(self.source_dir)
 
         # Process files from the abstracted special directory (use remaining quota if any)
         abstracted_special_dir = Config.CURRENT_ABSTRACTED_SPECIAL_DIR

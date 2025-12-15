@@ -18,8 +18,7 @@ class Config:
     FILE_TYPE = "gif"
 
     # Base directories
-    DATA_DIR = f"./testcases_4_learn/{FILE_TYPE}/"
-    RESULTS_OUTPUT_DIR = f"./testcases_4_learn/results/{FILE_TYPE}"
+    DATA_DIR = f"./testcases_4_learn/valid_files/{FILE_TYPE}/"
 
     # Logging directories (will be set dynamically with timestamp)
     LOGS_BASE_DIR = "./logs"
@@ -28,16 +27,6 @@ class Config:
     CURRENT_ABSTRACTED_DIR = None  # Will be set when logging is initialized
     CURRENT_ABSTRACTED_SPECIAL_DIR = None  # Will be set when logging is initialized
     LOG_FILE = None  # Will be set when logging is initialized
-
-    # Subdirectories
-    PASSED_DIR = os.path.join(DATA_DIR, "valid_files/")
-    FAILED_DIR = os.path.join(DATA_DIR, "failed/")
-
-    # Output files
-    STATS_FILE_HEX = os.path.join(RESULTS_OUTPUT_DIR, f"{FILE_TYPE}_parsed_values_hex_original.json")
-    BLACKLISTED_ATTRIBUTES_FILE = os.path.join(RESULTS_OUTPUT_DIR, f"{FILE_TYPE}_blacklisted_attributes.json")
-    # Checksum detection output
-    CHECKSUM_ALGO_FILE = os.path.join(RESULTS_OUTPUT_DIR, f"{FILE_TYPE}_checksum_algorithms.json")
 
     # Processing limits
     MAX_ATTRIBUTE_SIZE_BYTES = 8
@@ -104,31 +93,13 @@ class Config:
         return cls.LOG_FILE
 
     @classmethod
-    def ensure_directories_exist(cls):
-        """Create all necessary directories if they don't exist."""
-        directories = [
-            cls.PASSED_DIR,
-            cls.FAILED_DIR,
-            cls.RESULTS_OUTPUT_DIR
-        ]
-
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
-
-    @classmethod
     def set_file_type(cls, file_type):
         """Change the current file type and update all related paths."""
         if file_type not in cls.SUPPORTED_FILE_TYPES:
             raise ValueError(f"Unsupported file type: {file_type}")
 
         cls.FILE_TYPE = file_type
-        cls.DATA_DIR = f"./testcases_4_learn/{file_type}/"
-        cls.RESULTS_OUTPUT_DIR = f"./testcases_4_learn/results/{file_type}"
-        cls.PASSED_DIR = os.path.join(cls.DATA_DIR, "valid_files/")
-        cls.FAILED_DIR = os.path.join(cls.DATA_DIR, "failed/")
-        cls.STATS_FILE_HEX = os.path.join(cls.RESULTS_OUTPUT_DIR, f"{file_type}_parsed_values_hex_original.json")
-        cls.BLACKLISTED_ATTRIBUTES_FILE = os.path.join(cls.RESULTS_OUTPUT_DIR, f"{file_type}_blacklisted_attributes.json")
-        cls.CHECKSUM_ALGO_FILE = os.path.join(cls.RESULTS_OUTPUT_DIR, f"{file_type}_checksum_algorithms.json")
+        cls.DATA_DIR = f"./testcases_4_learn/valid_files/{file_type}/"
 
 
 class GlobalState:
