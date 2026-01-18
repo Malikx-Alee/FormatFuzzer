@@ -18,6 +18,7 @@ try:
     from .mutators import FileMutator
     from .transformers import ResultTransformer
     from .utils import convert_sets_to_lists
+    from .checkpoint import CheckpointManager
 except ImportError:
     # Fallback for direct execution
     from learning_constraints.config import Config, GlobalState
@@ -25,12 +26,14 @@ except ImportError:
     from learning_constraints.mutators import FileMutator
     from learning_constraints.transformers import ResultTransformer
     from learning_constraints.utils import convert_sets_to_lists
+    from learning_constraints.checkpoint import CheckpointManager
 
 
 class LearningConstraintsOrchestrator:
     """Main orchestrator class for the learning constraints process."""
 
-    def __init__(self, file_type=None, log_level=logging.INFO, max_files=None, source_dir=None):
+    def __init__(self, file_type=None, log_level=logging.INFO, max_files=None, source_dir=None,
+                 resume_from_checkpoint=None):
         """
         Initialize the orchestrator.
 
@@ -39,13 +42,39 @@ class LearningConstraintsOrchestrator:
             log_level: Logging level
             max_files (int, optional): Maximum number of files to process. If None, process all files
             source_dir (str, optional): Custom source directory for reading files. If None, uses Config.DATA_DIR
+            resume_from_checkpoint (str, optional): Path to checkpoint file to resume from.
+                                                   If None and Config.RESUME_MODE is True,
+                                                   will search for latest checkpoint.
         """
         # Set file type if provided
         if file_type:
             Config.set_file_type(file_type)
 
-        # Initialize logging with timestamp-based directory
-        log_file = Config.initialize_logging(file_type)
+        # Check for resume mode
+        self._is_resuming = False
+        checkpoint_path = resume_from_checkpoint
+
+        if Config.RESUME_MODE and checkpoint_path is None:
+            # Search for latest checkpoint for this file type
+            log_dir, checkpoint_path = Config.find_latest_checkpoint(file_type)
+            if checkpoint_path:
+                print(f"Found checkpoint to resume: {checkpoint_path}")
+
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            # Resuming from checkpoint - restore the log directory
+            self._is_resuming = True
+            checkpoint_info = CheckpointManager.load_checkpoint_info(checkpoint_path)
+            log_dir = checkpoint_info.get("log_dir")
+            if log_dir and os.path.exists(log_dir):
+                Config.restore_log_directory(log_dir)
+                log_file = Config.LOG_FILE
+            else:
+                # Checkpoint exists but log dir is missing - start fresh
+                self._is_resuming = False
+                log_file = Config.initialize_logging(file_type)
+        else:
+            # Start fresh - initialize new logging directory
+            log_file = Config.initialize_logging(file_type)
 
         # Set up logging to both file and console
         logging.basicConfig(
@@ -71,8 +100,23 @@ class LearningConstraintsOrchestrator:
         self.mutator = FileMutator(self.global_state)
         self.transformer = ResultTransformer()
 
+        # Initialize checkpoint manager
+        self.checkpoint_manager = CheckpointManager(self.global_state)
+        self.checkpoint_manager.set_run_info(self.source_dir, max_files)
+
+        # Load checkpoint if resuming
+        if self._is_resuming and checkpoint_path:
+            self.checkpoint_manager.checkpoint_path = checkpoint_path
+            if self.checkpoint_manager.load_checkpoint():
+                self.logger.info(f"Resumed from checkpoint: {checkpoint_path}")
+                self.logger.info(f"Previously processed {len(self.checkpoint_manager.processed_files)} files")
+            else:
+                self.logger.warning("Failed to load checkpoint, starting fresh")
+                self._is_resuming = False
+
         files_info = f"all files" if max_files is None else f"up to {max_files} files"
-        self.logger.info(f"Initialized Learning Constraints Orchestrator for {Config.FILE_TYPE} files ({files_info})")
+        resume_info = " (RESUMING)" if self._is_resuming else ""
+        self.logger.info(f"Initialized Learning Constraints Orchestrator for {Config.FILE_TYPE} files ({files_info}){resume_info}")
         self.logger.info(f"Source directory: {self.source_dir}")
         self.logger.info(f"Log file: {log_file}")
         self.logger.info(f"Results will be saved to: {Config.CURRENT_RESULTS_DIR}")
@@ -118,18 +162,18 @@ class LearningConstraintsOrchestrator:
             max_files (int, optional): Maximum number of files to process. If None, uses self.max_files
 
         Returns:
-            tuple: (successful_count, total_count)
+            tuple: (successful_count, total_count, skipped_count)
         """
         if not os.path.exists(directory_path):
             self.logger.error(f"Directory does not exist: {directory_path}")
-            return 0, 0
+            return 0, 0, 0
 
         file_names = [f for f in os.listdir(directory_path)
                      if os.path.isfile(os.path.join(directory_path, f))]
 
         if not file_names:
             self.logger.warning(f"No files found in directory: {directory_path}")
-            return 0, 0
+            return 0, 0, 0
 
         # Determine how many files to process
         files_to_process = max_files if max_files is not None else self.max_files
@@ -140,14 +184,26 @@ class LearningConstraintsOrchestrator:
             self.logger.info(f"Processing all {len(file_names)} files from {directory_path}")
 
         successful_count = 0
+        skipped_count = 0
+
         for i, file_name in enumerate(file_names, 1):
             file_path = os.path.join(directory_path, file_name)
+
+            # Check if file was already processed (resuming from checkpoint)
+            if self.checkpoint_manager.is_file_processed(file_path):
+                self.logger.info(f"Skipping already processed file {i}/{len(file_names)}: {file_path}")
+                skipped_count += 1
+                continue
+
             self.logger.info(f"Processing file {i}/{len(file_names)}: {file_path}")
             if self.process_file(file_path):
                 successful_count += 1
 
-        self.logger.info(f"Successfully processed {successful_count}/{len(file_names)} files")
-        return successful_count, len(file_names)
+            # Mark file as processed and save checkpoint
+            self.checkpoint_manager.mark_file_processed(file_path)
+
+        self.logger.info(f"Successfully processed {successful_count}/{len(file_names)} files (skipped {skipped_count} already processed)")
+        return successful_count, len(file_names), skipped_count
 
     def save_results(self):
         """Save the collected results to JSON files in the log directory."""
@@ -328,7 +384,7 @@ class LearningConstraintsOrchestrator:
 
         # Process files from the source directory
         self.logger.info(f"Processing files from source directory: {self.source_dir}")
-        passed_successful, passed_total = self.process_directory(self.source_dir)
+        passed_successful, passed_total, passed_skipped = self.process_directory(self.source_dir)
 
         # Process files from the abstracted special directory (use remaining quota if any)
         abstracted_special_dir = Config.CURRENT_ABSTRACTED_SPECIAL_DIR
@@ -338,13 +394,17 @@ class LearningConstraintsOrchestrator:
             remaining_files = max(0, self.max_files - passed_total)
             if remaining_files > 0:
                 self.logger.info(f"Processing files from abstracted special directory (up to {remaining_files} files)")
-                special_successful, special_total = self.process_directory(abstracted_special_dir, remaining_files)
+                special_successful, special_total, special_skipped = self.process_directory(abstracted_special_dir, remaining_files)
             else:
                 self.logger.info("Skipping abstracted special directory - file limit reached")
-                special_successful, special_total = 0, 0
+                special_successful, special_total, special_skipped = 0, 0, 0
         else:
             self.logger.info("Processing files from abstracted special directory")
-            special_successful, special_total = self.process_directory(abstracted_special_dir)
+            special_successful, special_total, special_skipped = self.process_directory(abstracted_special_dir)
+
+        # Save final checkpoint
+        self.checkpoint_manager.mark_complete()
+        self.logger.info("Checkpoint saved")
 
         # Save results
         self.save_results()
@@ -382,12 +442,13 @@ class LearningConstraintsOrchestrator:
         print(f"\nTotal processing time: {time_str}")
 
         return {
-            'passed_files': {'successful': passed_successful, 'total': passed_total},
-            'special_files': {'successful': special_successful, 'total': special_total},
+            'passed_files': {'successful': passed_successful, 'total': passed_total, 'skipped': passed_skipped},
+            'special_files': {'successful': special_successful, 'total': special_total, 'skipped': special_skipped},
             'transformed_files': {'successful': transform_successful, 'total': transform_total},
             'stats': self.global_state.get_stats(),
             'total_time': total_time,
-            'total_time_formatted': time_str
+            'total_time_formatted': time_str,
+            'resumed': self._is_resuming
         }
 
 

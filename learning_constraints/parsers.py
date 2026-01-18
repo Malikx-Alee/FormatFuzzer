@@ -156,6 +156,24 @@ class FileParser:
                                 byte_values['hex']
                             )
 
+                            # Check if attribute now has too many unique values
+                            cleaned_key = clean_attribute_key(attribute)
+                            if cleaned_key not in self.global_state.blacklisted_attributes:
+                                # Navigate to the leaf set to count unique values
+                                current = self.global_state.nested_values_hex
+                                for key in attribute_keys:
+                                    if key in current:
+                                        current = current[key]
+                                    else:
+                                        current = None
+                                        break
+
+                                if current is not None and isinstance(current, set):
+                                    if len(current) > Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE:
+                                        self.global_state.blacklisted_attributes.add(cleaned_key)
+                                        remove_attribute_from_nested_dict(self.global_state.nested_values_hex, attribute)
+                                        self.logger.debug(f"Blacklisted attribute '{cleaned_key}' - exceeded {Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE} unique values")
+
                             # Detect PNG compression method from IHDR chunk
                             # PNG IHDR structure: width(4) + height(4) + bit_depth(1) + color_type(1) + compression(1) + filter(1) + interlace(1)
                             if Config.FILE_TYPE == "png":

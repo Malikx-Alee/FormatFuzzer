@@ -41,6 +41,7 @@ from .validators import FileValidator
 from .parsers import FileParser
 from .mutators import FileMutator
 from .transformers import ResultTransformer
+from .checkpoint import CheckpointManager
 from .main import LearningConstraintsOrchestrator, main
 from .utils import (
     convert_sets_to_lists,
@@ -98,13 +99,14 @@ __all__ = [
     'FileParser',
     'FileMutator',
     'ResultTransformer',
-    
+    'CheckpointManager',
+
     # Convenience functions
     'main',
     'set_file_type',
     'get_supported_file_types',
     'create_orchestrator',
-    
+
     # Utility functions
     'convert_sets_to_lists',
     'clean_attribute_key',

@@ -3,13 +3,15 @@
 Simple runner script for the Learning Constraints module.
 
 Usage:
-    python run_learning_constraints.py <file_type> [max_files] [source_dir]
+    python run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]
 
 Examples:
     python run_learning_constraints.py png                    # Process all PNG files from default directory
     python run_learning_constraints.py jpg 5                  # Process only 5 JPG files
     python run_learning_constraints.py gif /path/to/files     # Process all GIF files from custom directory
     python run_learning_constraints.py bmp 5 /path/to/files   # Process 5 BMP files from custom directory
+    python run_learning_constraints.py png --resume           # Resume from last checkpoint
+    python run_learning_constraints.py png 10 --resume        # Resume with max 10 files
 """
 
 import sys
@@ -20,15 +22,69 @@ from learning_constraints import (
     set_file_type,
     get_supported_file_types
 )
+from learning_constraints.checkpoint import CheckpointManager
+
+
+def check_for_resume(file_type):
+    """
+    Check if there's an existing checkpoint to resume from.
+
+    Args:
+        file_type (str): The file type to check for checkpoints
+
+    Returns:
+        tuple: (log_dir_path, checkpoint_path) or (None, None) if not found
+    """
+    log_dir, checkpoint_path = Config.find_latest_checkpoint(file_type)
+    if checkpoint_path:
+        # Load checkpoint info to display
+        checkpoint_info = CheckpointManager.load_checkpoint_info(checkpoint_path)
+        return log_dir, checkpoint_path, checkpoint_info
+    return None, None, None
+
+
+def prompt_for_resume(checkpoint_info, log_dir):
+    """
+    Prompt the user to decide whether to resume or start fresh.
+
+    Args:
+        checkpoint_info (dict): Information about the checkpoint
+        log_dir (str): Path to the log directory
+
+    Returns:
+        bool: True to resume, False to start fresh
+    """
+    print("\n" + "=" * 60)
+    print("⚠️  FOUND INCOMPLETE RUN")
+    print("=" * 60)
+    print(f"Log directory: {log_dir}")
+    print(f"Started: {checkpoint_info.get('started_at', 'Unknown')}")
+    print(f"Last updated: {checkpoint_info.get('last_updated', 'Unknown')}")
+    print(f"Files processed: {len(checkpoint_info.get('processed_files', []))}")
+    print("=" * 60)
+
+    while True:
+        response = input("\nDo you want to [R]esume or start [N]ew? (R/N): ").strip().upper()
+        if response in ('R', 'RESUME'):
+            return True
+        elif response in ('N', 'NEW'):
+            return False
+        else:
+            print("Please enter 'R' to resume or 'N' to start a new run.")
 
 
 def main():
     """Simple main function that takes file type, max files, and source directory as command line arguments."""
 
+    # Check for --resume flag
+    resume_flag = '--resume' in sys.argv
+    if resume_flag:
+        sys.argv.remove('--resume')
+
     # Check if file type was provided as argument (required)
     if len(sys.argv) < 2:
         print("Error: file_type argument is required.")
-        print("Usage: python run_learning_constraints.py <file_type> [max_files] [source_dir]")
+        print("Usage: python run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]")
         print(f"Supported types: {', '.join(get_supported_file_types())}")
         sys.exit(1)
 
@@ -41,24 +97,27 @@ def main():
     # Parse optional arguments - detect if second arg is max_files (integer) or source_dir (path)
     if len(sys.argv) > 2:
         arg2 = sys.argv[2]
-        try:
-            max_files = int(arg2)
-            if max_files <= 0:
-                print("Error: max_files must be a positive integer.")
-                sys.exit(1)
-        except ValueError:
-            # Not an integer, treat as source_dir
-            source_dir = arg2
-            if not os.path.isdir(source_dir):
-                print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
-                sys.exit(1)
+        if arg2 != '--resume':  # Skip if it's the resume flag
+            try:
+                max_files = int(arg2)
+                if max_files <= 0:
+                    print("Error: max_files must be a positive integer.")
+                    sys.exit(1)
+            except ValueError:
+                # Not an integer, treat as source_dir
+                source_dir = arg2
+                if not os.path.isdir(source_dir):
+                    print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
+                    sys.exit(1)
 
     # Check if source_dir was provided as third argument
     if len(sys.argv) > 3:
-        source_dir = sys.argv[3]
-        if not os.path.isdir(source_dir):
-            print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
-            sys.exit(1)
+        arg3 = sys.argv[3]
+        if arg3 != '--resume':  # Skip if it's the resume flag
+            source_dir = arg3
+            if not os.path.isdir(source_dir):
+                print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
+                sys.exit(1)
 
     # Validate file type
     supported_types = get_supported_file_types()
@@ -70,14 +129,38 @@ def main():
     # Set the file type
     set_file_type(file_type)
 
+    # Check for existing checkpoint and decide whether to resume
+    should_resume = False
+    if resume_flag:
+        # Explicit --resume flag: set RESUME_MODE and proceed
+        Config.set_resume_mode(True)
+        should_resume = True
+        log_dir, checkpoint_path, checkpoint_info = check_for_resume(file_type)
+        if checkpoint_path:
+            print(f"\nResuming from checkpoint: {checkpoint_path}")
+        else:
+            print("\nNo checkpoint found to resume. Starting fresh.")
+            Config.set_resume_mode(False)
+            should_resume = False
+    else:
+        # No --resume flag: check if checkpoint exists and prompt
+        log_dir, checkpoint_path, checkpoint_info = check_for_resume(file_type)
+        if checkpoint_path and checkpoint_info:
+            should_resume = prompt_for_resume(checkpoint_info, log_dir)
+            Config.set_resume_mode(should_resume)
+            if not should_resume:
+                print("\nStarting new run...")
+
     files_info = f"all files" if max_files is None else f"up to {max_files} files"
     effective_source_dir = source_dir if source_dir else Config.DATA_DIR
-    print(f"Learning Constraints - Processing {file_type.upper()} files ({files_info})")
-    print("=" * 60)
-    print(f"Source directory: {effective_source_dir}")
-    print(f"Results directory: ./logs/<timestamp>_{file_type}/results/")
-    if max_files is not None:
-        print(f"File limit: {max_files} files")
+
+    if not should_resume:
+        print(f"\nLearning Constraints - Processing {file_type.upper()} files ({files_info})")
+        print("=" * 60)
+        print(f"Source directory: {effective_source_dir}")
+        print(f"Results directory: ./logs/<timestamp>_{file_type}/results/")
+        if max_files is not None:
+            print(f"File limit: {max_files} files")
 
     # Check if source directory exists
     if not os.path.exists(effective_source_dir):
@@ -96,16 +179,29 @@ def main():
             print("\n" + "=" * 60)
             print("PROCESSING COMPLETED SUCCESSFULLY!")
             print("=" * 60)
-            print(f"Valid files processed: {results['passed_files']['successful']}/{results['passed_files']['total']}")
-            print(f"Special files processed: {results['special_files']['successful']}/{results['special_files']['total']}")
+
+            passed = results['passed_files']
+            special = results['special_files']
+
+            skipped_info = f" (skipped {passed.get('skipped', 0)} already processed)" if passed.get('skipped', 0) > 0 else ""
+            print(f"Valid files processed: {passed['successful']}/{passed['total']}{skipped_info}")
+
+            special_skipped = f" (skipped {special.get('skipped', 0)} already processed)" if special.get('skipped', 0) > 0 else ""
+            print(f"Special files processed: {special['successful']}/{special['total']}{special_skipped}")
+
             print(f"Result files transformed: {results['transformed_files']['successful']}/{results['transformed_files']['total']}")
+
+            if results.get('resumed'):
+                print("(This was a resumed run)")
+
             if 'total_time_formatted' in results:
                 print(f"Total time: {results['total_time_formatted']}")
         else:
             print("Process failed or was interrupted.")
 
     except KeyboardInterrupt:
-        print("\nProcess interrupted by user.")
+        print("\nProcess interrupted by user. Progress has been saved to checkpoint.")
+        print("Run with --resume flag to continue from where you left off.")
     except Exception as e:
         print(f"Error during processing: {e}")
         sys.exit(1)
