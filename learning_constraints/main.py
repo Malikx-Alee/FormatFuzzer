@@ -77,14 +77,18 @@ class LearningConstraintsOrchestrator:
             log_file = Config.initialize_logging(file_type)
 
         # Set up logging to both file and console
+        # Clear any existing handlers (for Python 3.7 compatibility - 'force' param added in 3.8)
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
         logging.basicConfig(
             level=log_level,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(log_file),
                 logging.StreamHandler()
-            ],
-            force=True  # Override any existing configuration
+            ]
         )
         self.logger = logging.getLogger(__name__)
 
