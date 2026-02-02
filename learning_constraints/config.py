@@ -55,6 +55,21 @@ class Config:
     #           This is faster but doesn't validate the actual checksum
     ZIP_VALIDATE_CHECKSUM_WITH_DECOMPRESSION = True
 
+    # Parallel processing settings
+    # Number of worker processes for parallel file processing
+    # Set to None to use all available CPU cores, or specify a number
+    # Set to 1 to disable parallel processing
+    PARALLEL_WORKERS = 10  # None = use all available CPU cores
+
+    # Batch size for parallel processing (number of files to process in each batch)
+    # Smaller batches mean more frequent checkpoint saves but more overhead
+    PARALLEL_BATCH_SIZE = 100
+
+    # Per-file timeout in seconds for parallel processing
+    # If a file takes longer than this, it will be skipped and logged
+    # Set to None to disable timeout (not recommended)
+    PARALLEL_FILE_TIMEOUT = 300  # 5 minutes per file
+
     # Validation tools configuration
     VALIDATION_TOOLS = {
         "images": ["gif", "jpg", "png", "bmp"],
@@ -191,8 +206,11 @@ class GlobalState:
         # Nested dictionaries to store extracted values
         self.nested_values_hex = collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 
-        # Blacklist for attributes that have been found to be larger than max size
-        self.blacklisted_attributes = set()
+        # Separate blacklists for different reasons
+        # Attributes blacklisted because their byte size > MAX_ATTRIBUTE_SIZE_BYTES
+        self.blacklisted_by_size = set()
+        # Attributes blacklisted because unique values count > MAX_UNIQUE_VALUES_PER_ATTRIBUTE
+        self.blacklisted_by_count = set()
 
         # Detected checksum algorithms and metadata
         # Structure:
@@ -207,10 +225,16 @@ class GlobalState:
         self.valid_abstractions_special_count = 0
         self.valid_overwrites_count = 0
 
+    @property
+    def blacklisted_attributes(self):
+        """Combined blacklist for backward compatibility - union of both blacklists."""
+        return self.blacklisted_by_size | self.blacklisted_by_count
+
     def reset(self):
         """Reset all state variables."""
         self.nested_values_hex.clear()
-        self.blacklisted_attributes.clear()
+        self.blacklisted_by_size.clear()
+        self.blacklisted_by_count.clear()
         self.checksum_algorithms = {"by_chunk_type": {}, "compression_methods": {}}
         self.valid_abstractions_count = 0
         self.valid_abstractions_special_count = 0
@@ -222,7 +246,9 @@ class GlobalState:
             "valid_abstractions": self.valid_abstractions_count,
             "valid_abstractions_special": self.valid_abstractions_special_count,
             "valid_overwrites": self.valid_overwrites_count,
-            "blacklisted_attributes": len(self.blacklisted_attributes)
+            "blacklisted_by_size": len(self.blacklisted_by_size),
+            "blacklisted_by_count": len(self.blacklisted_by_count),
+            "blacklisted_total": len(self.blacklisted_attributes)
         }
 
     def to_dict(self):
@@ -244,7 +270,8 @@ class GlobalState:
 
         return {
             "nested_values_hex": convert_nested(dict(self.nested_values_hex)),
-            "blacklisted_attributes": list(self.blacklisted_attributes),
+            "blacklisted_by_size": list(self.blacklisted_by_size),
+            "blacklisted_by_count": list(self.blacklisted_by_count),
             "checksum_algorithms": self.checksum_algorithms,
             "valid_abstractions_count": self.valid_abstractions_count,
             "valid_abstractions_special_count": self.valid_abstractions_special_count,
@@ -277,9 +304,15 @@ class GlobalState:
         if "nested_values_hex" in data:
             self.nested_values_hex = restore_nested(data["nested_values_hex"])
 
-        # Restore blacklisted_attributes
-        if "blacklisted_attributes" in data:
-            self.blacklisted_attributes = set(data["blacklisted_attributes"])
+        # Restore blacklisted sets (with backward compatibility for old checkpoints)
+        if "blacklisted_by_size" in data:
+            self.blacklisted_by_size = set(data["blacklisted_by_size"])
+        elif "blacklisted_attributes" in data:
+            # Old checkpoint format - put all in blacklisted_by_size for backward compatibility
+            self.blacklisted_by_size = set(data["blacklisted_attributes"])
+
+        if "blacklisted_by_count" in data:
+            self.blacklisted_by_count = set(data["blacklisted_by_count"])
 
         # Restore checksum_algorithms
         if "checksum_algorithms" in data:

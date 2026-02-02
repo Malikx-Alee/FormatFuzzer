@@ -68,8 +68,8 @@ class FileParser:
                     if end - start > Config.MAX_ATTRIBUTE_SIZE_BYTES:
                         blocked_key = clean_attribute_key(label)
                         # Check if this is a new attribute being blacklisted
-                        if blocked_key not in self.global_state.blacklisted_attributes:
-                            self.global_state.blacklisted_attributes.add(blocked_key)
+                        if blocked_key not in self.global_state.blacklisted_by_size:
+                            self.global_state.blacklisted_by_size.add(blocked_key)
                             # Remove any previously added values for this attribute from nested_values_hex
                             remove_attribute_from_nested_dict(self.global_state.nested_values_hex, label)
 
@@ -158,7 +158,7 @@ class FileParser:
 
                             # Check if attribute now has too many unique values
                             cleaned_key = clean_attribute_key(attribute)
-                            if cleaned_key not in self.global_state.blacklisted_attributes:
+                            if cleaned_key not in self.global_state.blacklisted_by_count:
                                 # Navigate to the leaf set to count unique values
                                 current = self.global_state.nested_values_hex
                                 for key in attribute_keys:
@@ -170,7 +170,7 @@ class FileParser:
 
                                 if current is not None and isinstance(current, set):
                                     if len(current) > Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE:
-                                        self.global_state.blacklisted_attributes.add(cleaned_key)
+                                        self.global_state.blacklisted_by_count.add(cleaned_key)
                                         remove_attribute_from_nested_dict(self.global_state.nested_values_hex, attribute)
                                         self.logger.debug(f"Blacklisted attribute '{cleaned_key}' - exceeded {Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE} unique values")
 
@@ -251,12 +251,12 @@ class FileParser:
                                                 checksum_input = file_data[checksum_start:checksum_end + 1]
 
                                                 # DEBUG LOGS FOR CHECKSUM DETECTION
-                                                print(f"[ChecksumDetect] prefix={prefix} type_range=({type_start},{type_end}) crc_start={crc_start} checksum_span=({checksum_start},{checksum_end}) expected={byte_values['hex']}")
+                                                # print(f"[ChecksumDetect] prefix={prefix} type_range=({type_start},{type_end}) crc_start={crc_start} checksum_span=({checksum_start},{checksum_end}) expected={byte_values['hex']}")
 
                                                 first_match = detect_checksum_algorithm_first(checksum_input, expected_crc_bytes)
                                                 matches = [first_match] if first_match else []
 
-                                                print(f"[ChecksumDetect] match={first_match}")
+                                                # print(f"[ChecksumDetect] match={first_match}")
 
                                                 # Record by chunk type (read the 4-byte type) and only compute once per type per file
                                                 try:
@@ -347,11 +347,12 @@ class FileParser:
                                                                         first_match = detect_checksum_algorithm_first(uncompressed_data, le)
 
                                                                     method_name = self._get_compression_method_name(frmethod_value)
-                                                                    print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value}({method_name}) validated={first_match}")
+                                                                    # print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value}({method_name}) validated={first_match}")
                                                                 else:
-                                                                    print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value} unsupported")
+                                                                    pass  # print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value} unsupported")
                                                             except Exception as decomp_err:
-                                                                print(f"[ChecksumDetect][ZIP] element={chunk_label} decompression failed: {decomp_err}")
+                                                                # print(f"[ChecksumDetect][ZIP] element={chunk_label} decompression failed: {decomp_err}")
+                                                                pass
 
                                                     # If decompression is disabled or failed, assume CRC-32 per ZIP spec
                                                     if first_match is None:
@@ -360,9 +361,9 @@ class FileParser:
                                                         first_match = "CRC-32"
                                                         if frmethod_value is not None:
                                                             method_name = self._get_compression_method_name(frmethod_value)
-                                                            print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value}({method_name}) assumed=CRC-32 (ZIP spec)")
+                                                            # print(f"[ChecksumDetect][ZIP] element={chunk_label} method={frmethod_value}({method_name}) assumed=CRC-32 (ZIP spec)")
                                                         else:
-                                                            print(f"[ChecksumDetect][ZIP] element={chunk_label} assumed=CRC-32 (ZIP spec: CRC over uncompressed data)")
+                                                            pass  # print(f"[ChecksumDetect][ZIP] element={chunk_label} assumed=CRC-32 (ZIP spec: CRC over uncompressed data)")
 
                                                     # Aggregate under unified key "recordCrc"
                                                     if first_match:
@@ -386,16 +387,16 @@ class FileParser:
                                                     record_algos = self.global_state.checksum_algorithms["by_chunk_type"].get("recordCrc")
                                                     if record_algos:
                                                         self.global_state.checksum_algorithms["by_chunk_type"][unified_key] = list(record_algos)
-                                                        print(f"[ChecksumDetect][ZIP] element={chunk_label} mirrored to {unified_key}: {record_algos}")
+                                                        # print(f"[ChecksumDetect][ZIP] element={chunk_label} mirrored to {unified_key}: {record_algos}")
 
                                                     # Mark deCrc as processed for this file
                                                     seen_chunk_types_for_file.add("deCrc")
                                         except Exception as zde:
-                                            print(f"[ChecksumDetect][ZIP][ERROR] {zde}")
+                                            # print(f"[ChecksumDetect][ZIP][ERROR] {zde}")
                                             pass
                                 except Exception as de:
                                     # Best-effort detection; continue
-                                    print(f"[ChecksumDetect][ERROR] {de}")
+                                    # print(f"[ChecksumDetect][ERROR] {de}")
                                     pass
 
                         except ValueError as e:

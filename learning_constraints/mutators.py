@@ -5,10 +5,27 @@ Contains functions for mutating files through smart abstraction and random overw
 import os
 import shutil
 import subprocess
+import hashlib
 from .config import Config, GlobalState
 from .validators import FileValidator
 from .parsers import FileParser
 from .utils import overwrite_bytes_randomly
+
+
+def _get_unique_suffix(file_path: str) -> str:
+    """
+    Generate a unique suffix for temporary files based on input file path and process ID.
+    This prevents race conditions when multiple processes work on different files.
+
+    Args:
+        file_path: Path to the input file being processed
+
+    Returns:
+        A unique suffix string
+    """
+    # Use hash of file path + process ID to create unique identifier
+    unique_str = f"{file_path}_{os.getpid()}"
+    return hashlib.md5(unique_str.encode()).hexdigest()[:8]
 
 
 class FileMutator:
@@ -122,7 +139,9 @@ class FileMutator:
         Returns:
             bool: True if a valid smart abstraction mutation was created, False otherwise
         """
-        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR, f"abstracted.{Config.FILE_TYPE}")
+        # Use unique suffix to prevent race conditions in parallel processing
+        unique_suffix = _get_unique_suffix(file_path)
+        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR, f"abstracted_{unique_suffix}.{Config.FILE_TYPE}")
 
         for attempt in range(1, Config.MAX_ABSTRACTION_ATTEMPTS + 1):
             try:
@@ -170,7 +189,9 @@ class FileMutator:
         Returns:
             bool: True if a valid random overwrite mutation was created, False otherwise
         """
-        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR, f"overwrite.{Config.FILE_TYPE}")
+        # Use unique suffix to prevent race conditions in parallel processing
+        unique_suffix = _get_unique_suffix(file_path)
+        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR, f"overwrite_{unique_suffix}.{Config.FILE_TYPE}")
 
         for attempt in range(1, Config.MAX_OVERWRITE_ATTEMPTS + 1):
             try:

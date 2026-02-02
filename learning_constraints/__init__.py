@@ -42,6 +42,7 @@ from .parsers import FileParser
 from .mutators import FileMutator
 from .transformers import ResultTransformer
 from .checkpoint import CheckpointManager
+from .parallel import process_files_parallel, merge_global_states, get_worker_count
 from .main import LearningConstraintsOrchestrator, main
 from .utils import (
     convert_sets_to_lists,
@@ -106,6 +107,11 @@ __all__ = [
     'set_file_type',
     'get_supported_file_types',
     'create_orchestrator',
+
+    # Parallel processing
+    'process_files_parallel',
+    'merge_global_states',
+    'get_worker_count',
 
     # Utility functions
     'convert_sets_to_lists',

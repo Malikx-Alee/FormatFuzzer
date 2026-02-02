@@ -12,6 +12,15 @@ Examples:
     python run_learning_constraints.py bmp 5 /path/to/files   # Process 5 BMP files from custom directory
     python run_learning_constraints.py png --resume           # Resume from last checkpoint
     python run_learning_constraints.py png 10 --resume        # Resume with max 10 files
+
+Parallel Processing:
+    By default, files are processed in parallel using all available CPU cores.
+    Configure parallelism in learning_constraints/config.py:
+    - PARALLEL_WORKERS = None    # Use all CPU cores (default)
+    - PARALLEL_WORKERS = 4       # Use 4 worker processes
+    - PARALLEL_WORKERS = 1       # Disable parallel processing (sequential mode)
+    - PARALLEL_BATCH_SIZE = 50   # Files per batch for checkpointing
+    - PARALLEL_FILE_TIMEOUT = 300  # Per-file timeout in seconds (5 min default)
 """
 
 import sys
@@ -20,7 +29,8 @@ from learning_constraints import (
     LearningConstraintsOrchestrator,
     Config,
     set_file_type,
-    get_supported_file_types
+    get_supported_file_types,
+    get_worker_count
 )
 from learning_constraints.checkpoint import CheckpointManager
 
@@ -161,6 +171,13 @@ def main():
         print(f"Results directory: ./logs/<timestamp>_{file_type}/results/")
         if max_files is not None:
             print(f"File limit: {max_files} files")
+
+        # Show parallel processing configuration
+        num_workers = get_worker_count()
+        if num_workers > 1:
+            print(f"Parallel processing: {num_workers} workers")
+        else:
+            print("Parallel processing: disabled (sequential mode)")
 
     # Check if source directory exists
     if not os.path.exists(effective_source_dir):

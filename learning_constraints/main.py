@@ -19,6 +19,7 @@ try:
     from .transformers import ResultTransformer
     from .utils import convert_sets_to_lists
     from .checkpoint import CheckpointManager
+    from .parallel import process_files_parallel, get_worker_count
 except ImportError:
     # Fallback for direct execution
     from learning_constraints.config import Config, GlobalState
@@ -27,6 +28,7 @@ except ImportError:
     from learning_constraints.transformers import ResultTransformer
     from learning_constraints.utils import convert_sets_to_lists
     from learning_constraints.checkpoint import CheckpointManager
+    from learning_constraints.parallel import process_files_parallel, get_worker_count
 
 
 class LearningConstraintsOrchestrator:
@@ -157,13 +159,15 @@ class LearningConstraintsOrchestrator:
             self.logger.error(f"Error processing file {file_path}: {e}")
             return False
 
-    def process_directory(self, directory_path, max_files=None):
+    def process_directory(self, directory_path, max_files=None, use_parallel=None):
         """
         Process files in a directory.
 
         Args:
             directory_path (str): Path to the directory containing files to process
             max_files (int, optional): Maximum number of files to process. If None, uses self.max_files
+            use_parallel (bool, optional): Whether to use parallel processing.
+                                           If None, uses parallel if PARALLEL_WORKERS != 1
 
         Returns:
             tuple: (successful_count, total_count, skipped_count)
@@ -187,27 +191,57 @@ class LearningConstraintsOrchestrator:
         else:
             self.logger.info(f"Processing all {len(file_names)} files from {directory_path}")
 
+        # Build full file paths
+        file_paths = [os.path.join(directory_path, f) for f in file_names]
+
+        # Determine if we should use parallel processing
+        num_workers = get_worker_count()
+        should_use_parallel = use_parallel if use_parallel is not None else (num_workers > 1)
+
+        if should_use_parallel and len(file_paths) > 1:
+            # Use parallel processing
+            self.logger.info(f"Using parallel processing with {num_workers} workers")
+            return process_files_parallel(
+                file_paths=file_paths,
+                file_type=Config.FILE_TYPE,
+                main_state=self.global_state,
+                checkpoint_manager=self.checkpoint_manager,
+                logger=self.logger,
+                max_workers=num_workers
+            )
+        else:
+            # Use sequential processing (original behavior)
+            return self._process_directory_sequential(file_paths)
+
+    def _process_directory_sequential(self, file_paths):
+        """
+        Process files sequentially (original behavior).
+
+        Args:
+            file_paths (list): List of file paths to process
+
+        Returns:
+            tuple: (successful_count, total_count, skipped_count)
+        """
         successful_count = 0
         skipped_count = 0
 
-        for i, file_name in enumerate(file_names, 1):
-            file_path = os.path.join(directory_path, file_name)
-
+        for i, file_path in enumerate(file_paths, 1):
             # Check if file was already processed (resuming from checkpoint)
             if self.checkpoint_manager.is_file_processed(file_path):
-                self.logger.info(f"Skipping already processed file {i}/{len(file_names)}: {file_path}")
+                self.logger.info(f"Skipping already processed file {i}/{len(file_paths)}: {file_path}")
                 skipped_count += 1
                 continue
 
-            self.logger.info(f"Processing file {i}/{len(file_names)}: {file_path}")
+            self.logger.info(f"Processing file {i}/{len(file_paths)}: {file_path}")
             if self.process_file(file_path):
                 successful_count += 1
 
             # Mark file as processed and save checkpoint
             self.checkpoint_manager.mark_file_processed(file_path)
 
-        self.logger.info(f"Successfully processed {successful_count}/{len(file_names)} files (skipped {skipped_count} already processed)")
-        return successful_count, len(file_names), skipped_count
+        self.logger.info(f"Successfully processed {successful_count}/{len(file_paths)} files (skipped {skipped_count} already processed)")
+        return successful_count, len(file_paths), skipped_count
 
     def save_results(self):
         """Save the collected results to JSON files in the log directory."""
@@ -233,20 +267,33 @@ class LearningConstraintsOrchestrator:
             else:
                 self.logger.warning("Log directory not initialized, results not saved!")
 
-            # Save blacklisted attributes to JSON file
-            blacklisted_data = {
-                "blacklisted_attributes": list(self.global_state.blacklisted_attributes),
-                "total_count": len(self.global_state.blacklisted_attributes),
-                "file_type": Config.FILE_TYPE,
-                "description": f"Attributes that were blacklisted due to size > {Config.MAX_ATTRIBUTE_SIZE_BYTES} bytes"
-            }
-
-            # Save to log directory
+            # Save blacklisted attributes to JSON files (separate files for each type)
             if Config.CURRENT_RESULTS_DIR:
-                log_blacklist_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_blacklisted_attributes.json")
-                with open(log_blacklist_file, "w") as f:
-                    json.dump(blacklisted_data, f, indent=4)
-                self.logger.info(f"Blacklisted attributes saved to {log_blacklist_file}")
+                # Save blacklisted by size
+                blacklisted_by_size_data = {
+                    "blacklisted_attributes": sorted(list(self.global_state.blacklisted_by_size)),
+                    "total_count": len(self.global_state.blacklisted_by_size),
+                    "file_type": Config.FILE_TYPE,
+                    "threshold_bytes": Config.MAX_ATTRIBUTE_SIZE_BYTES,
+                    "description": f"Attributes blacklisted because their byte size exceeds {Config.MAX_ATTRIBUTE_SIZE_BYTES} bytes"
+                }
+                blacklist_by_size_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_blacklisted_by_size.json")
+                with open(blacklist_by_size_file, "w") as f:
+                    json.dump(blacklisted_by_size_data, f, indent=4)
+                self.logger.info(f"Blacklisted by size saved to {blacklist_by_size_file}")
+
+                # Save blacklisted by count
+                blacklisted_by_count_data = {
+                    "blacklisted_attributes": sorted(list(self.global_state.blacklisted_by_count)),
+                    "total_count": len(self.global_state.blacklisted_by_count),
+                    "file_type": Config.FILE_TYPE,
+                    "threshold_count": Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE,
+                    "description": f"Attributes blacklisted because they have more than {Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE} unique values"
+                }
+                blacklist_by_count_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_blacklisted_by_count.json")
+                with open(blacklist_by_count_file, "w") as f:
+                    json.dump(blacklisted_by_count_data, f, indent=4)
+                self.logger.info(f"Blacklisted by count saved to {blacklist_by_count_file}")
             else:
                 self.logger.warning("Log directory not initialized, blacklisted attributes not saved!")
 
@@ -362,7 +409,9 @@ class LearningConstraintsOrchestrator:
         print(f"Valid Abstractions: {stats['valid_abstractions']}")
         print(f"Valid Abstractions (Special): {stats['valid_abstractions_special']}")
         print(f"Valid Overwrites: {stats['valid_overwrites']}")
-        print(f"Blacklisted Attributes: {stats['blacklisted_attributes']}")
+        print(f"Blacklisted by Size (>{Config.MAX_ATTRIBUTE_SIZE_BYTES} bytes): {stats['blacklisted_by_size']}")
+        print(f"Blacklisted by Count (>{Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE} values): {stats['blacklisted_by_count']}")
+        print(f"Blacklisted Total: {stats['blacklisted_total']}")
         print("="*50)
 
     def run_complete_process(self):
