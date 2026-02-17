@@ -159,9 +159,19 @@ class FileParser:
                             # Check if attribute now has too many unique values
                             cleaned_key = clean_attribute_key(attribute)
                             if cleaned_key not in self.global_state.blacklisted_by_count:
+                                # Clean keys for navigation (consistent with how insert_nested_dict stores data)
+                                # This removes array indices like _5 from chunk_5, so we navigate to 'chunk' not 'chunk_5'
+                                cleaned_keys = []
+                                for key in attribute_keys:
+                                    if "_" in key:
+                                        parts = key.split("_")
+                                        if len(parts) > 1 and parts[1].isdigit():
+                                            key = parts[0]
+                                    cleaned_keys.append(key)
+
                                 # Navigate to the leaf set to count unique values
                                 current = self.global_state.nested_values_hex
-                                for key in attribute_keys:
+                                for key in cleaned_keys:
                                     if key in current:
                                         current = current[key]
                                     else:
