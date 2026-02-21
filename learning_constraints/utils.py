@@ -5,11 +5,55 @@ Contains helper functions used across multiple modules.
 import collections
 import random
 import os
+import logging
 
 import binascii
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 import zlib
 import hashlib
 from typing import Optional, Tuple, List, Dict
+from dataclasses import dataclass
+
+
+@dataclass
+class ByteRange:
+    """
+    Represents a byte range with an associated attribute.
+
+    Attributes:
+        start: Start position of the byte range (inclusive)
+        end: End position of the byte range (inclusive)
+        attribute: Hierarchical attribute path (e.g., "file~chunk~crc")
+    """
+    start: int
+    end: int
+    attribute: str
+
+    @property
+    def size(self) -> int:
+        """Return the size of the byte range in bytes."""
+        return self.end - self.start + 1
+
+    @property
+    def cleaned_key(self) -> str:
+        """Return the cleaned attribute key (without array indices)."""
+        return clean_attribute_key(self.attribute)
+
+    @property
+    def attribute_keys(self) -> List[str]:
+        """Return the attribute split into hierarchical keys."""
+        return self.attribute.split("~")
+
+    def is_within_size_limit(self, max_bytes: int = 8) -> bool:
+        """Check if the byte range is within the size limit."""
+        return self.end - self.start <= max_bytes
+
+    def as_tuple(self) -> Tuple[int, int, str]:
+        """Return the byte range as a tuple for backward compatibility."""
+        return (self.start, self.end, self.attribute)
+
 
 # Optional: third-party hashes may not be available; guard imports
 try:
@@ -223,6 +267,41 @@ def convert_sets_to_lists(obj):
     return obj
 
 
+def clean_single_key(key):
+    """
+    Removes trailing _<number> suffix from a single key if present.
+
+    For example: 'chunk_5' -> 'chunk', 'data_10' -> 'data', 'crc' -> 'crc'
+
+    Args:
+        key (str): A single key to clean
+
+    Returns:
+        str: The cleaned key
+    """
+    if "_" in key:
+        parts = key.split("_")
+        if len(parts) > 1 and parts[1].isdigit():
+            return parts[0]
+    return key
+
+
+def clean_keys_list(keys):
+    """
+    Clean a list of keys by removing array indices (e.g., chunk_5 -> chunk).
+
+    This is used to ensure consistent navigation in nested dictionaries,
+    where data is stored without array indices.
+
+    Args:
+        keys (list): List of keys to clean
+
+    Returns:
+        list: List of cleaned keys
+    """
+    return [clean_single_key(key) for key in keys]
+
+
 def clean_attribute_key(attribute):
     """
     Extracts the last part after '~' and removes trailing _<number> if present.
@@ -234,11 +313,7 @@ def clean_attribute_key(attribute):
         str: The cleaned attribute key
     """
     key = attribute.split("~")[-1]
-    if "_" in key:
-        parts = key.split("_")
-        if len(parts) > 1 and parts[1].isdigit():
-            key = parts[0]
-    return key
+    return clean_single_key(key)
 
 
 def insert_nested_dict(root, original_keys, value):
@@ -253,17 +328,7 @@ def insert_nested_dict(root, original_keys, value):
     current = root
 
     # Clean keys by removing array indices if present
-    keys = []
-    for key in original_keys:
-        if "_" in key:
-            # If the key contains an underscore, split it
-            parts = key.split("_")
-            # Check if the second part is a number
-            if parts[1].isdigit():
-                # If it's a number, only keep the first part
-                key = parts[0]
-            # If it's not a number, keep the whole key
-        keys.append(key)
+    keys = clean_keys_list(original_keys)
 
     # Navigate through all keys except the last one
     for key in keys[:-1]:  # Traverse and create intermediate levels
@@ -327,7 +392,7 @@ def overwrite_bytes_randomly(file_path, start, end):
             # print(f"Successfully overwrote bytes from position {start} to {end} in {file_path}.")
 
     except Exception as e:
-        print(f"Error overwriting bytes in {file_path}: {e}")
+        logger.error(f"Error overwriting bytes in {file_path}: {e}")
         raise
 
 

@@ -6,10 +6,14 @@ import os
 import shutil
 import subprocess
 import hashlib
+import logging
 from .config import Config, GlobalState
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 from .validators import FileValidator
 from .parsers import FileParser
-from .utils import overwrite_bytes_randomly
+from .utils import overwrite_bytes_randomly, ByteRange
 
 
 def _get_unique_suffix(file_path: str) -> str:
@@ -73,7 +77,7 @@ class FileMutator:
             return os.path.exists(output_path) and result.returncode == 0
             
         except Exception as e:
-            print(f"Error performing smart abstraction mutation on {file_path} from {start} to {end}: {e}")
+            logger.error(f"Error performing smart abstraction mutation on {file_path} from {start} to {end}: {e}")
             return False
     
     def random_overwrite_mutation(self, file_path, start, end, output_path):
@@ -99,7 +103,7 @@ class FileMutator:
             return True
             
         except Exception as e:
-            print(f"Error performing random overwrite mutation on {file_path}: {e}")
+            logger.error(f"Error performing random overwrite mutation on {file_path}: {e}")
             return False
     
     def save_special_file(self, source_path, new_attribute, start, end, operation_type="abstract"):
@@ -171,7 +175,7 @@ class FileMutator:
                         pass
 
             except Exception as e:
-                print(f"Error in smart abstraction mutation attempt {attempt} for {file_path}: {e}")
+                logger.error(f"Error in smart abstraction mutation attempt {attempt} for {file_path}: {e}")
 
         return False
     
@@ -225,7 +229,7 @@ class FileMutator:
                         pass
 
             except Exception as e:
-                print(f"Error in random overwrite mutation attempt {attempt} for {file_path}: {e}")
+                logger.error(f"Error in random overwrite mutation attempt {attempt} for {file_path}: {e}")
             finally:
                 # Clean up temporary file
                 if os.path.exists(output_file):
@@ -239,8 +243,8 @@ class FileMutator:
 
         Args:
             file_path (str): Path to the file to mutate
-            byte_ranges (list): List of tuples (start, end, attribute) - filtered ranges
-            original_byte_ranges (list): List of all byte ranges including large ones
+            byte_ranges (list): List of ByteRange objects - filtered ranges
+            original_byte_ranges (list): List of all ByteRange objects including large ones
 
         Returns:
             list: The original byte ranges (for compatibility)
@@ -248,20 +252,20 @@ class FileMutator:
         # Get original attributes before mutation
         original_attributes = self.parser.get_file_attributes(byte_ranges)
 
-        for start, end, attribute in byte_ranges:
-            # print(f"Mutating {file_path} from {start} to {end}...")
+        for br in byte_ranges:
+            # print(f"Mutating {file_path} from {br.start} to {br.end}...")
 
             # Try smart abstraction-based mutation
             try:
-                self.process_smart_abstraction_mutation_attempt(file_path, start, end, original_attributes, original_byte_ranges)
+                self.process_smart_abstraction_mutation_attempt(file_path, br.start, br.end, original_attributes, original_byte_ranges)
             except Exception as e:
-                print(f"Error in smart abstraction mutation for {file_path}: {e}")
+                logger.error(f"Error in smart abstraction mutation for {file_path}: {e}")
 
             # Try random overwrite mutation
             try:
-                self.process_random_overwrite_mutation_attempt(file_path, start, end, original_attributes, original_byte_ranges)
+                self.process_random_overwrite_mutation_attempt(file_path, br.start, br.end, original_attributes, original_byte_ranges)
             except Exception as e:
-                print(f"Error in random overwrite mutation for {file_path}: {e}")
+                logger.error(f"Error in random overwrite mutation for {file_path}: {e}")
 
         return byte_ranges
 

@@ -4,12 +4,16 @@ Contains validation functions for different file types.
 """
 import subprocess
 import zipfile
+import logging
 from .config import Config
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class FileValidator:
     """File validation class with methods for different file types."""
-    
+
     @staticmethod
     def validate_image_file(file_path):
         """
@@ -30,7 +34,7 @@ class FileValidator:
             )
             return "Elapsed" in result.stdout
         except Exception as e:
-            print(f"Error validating image file {file_path}: {e}")
+            logger.error(f"Error validating image file {file_path}: {e}")
             return False
     
     @staticmethod
@@ -48,7 +52,7 @@ class FileValidator:
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 return zip_ref.testzip() is None  # Returns None if no errors are found
         except Exception as e:
-            print(f"Error validating zip file {file_path}: {e}")
+            logger.error(f"Error validating zip file {file_path}: {e}")
             return False
     
     @staticmethod
@@ -80,7 +84,7 @@ class FileValidator:
             
             return True
         except Exception as e:
-            print(f"Error validating audio/video file {file_path}: {e}")
+            logger.error(f"Error validating audio/video file {file_path}: {e}")
             return False
     
     @staticmethod
@@ -103,7 +107,7 @@ class FileValidator:
             )
             return result.returncode == 0
         except Exception as e:
-            print(f"Error validating pcap file {file_path}: {e}")
+            logger.error(f"Error validating pcap file {file_path}: {e}")
             return False
     
     @staticmethod
@@ -129,7 +133,7 @@ class FileValidator:
             # Check that there are no error messages starting with "-:"
             return not any(line.startswith("-:") for line in result.stdout.splitlines())
         except Exception as e:
-            print(f"Error validating MIDI file {file_path}: {e}")
+            logger.error(f"Error validating MIDI file {file_path}: {e}")
             return False
     
     @classmethod
@@ -170,11 +174,11 @@ class FileValidator:
                 return cls.validate_midi_file(file_path)
             
             else:
-                print(f"Validation for file type '{file_type}' is not implemented.")
+                logger.warning(f"Validation for file type '{file_type}' is not implemented.")
                 return False
 
         except Exception as e:
-            print(f"Error validating {file_type} file: {e}")
+            logger.error(f"Error validating {file_type} file: {e}")
             return False
 
 

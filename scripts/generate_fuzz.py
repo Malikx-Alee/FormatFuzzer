@@ -7,9 +7,9 @@ import subprocess
 
 def main():
     # Set default values here if you want to hardcode
-    DEFAULT_FILETYPE = "bmp"
-    DEFAULT_OUTPUT_DIR = "./testcases_fuzz_generated/bmp"
-    DEFAULT_COUNT = 1000
+    DEFAULT_FILETYPE = "png"
+    DEFAULT_OUTPUT_DIR = "./testcases_fuzz_generated/png"
+    DEFAULT_COUNT = 2000
 
     if len(sys.argv) == 4:
         filetype = sys.argv[1]
