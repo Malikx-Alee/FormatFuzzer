@@ -52,7 +52,7 @@ class ResultTransformer:
         
         # Post-process: if any key has more than 10 values, set to "More than 10 values"
         for k in list(out.keys()):
-            if isinstance(out[k], list) and len(out[k]) > 10:
+            if isinstance(out[k], list) and len(out[k]) > 20:
                 out[k] = "More than 10 values"
         
         return out

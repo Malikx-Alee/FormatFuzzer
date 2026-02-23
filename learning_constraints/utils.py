@@ -477,3 +477,45 @@ def remove_attribute_from_nested_dict(root, attribute_label):
 
     # Start the recursive removal
     _remove_from_dict(root, cleaned_key)
+
+
+def filter_blacklisted_attributes(nested_dict, blacklisted_attributes):
+    """
+    Filter out all blacklisted attributes from a nested dictionary structure.
+    Returns a new dictionary without the blacklisted attributes.
+
+    Args:
+        nested_dict: The nested dictionary to filter (can be the result of convert_sets_to_lists)
+        blacklisted_attributes: Set of cleaned attribute keys to remove
+
+    Returns:
+        dict: A new dictionary with blacklisted attributes removed
+    """
+    if not blacklisted_attributes:
+        return nested_dict
+
+    def _filter_dict(current_dict):
+        """Recursively filter blacklisted keys from the dictionary."""
+        if not isinstance(current_dict, dict):
+            return current_dict
+
+        result = {}
+        for key, value in current_dict.items():
+            # Check if this key is blacklisted (matches cleaned key)
+            if key in blacklisted_attributes:
+                # Skip blacklisted attributes
+                continue
+
+            if isinstance(value, dict):
+                # Recursively filter nested dict
+                filtered_value = _filter_dict(value)
+                # Only add if there's something left after filtering
+                if filtered_value:
+                    result[key] = filtered_value
+            else:
+                # Leaf node (list or other value) - include it
+                result[key] = value
+
+        return result
+
+    return _filter_dict(nested_dict)

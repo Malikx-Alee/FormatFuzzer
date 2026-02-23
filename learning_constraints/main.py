@@ -17,7 +17,7 @@ try:
     from .parsers import FileParser
     from .mutators import FileMutator
     from .transformers import ResultTransformer
-    from .utils import convert_sets_to_lists
+    from .utils import convert_sets_to_lists, filter_blacklisted_attributes
     from .checkpoint import CheckpointManager
     from .parallel import process_files_parallel, get_worker_count
 except ImportError:
@@ -26,7 +26,7 @@ except ImportError:
     from learning_constraints.parsers import FileParser
     from learning_constraints.mutators import FileMutator
     from learning_constraints.transformers import ResultTransformer
-    from learning_constraints.utils import convert_sets_to_lists
+    from learning_constraints.utils import convert_sets_to_lists, filter_blacklisted_attributes
     from learning_constraints.checkpoint import CheckpointManager
     from learning_constraints.parallel import process_files_parallel, get_worker_count
 
@@ -248,6 +248,12 @@ class LearningConstraintsOrchestrator:
         try:
             # Convert nested dictionaries to final stats
             final_stats_hex = convert_sets_to_lists(self.global_state.nested_values_hex)
+
+            # Filter out blacklisted attributes from final results
+            blacklisted = self.global_state.blacklisted_attributes
+            if blacklisted:
+                self.logger.info(f"Filtering {len(blacklisted)} blacklisted attributes from results")
+                final_stats_hex = filter_blacklisted_attributes(final_stats_hex, blacklisted)
 
             # Integrate checksum algorithms into the final hex results (no separate file)
             if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False) and self.global_state.checksum_algorithms:

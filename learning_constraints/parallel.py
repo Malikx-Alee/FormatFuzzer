@@ -138,9 +138,11 @@ def merge_global_states(main_state: GlobalState, worker_state_dict: Dict[str, An
         return
 
     # Merge nested_values_hex (nested dicts with sets as leaves)
+    # Pass blacklisted attributes to skip merging values for them
     _merge_nested_values(
-        main_state.nested_values_hex,
-        worker_state_dict.get('nested_values_hex', {})
+        main_dict=main_state.nested_values_hex,
+        worker_dict=worker_state_dict.get('nested_values_hex', {}),
+        blacklisted_attributes=main_state.blacklisted_attributes
     )
 
     # Merge blacklisted sets
@@ -179,15 +181,29 @@ def merge_global_states(main_state: GlobalState, worker_state_dict: Dict[str, An
     _enforce_unique_values_limit(main_state)
 
 
-def _merge_nested_values(main_dict: dict, worker_dict: dict):
+def _merge_nested_values(main_dict: dict, worker_dict: dict, blacklisted_attributes: set = None, current_path: str = ""):
     """
     Recursively merge nested dictionaries where leaves are sets (or lists from serialization).
 
     Args:
         main_dict: Main nested dictionary to merge into
         worker_dict: Worker's nested dictionary to merge from
+        blacklisted_attributes: Set of cleaned attribute keys to skip (already blacklisted)
+        current_path: Current path in the nested structure (for tracking attribute names)
     """
+    if blacklisted_attributes is None:
+        blacklisted_attributes = set()
+
     for key, value in worker_dict.items():
+        # Build path for this key
+        path = f"{current_path}~{key}" if current_path else key
+
+        # Check if this key is blacklisted (use cleaned key for comparison)
+        cleaned_key = clean_attribute_key(path)
+        if cleaned_key in blacklisted_attributes:
+            # Skip merging values for blacklisted attributes
+            continue
+
         if key not in main_dict:
             # Key doesn't exist in main - add it
             if isinstance(value, list):
@@ -196,14 +212,14 @@ def _merge_nested_values(main_dict: dict, worker_dict: dict):
             elif isinstance(value, dict):
                 # Recursively create nested structure
                 main_dict[key] = {}
-                _merge_nested_values(main_dict[key], value)
+                _merge_nested_values(main_dict[key], value, blacklisted_attributes, path)
             else:
                 main_dict[key] = value
         else:
             # Key exists - need to merge
             if isinstance(value, dict) and isinstance(main_dict[key], dict):
                 # Both are dicts - recurse
-                _merge_nested_values(main_dict[key], value)
+                _merge_nested_values(main_dict[key], value, blacklisted_attributes, path)
             elif isinstance(value, (list, set)):
                 # Value is a collection - merge as set
                 if isinstance(main_dict[key], set):
