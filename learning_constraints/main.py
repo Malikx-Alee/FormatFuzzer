@@ -1,9 +1,11 @@
 """
 Main orchestrator module for the learning constraints system.
 Coordinates the entire process of file parsing, abstraction, and analysis.
+
+This module provides the high-level orchestration logic. For details on the
+data flow and execution, see README.md in this directory.
 """
 import os
-import json
 import logging
 import sys
 import time
@@ -17,18 +19,20 @@ try:
     from .parsers import FileParser
     from .mutators import FileMutator
     from .transformers import ResultTransformer
-    from .utils import convert_sets_to_lists, filter_blacklisted_attributes
     from .checkpoint import CheckpointManager
     from .parallel import process_files_parallel, get_worker_count
+    from .result_saver import ResultSaver
+    from .statistics import StatisticsReporter
 except ImportError:
     # Fallback for direct execution
     from learning_constraints.config import Config, GlobalState
     from learning_constraints.parsers import FileParser
     from learning_constraints.mutators import FileMutator
     from learning_constraints.transformers import ResultTransformer
-    from learning_constraints.utils import convert_sets_to_lists, filter_blacklisted_attributes
     from learning_constraints.checkpoint import CheckpointManager
     from learning_constraints.parallel import process_files_parallel, get_worker_count
+    from learning_constraints.result_saver import ResultSaver
+    from learning_constraints.statistics import StatisticsReporter
 
 
 class LearningConstraintsOrchestrator:
@@ -105,6 +109,10 @@ class LearningConstraintsOrchestrator:
         self.parser = FileParser(self.global_state)
         self.mutator = FileMutator(self.global_state)
         self.transformer = ResultTransformer()
+
+        # Initialize result saver and statistics reporter
+        self.result_saver = ResultSaver(self.global_state, self.transformer)
+        self.stats_reporter = StatisticsReporter(self.global_state)
 
         # Initialize checkpoint manager
         self.checkpoint_manager = CheckpointManager(self.global_state)
@@ -245,104 +253,11 @@ class LearningConstraintsOrchestrator:
 
     def save_results(self):
         """Save the collected results to JSON files in the log directory."""
-        try:
-            # Convert nested dictionaries to final stats
-            final_stats_hex = convert_sets_to_lists(self.global_state.nested_values_hex)
-
-            # Filter out blacklisted attributes from final results
-            blacklisted = self.global_state.blacklisted_attributes
-            if blacklisted:
-                self.logger.info(f"Filtering {len(blacklisted)} blacklisted attributes from results")
-                final_stats_hex = filter_blacklisted_attributes(final_stats_hex, blacklisted)
-
-            # Integrate checksum algorithms into the final hex results (no separate file)
-            if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False) and self.global_state.checksum_algorithms:
-                try:
-                    # Merge into final stats under a dedicated key BEFORE writing
-                    final_stats_hex["checksum_algorithms"] = self.global_state.checksum_algorithms
-                    self.logger.info("Checksum algorithms integrated into final hex results")
-                except Exception as ce:
-                    self.logger.warning(f"Integrating checksum algorithms failed: {ce}")
-
-            # Save hex results to log directory
-            if Config.CURRENT_RESULTS_DIR:
-                log_hex_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_parsed_values_hex_original.json")
-                with open(log_hex_file, "w") as f:
-                    json.dump(final_stats_hex, f, indent=4)
-                self.logger.info(f"Hex results saved to {log_hex_file}")
-            else:
-                self.logger.warning("Log directory not initialized, results not saved!")
-
-            # Save blacklisted attributes to JSON files (separate files for each type)
-            if Config.CURRENT_RESULTS_DIR:
-                # Save blacklisted by size
-                blacklisted_by_size_data = {
-                    "blacklisted_attributes": sorted(list(self.global_state.blacklisted_by_size)),
-                    "total_count": len(self.global_state.blacklisted_by_size),
-                    "file_type": Config.FILE_TYPE,
-                    "threshold_bytes": Config.MAX_ATTRIBUTE_SIZE_BYTES,
-                    "description": f"Attributes blacklisted because their byte size exceeds {Config.MAX_ATTRIBUTE_SIZE_BYTES} bytes"
-                }
-                blacklist_by_size_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_blacklisted_by_size.json")
-                with open(blacklist_by_size_file, "w") as f:
-                    json.dump(blacklisted_by_size_data, f, indent=4)
-                self.logger.info(f"Blacklisted by size saved to {blacklist_by_size_file}")
-
-                # Save blacklisted by count
-                blacklisted_by_count_data = {
-                    "blacklisted_attributes": sorted(list(self.global_state.blacklisted_by_count)),
-                    "total_count": len(self.global_state.blacklisted_by_count),
-                    "file_type": Config.FILE_TYPE,
-                    "threshold_count": Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE,
-                    "description": f"Attributes blacklisted because they have more than {Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE} unique values"
-                }
-                blacklist_by_count_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_blacklisted_by_count.json")
-                with open(blacklist_by_count_file, "w") as f:
-                    json.dump(blacklisted_by_count_data, f, indent=4)
-                self.logger.info(f"Blacklisted by count saved to {blacklist_by_count_file}")
-            else:
-                self.logger.warning("Log directory not initialized, blacklisted attributes not saved!")
-
-        except Exception as e:
-            self.logger.error(f"Error saving results: {e}")
+        self.result_saver.save_all_results()
 
     def save_template_results(self, template_values):
         """Save the mined template values to a separate JSON file in the log directory."""
-        try:
-            # Convert sets to lists for JSON serialization
-            final_template_values = convert_sets_to_lists(template_values)
-
-            # Save to log directory
-            if Config.CURRENT_RESULTS_DIR:
-                log_template_file = os.path.join(Config.CURRENT_RESULTS_DIR, f"{Config.FILE_TYPE}_template_values.json")
-                with open(log_template_file, "w") as f:
-                    json.dump(final_template_values, f, indent=4)
-                self.logger.info(f"Template values saved to {log_template_file}")
-
-                # Also create a flattened version using the transformer
-                self.transform_template_results(log_template_file)
-            else:
-                self.logger.warning("Log directory not initialized, template values not saved!")
-
-        except Exception as e:
-            self.logger.error(f"Error saving template results: {e}")
-
-    def transform_template_results(self, template_file_path):
-        """Transform the template results to flattened format."""
-        try:
-            # Use the existing transformer to flatten the template results
-            flattened_count, _ = self.transformer.transform_specific_files(
-                file_patterns=[template_file_path],
-                output_suffix="_flattened"
-            )
-
-            if flattened_count > 0:
-                self.logger.info(f"Template values transformed and flattened successfully")
-            else:
-                self.logger.warning(f"Failed to transform template values")
-
-        except Exception as e:
-            self.logger.error(f"Error transforming template results: {e}")
+        self.result_saver.save_template_values(template_values)
 
     def transform_results(self, output_suffix="_flattened"):
         """
@@ -378,47 +293,11 @@ class LearningConstraintsOrchestrator:
 
     def log_crc_values(self):
         """Log detected checksum algorithms (by chunk type) before printing statistics."""
-        try:
-            if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False):
-                algos = self.global_state.checksum_algorithms or {}
-                by_type = algos.get("by_chunk_type", {}) if isinstance(algos, dict) else {}
-
-                if Config.FILE_TYPE == "zip":
-                    print("\n----- ZIP checksum algorithms (by_chunk_type) -----")
-                    print(f"recordCrc: {by_type.get('recordCrc')}")
-                    print(f"dirEntryCrc: {by_type.get('dirEntryCrc')}")
-
-                    # Show compression methods found
-                    compression_methods = algos.get("compression_methods", {})
-                    if compression_methods:
-                        print("\n----- ZIP compression methods found -----")
-                        for method_id, method_name in sorted(compression_methods.items(), key=lambda x: int(x[0])):
-                            print(f"  {method_id}: {method_name}")
-                else:
-                    print("\n----- Checksum algorithms (by_chunk_type) -----")
-                    if isinstance(by_type, dict) and by_type:
-                        for k, v in by_type.items():
-                            print(f"{k}: {v}")
-                    else:
-                        print("<none>")
-        except Exception as e:
-            print(f"[ChecksumAlgo LOG][ERROR] {e}")
+        self.stats_reporter.log_checksum_algorithms()
 
     def print_statistics(self):
         """Print processing statistics."""
-        stats = self.global_state.get_stats()
-
-        print("\n" + "="*50)
-        print("PROCESSING STATISTICS")
-        print("="*50)
-        print(f"File Type: {Config.FILE_TYPE}")
-        print(f"Valid Abstractions: {stats['valid_abstractions']}")
-        print(f"Valid Abstractions (Special): {stats['valid_abstractions_special']}")
-        print(f"Valid Overwrites: {stats['valid_overwrites']}")
-        print(f"Blacklisted by Size (>{Config.MAX_ATTRIBUTE_SIZE_BYTES} bytes): {stats['blacklisted_by_size']}")
-        print(f"Blacklisted by Count (>{Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE} values): {stats['blacklisted_by_count']}")
-        print(f"Blacklisted Total: {stats['blacklisted_total']}")
-        print("="*50)
+        self.stats_reporter.print_statistics()
 
     def run_complete_process(self):
         """
@@ -483,19 +362,7 @@ class LearningConstraintsOrchestrator:
         # Calculate and log total time
         end_time = time.time()
         total_time = end_time - start_time
-
-        # Format time in a human-readable way
-        if total_time < 60:
-            time_str = f"{total_time:.2f} seconds"
-        elif total_time < 3600:
-            minutes = int(total_time // 60)
-            seconds = total_time % 60
-            time_str = f"{minutes} minutes {seconds:.2f} seconds"
-        else:
-            hours = int(total_time // 3600)
-            minutes = int((total_time % 3600) // 60)
-            seconds = total_time % 60
-            time_str = f"{hours} hours {minutes} minutes {seconds:.2f} seconds"
+        time_str = self.stats_reporter.format_duration(total_time)
 
         self.logger.info(f"Learning constraints process completed in {time_str}")
         print(f"\nTotal processing time: {time_str}")
