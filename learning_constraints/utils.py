@@ -481,15 +481,20 @@ def remove_attribute_from_nested_dict(root, attribute_label):
 
 def filter_blacklisted_attributes(nested_dict, blacklisted_attributes):
     """
-    Filter out all blacklisted attributes from a nested dictionary structure.
-    Returns a new dictionary without the blacklisted attributes.
+    Filter out all blacklisted LEAF attributes from a nested dictionary structure.
+    Returns a new dictionary without the blacklisted leaf attributes.
+
+    Only leaf attributes (those with list values) are filtered. Intermediate/navigation
+    keys (those with dict values) are never filtered, even if their name appears in the
+    blacklist. This is because blacklisting is based on the full attribute path, and
+    intermediate keys like 'chunk' or 'ihdr' should not cause their children to be removed.
 
     Args:
         nested_dict: The nested dictionary to filter (can be the result of convert_sets_to_lists)
         blacklisted_attributes: Set of cleaned attribute keys to remove
 
     Returns:
-        dict: A new dictionary with blacklisted attributes removed
+        dict: A new dictionary with blacklisted leaf attributes removed
     """
     if not blacklisted_attributes:
         return nested_dict
@@ -501,19 +506,18 @@ def filter_blacklisted_attributes(nested_dict, blacklisted_attributes):
 
         result = {}
         for key, value in current_dict.items():
-            # Check if this key is blacklisted (matches cleaned key)
-            if key in blacklisted_attributes:
-                # Skip blacklisted attributes
-                continue
-
             if isinstance(value, dict):
-                # Recursively filter nested dict
+                # Intermediate node - always recurse, never filter based on key name
+                # Even if 'chunk' or 'ihdr' is in blacklist, we keep the navigation path
                 filtered_value = _filter_dict(value)
                 # Only add if there's something left after filtering
                 if filtered_value:
                     result[key] = filtered_value
             else:
-                # Leaf node (list or other value) - include it
+                # Leaf node (list or other value) - check blacklist
+                if key in blacklisted_attributes:
+                    # Skip blacklisted leaf attributes
+                    continue
                 result[key] = value
 
         return result
