@@ -58,31 +58,52 @@ class FileValidator:
     @staticmethod
     def validate_audio_video_file(file_path, expected_format=None):
         """
-        Validate audio/video files using ffprobe (part of FFmpeg).
-        
+        Validate audio/video files using ffmpeg.
+
+        Uses ffmpeg with null output to validate the file can be decoded.
+        If expected_format is provided, also checks that the detected format
+        matches (handles comma-separated format lists like "mov,mp4,m4a,3gp,3g2,mj2").
+
         Args:
             file_path (str): Path to the audio/video file
             expected_format (str, optional): Expected format name for validation
-            
+
         Returns:
             bool: True if valid, False otherwise
         """
+        import re
+
         try:
+            # Use ffmpeg to validate and get format info
+            # -i: input file
+            # -f null -: output to null (just validate, don't produce output)
+            # We capture stderr because ffmpeg prints format info there
             result = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_format", "-show_streams", file_path],
+                ["ffmpeg", "-i", file_path, "-f", "null", "-"],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=True
             )
-            
-            if "format_name" not in result.stdout:
+
+            # If ffmpeg returns non-zero, file is invalid
+            if result.returncode != 0:
                 return False
-            
-            # Check for specific format if provided
-            if expected_format:
-                return f"format_name={expected_format}" in result.stdout
-            
+
+            # If no specific format check needed, file is valid
+            if not expected_format:
+                return True
+
+            # Parse format from ffmpeg's stderr output
+            # ffmpeg prints: "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'file.mp4':"
+            match = re.search(r'Input #\d+,\s*([^,\s]+(?:,[^,\s]+)*),\s*from', result.stderr)
+            if match:
+                # Split the comma-separated format list and check if expected format is in it
+                formats = [f.strip() for f in match.group(1).split(',')]
+                return expected_format in formats
+
+            # If we can't parse format but file decoded successfully, accept it
             return True
+
         except Exception as e:
             logger.error(f"Error validating audio/video file {file_path}: {e}")
             return False
