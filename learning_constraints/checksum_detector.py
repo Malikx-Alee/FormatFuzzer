@@ -38,7 +38,7 @@ class ChecksumDetector:
     ):
         """
         Detect compression methods and checksum algorithms for the current attribute.
-        
+
         Args:
             file_data: The raw file data
             byte_ranges: List of filtered byte ranges
@@ -49,23 +49,29 @@ class ChecksumDetector:
             byte_values: Dictionary with extracted byte values (hex, etc.)
             seen_chunk_types_for_file: Set tracking which chunk types have been processed
         """
+        # Early exit if checksum detection is disabled or file type not supported
+        if not Config.ENABLE_CHECKSUM_DETECTION:
+            return
+
+        if Config.FILE_TYPE not in Config.CHECKSUM_DETECTION_SUPPORTED_TYPES:
+            return
+
         last_key = attribute_keys[-1]
-        
+
         # Detect PNG compression method from IHDR chunk
-        if Config.FILE_TYPE == "png" and Config.ENABLE_CHECKSUM_DETECTION:
+        if Config.FILE_TYPE == "png":
             self._detect_png_compression(file_data, end, attribute_keys, last_key)
-        
+
         # Detect BMP compression method from BITMAPINFOHEADER
-        if Config.FILE_TYPE == "bmp" and Config.ENABLE_CHECKSUM_DETECTION:
+        if Config.FILE_TYPE == "bmp":
             self._detect_bmp_compression(file_data, start, end, attribute_keys, last_key)
-        
-        # Detect checksum algorithms if enabled
-        if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False):
-            self._detect_checksum(
-                file_data, byte_ranges, original_byte_ranges,
-                start, attribute_keys, byte_values,
-                seen_chunk_types_for_file
-            )
+
+        # Detect checksum algorithms
+        self._detect_checksum(
+            file_data, byte_ranges, original_byte_ranges,
+            start, attribute_keys, byte_values,
+            seen_chunk_types_for_file
+        )
     
     def _detect_png_compression(self, file_data: bytes, end: int, attribute_keys: list, last_key: str):
         """Detect PNG compression method from IHDR chunk."""

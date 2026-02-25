@@ -38,6 +38,10 @@ class Config:
     # Feature toggles
     ENABLE_CHECKSUM_DETECTION = True
 
+    # File types that support checksum and compression detection
+    # Only these file types will have checksum/compression detection enabled
+    CHECKSUM_DETECTION_SUPPORTED_TYPES = ["png", "zip", "bmp"]
+
     # Resume/Checkpoint settings
     # Set to True to resume from the last checkpoint, False to start fresh
     # Can also be set via environment variable: RESUME_RUN=true
