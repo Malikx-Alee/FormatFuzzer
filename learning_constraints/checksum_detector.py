@@ -60,12 +60,12 @@ class ChecksumDetector:
             self._detect_bmp_compression(file_data, start, end, attribute_keys, last_key)
         
         # Detect checksum algorithms if enabled
-        # if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False):
-        #     self._detect_checksum(
-        #         file_data, byte_ranges, original_byte_ranges,
-        #         start, attribute_keys, byte_values,
-        #         seen_chunk_types_for_file
-        #     )
+        if getattr(Config, "ENABLE_CHECKSUM_DETECTION", False):
+            self._detect_checksum(
+                file_data, byte_ranges, original_byte_ranges,
+                start, attribute_keys, byte_values,
+                seen_chunk_types_for_file
+            )
     
     def _detect_png_compression(self, file_data: bytes, end: int, attribute_keys: list, last_key: str):
         """Detect PNG compression method from IHDR chunk."""
