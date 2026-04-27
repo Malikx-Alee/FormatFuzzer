@@ -69,3 +69,4 @@ gif_data/
 testcases_4_learn/
 logs/
 testcases_fuzz_generated/
+testcases_fuzz_generated_copy/
