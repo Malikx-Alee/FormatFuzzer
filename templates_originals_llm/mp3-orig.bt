@@ -1,0 +1,87 @@
+//------------------------------------------------
+//--- 010 Editor v1.3.2 Binary Template
+//
+//      File: MP3.bt  (FormatFuzzer generation-optimized)
+//   Purpose: Generate MPEG-1 Audio Layer III (MP3) files.
+//  Category: Audio
+// File Mask: *.mp3
+//  ID Bytes: FF FB
+//
+// FormatFuzzer modifications (derived from
+// results_ai/mp3-orig/llm_reterived_constraints_mp3-orig_opus4.7.json):
+//
+// The original template is a passive parser whose frame loop recomputes the
+// frame size from bitrate/sample-rate tables and seeks by it. Driven by random
+// bytes it never lands on a real frame boundary, so no output decodes.
+//
+// This generation version emits a real MPEG-1 Layer III bitstream: a run of
+// constant-bitrate frames, each beginning with a valid 4-byte frame header and
+// padded to the exact frame length the header implies, framed by an ID3v2.4
+// header at the front and an ID3v1 tag at the end (the common real-world MP3
+// shape). All structural anchors (sync word, MPEG/layer ids, ID3 magics) are
+// pinned to a known-good, mutually-consistent configuration:
+//   MPEG-1 (mpeg_id=3), Layer III (layer=1), no CRC, 128 kbit/s, 44100 Hz,
+//   stereo -> header bytes FF FB 90 00, frame length 417 bytes.
+// Fuzzable: the per-frame audio payload and the ID3 text fields.
+//------------------------------------------------
+
+BigEndian();
+local int evil = SetEvilBit(false);   // honour the pinned structural layout
+
+// MPEG-1 Layer III, 128 kbit/s, 44100 Hz:
+//   frameLen = floor(144 * bitrate / sampleRate) + padding
+//            = floor(144 * 128000 / 44100) = 417 bytes
+local int FRAME_LEN = 417;
+local int FRAME_COUNT = 25;           // enough frames for reliable detection
+
+// One constant-bitrate MPEG-1 Layer III frame.
+//   FF       : sync (8 bits)
+//   FB       : sync(3) | mpeg_id=11 (MPEG-1) | layer=01 (III) | protection=1
+//   90       : bitrate_index=1001 (128k) | freq_index=00 (44.1k) | pad=0 | priv=0
+//   00       : channel=00 (stereo) | modeext=00 | copy=0 | orig=0 | emphasis=00
+typedef struct {
+    ubyte sync1   = { 0xFF };
+    ubyte sync2   = { 0xFB };
+    ubyte rate_fq = { 0x90 };
+    ubyte mode    = { 0x00 };
+    ubyte data[ FRAME_LEN - 4 ];      // fuzzable audio payload
+} MP3_FRAME <optimize=false>;
+
+// ID3v2.4 header (10 bytes): "ID3", version 4.0, flags 0, synchsafe size 0
+// (an empty tag - valid and skipped by decoders).
+typedef struct {
+    char  id[3]      = { "ID3" };     // fixed magic
+    ubyte ver_major  = { 4 };         // ID3v2.4 (enum {2,3,4})
+    ubyte ver_revision = { 0 };
+    ubyte flags      = { 0 };
+    // synchsafe 32-bit size = 0 (each byte holds 7 bits, high bit clear)
+    ubyte size0      = { 0 };
+    ubyte size1      = { 0 };
+    ubyte size2      = { 0 };
+    ubyte size3      = { 0 };
+} ID3V2_HEADER;
+
+// ID3v1 tag (128 bytes): "TAG" + fixed-width text fields.
+typedef struct {
+    char  tag[3]     = { "TAG" };     // fixed magic
+    char  title[30];                  // fuzzable text
+    char  artist[30];
+    char  album[30];
+    char  year[4]    = { "2024" };
+    char  comment[30];
+    ubyte genre      = { 12 };        // "Other"
+} ID3V1_TAG;
+
+// ---------------------------------------------------------------------------
+// MAIN
+// ---------------------------------------------------------------------------
+SetBackColor( cLtGreen );
+ID3V2_HEADER id3v2;                   // leading ID3v2.4 tag (empty)
+
+SetBackColor( cNone );
+MP3_FRAME frames[ FRAME_COUNT ] <optimize=false>;   // the MPEG audio bitstream
+
+SetBackColor( cLtBlue );
+ID3V1_TAG id3v1;                      // trailing ID3v1 tag
+
+SetEvilBit( evil );
