@@ -68,7 +68,7 @@ def generate_for_filetype(filetype, output_dir, count, max_attempts_multiplier):
     failed_dir = os.path.join(output_dir, "failed")
     os.makedirs(failed_dir, exist_ok=True)
 
-    fuzzer_cmd = f"./{filetype}-fuzzer"
+    fuzzer_cmd = os.path.join(REPO_ROOT, "build", f"{filetype}-fuzzer")
     max_attempts = max(count * max_attempts_multiplier, count)
     valid_count = 0
     invalid_count = 0
