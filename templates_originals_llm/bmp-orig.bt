@@ -1,0 +1,158 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: BMP.bt
+//    Author: SweetScape Software
+//   Version: 2.3
+//   Purpose: Parse BMP image files.
+//  Category: Image
+// File Mask: *.bmp
+//  ID Bytes: 42 4D //BM
+//   History:  
+//   2.3   2016-02-26 SweetScape: Allow negative heights.
+//   2.2   2015-10-13 SweetScape: Updated header for repository submission.
+//   2.1   SweetScape: Bug fix for ReadRGBQUAD function.
+//   2.0   SweetScape: Added read functions.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at
+//  https://en.wikipedia.org/wiki/BMP_file_format
+//------------------------------------------------
+
+// Define structures used in BMP files
+
+typedef struct {   // bmfh
+    CHAR    bfType[2];
+    DWORD   bfSize;
+    WORD    bfReserved1;
+    WORD    bfReserved2;
+    DWORD   bfOffBits;
+} BITMAPFILEHEADER;
+
+typedef struct {    // bmih
+    DWORD   biSize;
+    LONG    biWidth;
+    LONG    biHeight;
+    WORD    biPlanes;
+    WORD    biBitCount;
+    DWORD   biCompression;
+    DWORD   biSizeImage;
+    LONG    biXPelsPerMeter;
+    LONG    biYPelsPerMeter;
+    DWORD   biClrUsed;
+    DWORD   biClrImportant;
+} BITMAPINFOHEADER;
+
+typedef struct {   // rgbq
+    UBYTE   rgbBlue;
+    UBYTE   rgbGreen;
+    UBYTE   rgbRed;
+    UBYTE   rgbReserved;
+} RGBQUAD <read=ReadRGBQUAD>;
+
+typedef struct {   // rgbt
+    UBYTE   rgbBlue;
+    UBYTE   rgbGreen;
+    UBYTE   rgbRed;
+} RGBTRIPLE <read=ReadRGBTRIPLE>;
+
+//---------------------------------------------
+// Custom read functions for color types - this allows the
+//  color to be displayed without having to open up the structure.
+
+string ReadRGBQUAD( RGBQUAD &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X%02X", a.rgbReserved, a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+string ReadRGBTRIPLE( RGBTRIPLE &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X", a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+//---------------------------------------------
+// MAIN  --  Generation-optimized allocation.
+//
+// The original template is a passive parser: it reads bfType/biBitCount/biWidth
+// etc. and trusts them. Driven by a fuzzer that picks those fields randomly it
+// emits a broken signature, impossible bit depths and pixel arrays whose length
+// disagrees with the headers, so every output is rejected.
+//
+// This generation version emits a complete, self-consistent BMP whose structure
+// mirrors a real encoder. Two faithful BMP shapes are produced (the generator
+// picks one per file):
+//   * 8-bit palettized  : 40-byte DIB header + 256-entry RGBQUAD palette + an
+//                         index-per-pixel raster (BI_RGB);
+//   * 24-bit true colour : 40-byte DIB header + a BGR-triple raster (BI_RGB).
+// In both, every dependent field is computed: bfOffBits (header+palette size),
+// the 4-byte-aligned row stride, biSizeImage (stride*height) and bfSize (total
+// file length, patched after the raster is written). Fuzzable: width, height,
+// which of the two shapes, the palette colours and the pixel bytes.
+//
+// Constraints applied (results_ai/bmp-orig/...json):
+//   bfType="BM" (fixed), bfReserved1/2=0 (fixed), biPlanes=1 (fixed),
+//   biSize=40 (enum member), biBitCount in {8,24} (enum subset), biCompression
+//   =0 BI_RGB (enum), biWidth>=1 (range), biClrUsed in [0,256] (range),
+//   bfSize / bfOffBits / biSizeImage computed (calculated_value).
+//---------------------------------------------
+
+LittleEndian();
+local int evil = SetEvilBit(false);   // honour the pinned structural layout
+
+// --- BITMAPFILEHEADER (14 bytes) ---
+// bfSize (offset 2) and bfOffBits (offset 10) are calculated_value fields; they
+// depend on the chosen bit depth/palette, so they are written as placeholders
+// here and patched once the layout is known.
+SetBackColor( cLtGray );
+CHAR  bfType[2]    = { "BM" };         // fixed signature
+DWORD bfSize;                          // patched to file length below (offset 2)
+WORD  bfReserved1  = { 0 };            // fixed 0
+WORD  bfReserved2  = { 0 };            // fixed 0
+DWORD bfOffBits;                       // patched to header+palette size (offset 10)
+
+// --- BITMAPINFOHEADER (40 bytes) ---
+DWORD biSize       = { 40 };           // BITMAPINFOHEADER
+LONG  biWidth      <min=1, max=64>;    // positive width
+LONG  biHeight     <min=1, max=64>;    // positive height (bottom-up DIB)
+local uint32 imgW = biWidth;
+local uint32 imgH = biHeight;
+WORD  biPlanes     = { 1 };            // fixed 1
+// biBitCount is the single format choice: 8-bit palettized or 24-bit truecolor.
+WORD  biBitCount   = { 8, 24 };
+local uint32 bpp = biBitCount;
+local int    hasPalette = (bpp == 8);
+local uint32 clrUsed = hasPalette ? 256 : 0;
+local uint32 rowSize    = ((imgW * bpp + 31) / 32) * 4;   // 4-byte aligned stride
+local uint32 rasterSize = rowSize * imgH;
+DWORD biCompression = { 0 };           // BI_RGB
+DWORD biSizeImage  = { rasterSize };   // computed raster size
+LONG  biXPelsPerMeter = { 2835 };      // ~72 dpi
+LONG  biYPelsPerMeter = { 2835 };
+DWORD biClrUsed       = { clrUsed };   // 256 for 8-bit, 0 for 24-bit
+DWORD biClrImportant  = { 0 };
+
+// --- Color palette (8-bit only): 256 RGBQUAD entries ---
+if( hasPalette )
+{
+    SetBackColor( cLtAqua );
+    RGBQUAD aColors[ 256 ];            // fuzzable palette
+}
+
+// --- Pixel raster: rowSize*height bytes (row padding included) ---
+SetBackColor( cNone );
+ubyte pixels[ rasterSize ];
+
+// --- Patch the calculated_value header fields ---
+local int64 endPos = FTell();
+local uint32 fileSize = endPos;
+local uint32 offBits  = 14 + 40 + clrUsed * 4;   // header(s) + palette
+FSeek( 2 );
+DWORD bfSize = { fileSize };
+FSeek( 10 );
+DWORD bfOffBits = { offBits };
+FSeek( endPos );
+SetEvilBit( evil );

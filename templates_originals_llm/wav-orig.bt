@@ -1,0 +1,728 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: WAV.bt
+//    Author: SweetScape Software, Paulo Max Gil I Reis
+//   Version: 1.3 (FormatFuzzer generation-optimized)
+//   Purpose: Parse and generate WAV audio files.
+//  Category: Audio
+// File Mask: *.wav
+//  ID Bytes: 52 49 46 46 [+4] 57 41 56 45 //RIFF????WAVE
+//
+// FormatFuzzer modifications (derived from
+// results_ai/wav-orig/llm_reterived_constraints_wav-orig_opus4.7.json):
+//  - Hardcode WAVRIFFHEADER.groupID/riffType ("RIFF"/"WAVE") and every
+//    chunk's 4-byte chunkID as fixed_value anchors.
+//  - WAVRIFFHEADER.hsize is a calculated_value: patched at the very end
+//    (via FSeek + SetEvilBit(false)) to FileSize()-8 once the whole file
+//    has actually been written.
+//  - FORMATCHUNK.wFormatTag/dwSamplesPerSec/wBitsPerSample are typed with
+//    their enumerated_values sets; wChannels gets its range_constraint
+//    [1, 8]. wFormatTag drops ADPCM (2) and EXTENSIBLE (65534): both need
+//    extra bytes (a coefficient table, and a 22-byte cbSize/validBits/
+//    channelMask/SubFormat-GUID block) that this fixed-field struct never
+//    writes, so keeping them would claim a shape the template can't build
+//    (the 18/40-byte chunkSize shapes the JSON also lists follow from the
+//    same gap). wBitsPerSample's set is further narrowed by wFormatTag
+//    (IEEE_FLOAT forced to 32, A-law/mu-law forced to 8) so those two tags
+//    always produce a codec-valid header; PCM/DVI_IMA_ADPCM keep the full
+//    {8,16,24,32} set. FORMATCHUNK.chunkSize is a calculated_value: it is
+//    emitted as a placeholder and patched to the actual number of bytes
+//    written for the chunk body (16, or 20 when the DVI_IMA_ADPCM extra
+//    fields are present).
+//  - FORMATCHUNK.dwAvgBytesPerSec/wBlockAlign are calculated_value fields.
+//    Both live on the wire BEFORE wBitsPerSample (the value they depend
+//    on), so they are written as placeholders and patched declaratively
+//    once wBitsPerSample is known (dwAvgBytesPerSec = dwSamplesPerSec *
+//    wBlockAlign, wBlockAlign = wChannels * wBitsPerSample / 8).
+//  - DATACHUNK.chunkSize is a calculated_value in the JSON, but since it
+//    already appears before the sample data it bounds, it is simply
+//    generated as a real range-constrained field and used directly as the
+//    array bound -- always self-consistent by construction, no patch-back
+//    needed.
+//  - FACTCHUNK.chunkSize (not itself an array bound in this template) is
+//    likewise patched to the true body size (4 bytes) so a real reader
+//    that trusts chunkSize to skip the chunk stays aligned.
+//  - CUECHUNK/SMPLCHUNK's internal count fields (dwCuePoints,
+//    Num_Sample_Loops) are range-constrained to keep their point/loop
+//    arrays fuzzer-friendly instead of an unbounded 32-bit count, and both
+//    chunks' own chunkSize is patched the same way as FACTCHUNK.
+//  - LISTCHUNK's imperative `while (FTell()-pos < chunkSize)` byte-budget
+//    loop -- which requires chunkSize to be known before its subchunks are
+//    generated, and is exactly the kind of "consumption" loop that doesn't
+//    generate well -- is replaced with a bounded declarative `for` loop
+//    over a fixed MAX_SUBCHUNKS, after which chunkSize is patched to the
+//    actual bytes written (same declarative-length idiom as the other
+//    chunks). LISTSUBCHUNK.chunkSize keeps a small range_constraint so its
+//    own listData[] array stays small.
+//  - The main `while(!FEof())` chunk-dispatch loop, which relied on a raw
+//    ReadBytes() tag peek with no ordering guarantees, is replaced with a
+//    declarative ReadBytes(tag, pos, len, preferred[], possible[]) loop
+//    (the same FormatFuzzer idiom used in the PNG/7z templates) that
+//    enforces "fmt must come first" and removes each singleton chunk type
+//    from the possible set once it has been emitted, so generated files
+//    always have a valid, non-repeating chunk ordering with `fmt ` first.
+//   History:
+//   1.3   2026-07-26 FormatFuzzer generation-optimization pass.
+//   1.2   2020-02-04 Paulo Max: Improved to correct parsing of DVI ADPCM and fix some issues in subchunk list parsing.
+//   1.1   2015-10-05 SweetScape: Updated header for repository submission.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at:
+//  https://en.wikipedia.org/wiki/WAV
+//------------------------------------------------
+
+// Record whether we have found a format chunk yet
+local int haveValidFormat = false;
+
+//-----------------------------------
+// Define structures used in WAV files
+
+// Stores the file header information
+typedef struct
+{
+    char   groupID[4] = { "RIFF" };
+    local int64 hsizePos = FTell();
+    long   hsize;          // calculated_value: patched to FileSize()-8 at the end
+    char   riffType[4] = { "WAVE" };
+} WAVRIFFHEADER;
+
+// Stores the format information for the file
+typedef struct {
+    char           chunkID[4] = { "fmt " };
+    local int64 chunkStart = FTell();
+    long           chunkSize;   // calculated_value: patched below
+    local int64 pos = FTell();
+    // EXTENSIBLE (65534) and ADPCM (2) are dropped from the
+    // enumerated_values set: real WAVEFORMATEXTENSIBLE needs a 22-byte
+    // cbSize/validBits/channelMask/SubFormat-GUID extension, and real
+    // MS-ADPCM (2) needs a coefficient table sized off cbSize -- neither
+    // extra shape is modelled by this struct (only DVI_IMA_ADPCM's simpler
+    // wcbsize+wSamplesPerBlock extension is), so keeping them would (like
+    // PCAP's ARP/IPv6) produce a tag that claims a shape this struct never
+    // actually writes.
+    unsigned short wFormatTag = { 1, 3, 6, 7, 17 };
+    unsigned short wChannels <min=1, max=8>;
+    unsigned long  dwSamplesPerSec = { 8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000 };
+    local int64 avgBytesPos = FTell();
+    unsigned long  dwAvgBytesPerSec;  // calculated_value: patched below
+    local int64 blockAlignPos = FTell();
+    unsigned short wBlockAlign;       // calculated_value: patched below
+    // wBitsPerSample's enumerated_values set is further narrowed by the
+    // already-known wFormatTag (mirroring the PNG template's bit-depth
+    // switch on color_type): IEEE_FLOAT is always 32-bit, A-law/mu-law are
+    // always 8-bit companded samples, and PCM/DVI_IMA_ADPCM keep the full
+    // JSON set. This keeps the two straightforward cases codec-valid; DVI
+    // IMA ADPCM's own block-size math (which depends on wSamplesPerBlock
+    // in a way this parser never modelled even before this pass) is out of
+    // scope here, so a real decoder may still reject its payload even
+    // though the container stays structurally well-formed.
+    switch (wFormatTag) {
+        case 3:
+            unsigned short wBitsPerSample = { 32 };
+            break;
+        case 6:
+        case 7:
+            unsigned short wBitsPerSample = { 8 };
+            break;
+        default:
+            unsigned short wBitsPerSample = { 8, 16, 24, 32 };
+            break;
+    }
+    if (wFormatTag == 17) //DVI IMA ADPCM
+    {
+        unsigned short wcbsize = { 2 };  // fixed: byte count of the wSamplesPerBlock extension that follows
+        unsigned short wSamplesPerBlock <min=1, max=8192>;
+    }
+
+    // Mark that we have found a valid format chunk
+    haveValidFormat = true;
+
+    // Patch the calculated fields now that wChannels/wBitsPerSample/
+    // dwSamplesPerSec are all known.
+    local int64 fmtEnd = FTell();
+    local uint16 blockAlignVal = wChannels * wBitsPerSample / 8;
+    local uint32 avgBytesVal = dwSamplesPerSec * blockAlignVal;
+    local int evil = SetEvilBit(false);
+    FSeek(blockAlignPos);
+    unsigned short wBlockAlign = { blockAlignVal };
+    FSeek(avgBytesPos);
+    unsigned long  dwAvgBytesPerSec = { avgBytesVal };
+    FSeek(chunkStart);
+    long chunkSize = { (int)(fmtEnd - pos) };
+    SetEvilBit(evil);
+    FSeek(fmtEnd);
+
+    // Padding so the next chunk starts on an even byte
+    if( chunkSize & 1 )
+        uchar padding;
+} FORMATCHUNK;
+
+// Stores the actual wave data
+typedef struct
+{
+    char           chunkID[4] = { "data" };
+    long           chunkSize <min=0, max=4096>;   // calculated_value in spirit: chosen up front, used directly below
+
+    // Test if we have a valid format
+    if( !haveValidFormat )
+    {
+        Warning( "File contains no valid WAVE format chunk." );
+        return -1;
+    }
+
+    // Parse the samples of the data
+    if( ((format.wBitsPerSample != 8) && (format.wBitsPerSample != 16) && (format.wBitsPerSample != 32))
+        || format.wBlockAlign == 0 || (chunkSize % (int)format.wBlockAlign != 0) )
+    {
+        // Unsupported storage method used
+        unsigned char  waveformData[chunkSize];
+    }
+    else if( (format.wChannels == 1) && (format.wBitsPerSample == 8) )
+    {
+        // Define an array of 8-bit samples - common case
+        uchar samples[ chunkSize ];
+    }
+    else if( (format.wChannels == 1) && (format.wBitsPerSample == 16) )
+    {
+        // Define an array of 16-bit samples - common case
+        short samples[ chunkSize/2 ];
+    }
+    else if( (format.wChannels == 1) && (format.wBitsPerSample == 32) )
+    {
+        // Define an array of 32-bit samples - common case
+        int samples[ chunkSize/4 ];
+    }
+    else
+    {
+        // Define general case sample
+        struct SAMPLES {
+            if( format.wBitsPerSample == 8 )
+                 uchar channels[ format.wChannels ];
+            else if( format.wBitsPerSample == 16 )
+                 short channels[ format.wChannels ];
+            else if( format.wBitsPerSample == 32 )
+                 int   channels[ format.wChannels ];
+        } samples[ chunkSize / (int)format.wBlockAlign ];
+    }
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} DATACHUNK;
+
+// Stores the size of the wave after decompression
+typedef struct
+{
+    char           chunkID[4] = { "fact" };
+    local int64 chunkStart = FTell();
+    long           chunkSize;    // calculated_value: patched below
+    local int64 pos = FTell();
+    unsigned long  uncompressedSize;
+
+    local int evil = SetEvilBit(false);
+    local int64 chunkEnd = FTell();
+    FSeek(chunkStart);
+    long chunkSize = { (int)(chunkEnd - pos) };
+    SetEvilBit(evil);
+    FSeek(chunkEnd);
+} FACTCHUNK;
+
+// Stores a list of cue points or markers to points in the data
+typedef struct {
+    long    dwIdentifier;
+    long    dwPosition;
+    char    fccChunk[4];
+    long    dwChunkStart;
+    long    dwBlockStart;
+    long    dwSampleOffset;
+} CUEPOINT;
+
+typedef struct {
+    char      chunkID[4] = { "cue " };
+    local int64 chunkStart = FTell();
+    long      chunkSize;   // calculated_value: patched below
+    local int pos = FTell();
+    long      dwCuePoints <min=0, max=8>;
+    CUEPOINT  points[dwCuePoints];
+
+    local int evil = SetEvilBit(false);
+    local int64 chunkEnd = FTell();
+    FSeek(chunkStart);
+    long chunkSize = { (int)(chunkEnd - pos) };
+    SetEvilBit(evil);
+    FSeek(chunkEnd);
+} CUECHUNK;
+
+// Define a list chunk with a set of subchunks
+typedef struct {
+    char      chunkID[4];
+    long      chunkSize <min=0, max=64>;
+    char      listData[chunkSize];
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} LISTSUBCHUNK;
+
+typedef struct {
+    char      chunkID[4] = { "LIST" };
+    local int64 chunkStart = FTell();
+    long      chunkSize;    // calculated_value: patched below
+    local quad pos = FTell();
+    char      chunkType[4] = { "INFO" };
+
+    // Bounded fuzzer-friendly subchunk list, replacing the original
+    // `while (FTell()-pos < chunkSize)` byte-budget consumption loop (which
+    // needs chunkSize to be known up front) with a small fixed count.
+    local int MAX_SUBCHUNKS = 2;
+    local int i;
+    for (i = 0; i < MAX_SUBCHUNKS; i++)
+        LISTSUBCHUNK subchunk;
+
+    local int evil = SetEvilBit(false);
+    local int64 chunkEnd = FTell();
+    FSeek(chunkStart);
+    long chunkSize = { (int)(chunkEnd - pos) };
+    SetEvilBit(evil);
+    FSeek(chunkEnd);
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} LISTCHUNK;
+
+// A chunk which could not be identified
+typedef struct {
+    char      chunkID[4];
+    long      chunkSize <min=0, max=64>;
+    uchar     unknownData[chunkSize];
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} UNKNOWNCHUNK;
+
+//---------------------------------------------
+// SMPL / SMPL Loop
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Cue_ID <read=WAV_SMPLLOOPS_Cue_ID>;
+
+string
+WAV_SMPLLOOPS_Cue_ID( SMPLLOOPS_Cue_ID cid )
+{
+    string  sret;
+    SPrintf( sret, "Cue Point ID: %u", cid );
+
+return sret;
+}
+
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Play_Count <read=WAV_SMPLLOOPS_Play_Count>;
+
+string
+WAV_SMPLLOOPS_Play_Count( SMPLLOOPS_Play_Count pc )
+{
+    string  sret;
+
+    if (pc==0)
+    {
+        SPrintf( sret, " Infinite Sustain Loop (%u)", pc );
+    }
+    else
+    {
+        SPrintf( sret, "Play Count: %u", pc );
+    }
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Start <read=WAV_SMPLLOOPS_Start>;
+
+string
+WAV_SMPLLOOPS_Start( SMPLLOOPS_Start st )
+{
+    string  sret;
+    SPrintf( sret, "Loop Start at %u byte offset", st );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_End <read=WAV_SMPLLOOPS_End>;
+
+string
+WAV_SMPLLOOPS_End( SMPLLOOPS_End end )
+{
+    string  sret;
+    SPrintf( sret, "Loop End at %u byte offset", end );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Fraction <read=WAV_SMPLLOOPS_Fraction>;
+
+string
+WAV_SMPLLOOPS_Fraction( SMPLLOOPS_Fraction f )
+{
+    string  sret;
+    SPrintf( sret, "Fraction: %u", f );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SL <read=WAV_SMPL_SL>;
+
+string
+WAV_SMPL_SL( SMPL_SL sl )
+{
+    string  sret;
+    SPrintf( sret, "Number of Samples Loops (Sustain Loops): %u", sl );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SD <read=WAV_SMPL_SD>;
+
+string
+WAV_SMPL_SD( SMPL_SD sd )
+{
+    string  sret;
+    SPrintf( sret, "Sample Data (number of bytes): %u", sd );
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPL_SMPTE_Offset <read=WAV_SMPL_SMPTE_Offset>;
+
+string
+WAV_SMPL_SMPTE_Offset( SMPL_SMPTE_Offset so )
+{
+    string  sret;
+    SPrintf( sret, "SMPTE Offset (for synchronization): %u", so );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Pitch_Fraction <read=WAV_SMPL_MIDI_Pitch_Fraction>;
+
+string
+WAV_SMPL_MIDI_Pitch_Fraction( SMPL_MIDI_Pitch_Fraction pf )
+{
+    string  sret;
+    SPrintf( sret, "MIDI Pitch Fraction: %u", pf );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Unity_Note <read=WAV_SMPL_MIDI_Unity_Note>;
+
+string
+WAV_SMPL_MIDI_Unity_Note( SMPL_MIDI_Unity_Note un )
+{
+    string  sret;
+    SPrintf( sret, "MIDI unity note value: %u", un );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Product <read=WAV_SMPL_Product>;
+
+string
+WAV_SMPL_Product( SMPL_Product product )
+{
+    string  sret;
+    SPrintf( sret, "MIDI model ID (defined by the manufacturer): %u", product );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Sample_Period <read=WAV_SMPL_Sample_Period>;
+
+string
+WAV_SMPL_Sample_Period( SMPL_Sample_Period sp )
+{
+    string  sret;
+     // The sample period specifies the duration of time that passes during the playback of one sample in nanoseconds (normally equal to 1 / Samplers Per Second, where Samples Per Second is the value found in the format chunk).
+    SPrintf( sret, "Sample Period: %u", sp );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SMPTE <read=WAV_SMPL_SMPTE>;
+
+string
+WAV_SMPL_SMPTE( SMPL_SMPTE smptef )
+{
+    string  s;
+    string  sret;
+
+    switch( smptef )
+    {
+    case 0: SPrintf( s, "No SMPTE offset" ); break;
+    case 24: SPrintf( s, "24 frames per second" ); break;
+    case 25: SPrintf( s, "25 frames per second" ); break;
+    case 29: SPrintf( s, "30 frames per second with frame dropping (30 drop)" ); break;
+    case 30: SPrintf( s, "30 frames per second" ); break;
+    default: SPrintf( s, "unknown (%u)", smptef ); break;
+    }
+
+    SPrintf( sret, "SMPTE Format: %s", s );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Manufacturer <read=WAV_SMPL_Manufacturer>;
+
+string
+WAV_SMPL_Manufacturer( SMPL_Manufacturer manufacture )
+{
+    string  s;
+    string  sret;
+
+    switch( manufacture )
+    {
+    case 0: SPrintf( s, "Unknown" ); break;
+    case 1: SPrintf( s, "Sequential Circuits"); break;
+    case 2: SPrintf( s, "Big Briar"); break;
+    case 3: SPrintf( s, "Octave / Plateau"); break;
+    case 4: SPrintf( s, "Moog"); break;
+    case 5: SPrintf( s, "Passport Designs"); break;
+    case 6: SPrintf( s, "Lexicon"); break;
+    case 7: SPrintf( s, "Kurzweil"); break;
+    case 8: SPrintf( s, "Fender"); break;
+    case 9: SPrintf( s, "Gulbransen"); break;
+    case 10: SPrintf( s, "Delta Labs"); break;
+    case 11: SPrintf( s, "Sound Comp."); break;
+    case 12: SPrintf( s, "General Electro"); break;
+    case 13: SPrintf( s, "Techmar"); break;
+    case 14: SPrintf( s, "Matthews Research"); break;
+    case 16: SPrintf( s, "Oberheim"); break;
+    case 17: SPrintf( s, "PAIA"); break;
+    case 18: SPrintf( s, "Simmons"); break;
+    case 19: SPrintf( s, "DigiDesign"); break;
+    case 20: SPrintf( s, "Fairlight"); break;
+    case 21: SPrintf( s, "JL Cooper"); break;
+    case 22: SPrintf( s, "Lowery"); break;
+    case 23: SPrintf( s, "Lin"); break;
+    case 24: SPrintf( s, "Emu"); break;
+    case 27: SPrintf( s, "Peavey"); break;
+    case 32: SPrintf( s, "Bon Tempi"); break;
+    case 33: SPrintf( s, "S.I.E.L."); break;
+    case 35: SPrintf( s, "SyntheAxe"); break;
+    case 36: SPrintf( s, "Hohner"); break;
+    case 37: SPrintf( s, "Crumar"); break;
+    case 38: SPrintf( s, "Solton"); break;
+    case 39: SPrintf( s, "Jellinghaus Ms"); break;
+    case 40: SPrintf( s, "CTS"); break;
+    case 41: SPrintf( s, "PPG"); break;
+    case 47: SPrintf( s, "Elka"); break;
+    case 54: SPrintf( s, "Cheetah"); break;
+    case 62: SPrintf( s, "Waldorf"); break;
+    case 64: SPrintf( s, "Kawai"); break;
+    case 65: SPrintf( s, "Roland"); break;
+    case 66: SPrintf( s, "Korg"); break;
+    case 67: SPrintf( s, "Yamaha"); break;
+    case 68: SPrintf( s, "Casio"); break;
+    case 70: SPrintf( s, "Kamiya Studio"); break;
+    case 71: SPrintf( s, "Akai"); break;
+    case 72: SPrintf( s, "Victor"); break;
+    case 75: SPrintf( s, "Fujitsu"); break;
+    case 76: SPrintf( s, "Sony"); break;
+    case 78: SPrintf( s, "Teac"); break;
+    case 80: SPrintf( s, "Matsushita"); break;
+    case 81: SPrintf( s, "Fostex"); break;
+    case 82: SPrintf( s, "Zoom"); break;
+    case 84: SPrintf( s, "Matsushita"); break;
+    case 85: SPrintf( s, "Suzuki"); break;
+    case 86: SPrintf( s, "Fuji Sound"); break;
+    case 87: SPrintf( s, "Acoustic Technical Laboratory"); break;
+    default: SPrintf( s, "Unknown"); break;
+    }
+
+SPrintf( sret, "Manufacturer: %s", s);
+
+return sret;
+}
+
+//----------------------------------------------------------------------
+typedef long SMPLLOOPS_Type <read=WAV_SMPL_Loop_Type>;
+
+string
+WAV_SMPL_Loop_Type( SMPLLOOPS_Type loop )
+{
+    string  s;
+
+    switch( loop )
+    {
+        case 0 :
+            SPrintf( s, "Loop: Forward (%u)", loop );
+            break;
+
+        case 1 :
+            SPrintf( s, "Loop: Ping Pong (%u)", loop );
+            break;
+
+        case 2 :
+            SPrintf( s, "Loop: Reverse (%u)", loop );
+            break;
+
+        case 3 :
+            SPrintf( s, "Loop [reserved for future standard types] (%u)", loop );
+            break;
+
+        default:
+            s = "Loop: <unknown>";
+    }
+
+    return s;
+}
+
+//----------------------------------------------------------------------
+// SMPL Loop
+typedef struct {
+    SMPLLOOPS_Cue_ID     Cue_Point;
+    SMPLLOOPS_Type       Type;
+    SMPLLOOPS_Start      Start;
+    SMPLLOOPS_End        End;
+    SMPLLOOPS_Fraction   Fraction;
+    SMPLLOOPS_Play_Count Play_Count;
+
+} SMPLLOOPS;
+
+//----------------------------------------------------------------------
+// Chunk SMPL
+typedef struct {
+    char                     chunkID[4] = { "smpl" };
+    local int64 chunkStart = FTell();
+    long                     chunkSize;    // calculated_value: patched below
+    local int64 pos = FTell();
+    SMPL_Manufacturer        Manufacturer;
+    SMPL_Product             Product; // Product code (Manufacture)
+    SMPL_Sample_Period       Sample_Period;
+    SMPL_MIDI_Unity_Note     MIDI_Unity_Note;
+    SMPL_MIDI_Pitch_Fraction MIDI_Pitch_Fraction;
+    SMPL_SMPTE               SMPTE;
+    SMPL_SMPTE_Offset        SMPTE_Offset;
+    SMPL_SL                  Num_Sample_Loops <min=0, max=8>;
+    SMPL_SD                  Sampler_Data;
+    SMPLLOOPS                loops[Num_Sample_Loops];
+
+    local int evil = SetEvilBit(false);
+    local int64 chunkEnd = FTell();
+    FSeek(chunkStart);
+    long chunkSize = { (int)(chunkEnd - pos) };
+    SetEvilBit(evil);
+    FSeek(chunkEnd);
+
+    //Padding so the next chunk starts on an even byte
+     if( (chunkSize & 1) && (FTell() < FileSize()) )
+     uchar padding;
+
+} SMPLCHUNK;
+
+
+
+//---------------------------------------------
+
+// Define the headers
+LittleEndian();
+SetBackColor( cLtPurple );
+local int evil = SetEvilBit(false);
+WAVRIFFHEADER header;
+SetEvilBit(evil);
+
+// Check for valid header
+if( header.groupID != "RIFF" || header.riffType != "WAVE" )
+{
+    Warning( "File is not a valid wave file. Template stopped." );
+    return -1;
+}
+
+// Read the file as a set of chunks. Refactored from the original
+// `while(!FEof())` raw-tag-peek loop into a declarative
+// ReadBytes(tag, pos, len, preferred[], possible[]) ordering loop (the
+// same FormatFuzzer idiom used by the PNG/7z templates): "fmt " is forced
+// to be the first chunk, and each singleton chunk type is dropped from
+// possible_chunks once it has been emitted so it can't repeat.
+local char tag[4];
+local int chunk_count = 0;
+local string preferred_chunks[] = { "fmt " };
+local string possible_chunks[] = { "fmt " };
+while( ReadBytes(tag, FTell(), 4, preferred_chunks, possible_chunks) )
+{
+    chunk_count++;
+    // See which chunk this is
+    switch( tag )
+    {
+        case "fmt ":
+            SetBackColor( cLtGray );
+            FORMATCHUNK format;
+            local string preferred_chunks[] = { "data" };
+            local string possible_chunks[] = { "data", "fact", "cue ", "smpl", "LIST" };
+            break;
+        case "data":
+            SetBackColor( cNone );
+            DATACHUNK   data;
+            possible_chunks -= "data";
+            break;
+        case "fact":
+            SetBackColor( cLtBlue );
+            FACTCHUNK   fact;
+            possible_chunks -= "fact";
+            break;
+        case "cue ":
+            SetBackColor( cLtGray );
+            CUECHUNK    cue;
+            possible_chunks -= "cue ";
+            break;
+        case "smpl":
+            SetBackColor( cLtGray );
+            SMPLCHUNK    smpl;
+            possible_chunks -= "smpl";
+            break;
+        case "LIST":
+            SetBackColor( cLtYellow );
+            LISTCHUNK   list;
+            break;
+        default:
+            // Unknown chunk (only reachable when parsing a real-world file
+            // whose chunk tag isn't one of the types generated above)
+            local uint size = ReadUInt( FTell()+4 );
+            Printf( "Encountered unknown chunk '%s' of size %d at position %Ld.\n",
+                tag, size, FTell() );
+            SetBackColor( cNone );
+            UNKNOWNCHUNK unknown;
+            break;
+    }
+    // Bounded fuzzer-friendly scan: never emit more than a handful of chunks.
+    if (chunk_count >= 6) {
+        local string preferred_chunks[0];
+        local string possible_chunks[0];
+    }
+}
+
+// WAVRIFFHEADER.hsize is a calculated_value: patch it now that the whole
+// file has been written.
+local int64 fileEnd = FTell();
+local int32 hsizeVal = fileEnd - 8;
+local int evil2 = SetEvilBit(false);
+FSeek(header.hsizePos);
+long hsize = { (int)hsizeVal };
+SetEvilBit(evil2);
+FSeek(fileEnd);

@@ -1,0 +1,40 @@
+//------------------------------------------------
+//--- 010 Editor v11.0.1 Binary Template
+//
+//      File: AUD.bt
+//   Authors: Matthias Mailänder
+//   Version: 1.1 (FormatFuzzer generation-optimized)
+//   Purpose: Westwood Studios .aud sound format
+//  Category: Audio
+// File Mask: *.aud
+//  ID Bytes:
+//
+// FormatFuzzer modifications (derived from
+// results_ai/aud-orig/llm_reterived_constraints_aud-orig_opus4.7.json):
+//  - Constrain sampleRate to a plausible audio range
+//  - Constrain dataSize to a small positive range so input[] stays bounded
+//  - Pin soundflag to its 2-bit valid set {0,1,2,3} (stereo|16-bit)
+//  - Replace soundFormat ubyte with WS_SOUND_FORMAT enum {1, 99}
+//   History:
+//   1.1   2026-06-16 FormatFuzzer generation-optimization pass.
+//   1.0   2020-12-15 Matthias Mailänder: initial release
+//------------------------------------------------
+
+// Westwood AUD compression scheme (high corruption risk per constraints JSON).
+typedef enum <ubyte> {
+    WS_ADPCM  = 1,
+    IMA_ADPCM = 99
+} WS_SOUND_FORMAT;
+
+SetBackColor(cLtGray);
+uint16 sampleRate <min=8000, max=48000>;
+int32  dataSize   <min=1, max=65536>;
+int32  outputSize <min=1, max=262144>;
+// soundflag: bit0=stereo, bit1=16-bit; only bottom two bits are defined.
+ubyte  soundflag = { 0, 1, 2, 3 };
+WS_SOUND_FORMAT soundFormat;
+
+SetBackColor(cLtBlue);
+byte input[dataSize];
+
+Assert(FEof());

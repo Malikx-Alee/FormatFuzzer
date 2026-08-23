@@ -1,0 +1,180 @@
+//------------------------------------------------
+//--- 010 Editor v1.2 Binary Template
+//
+//      File: AVI.bt
+//   Authors: Blaine Lefebvre [bl], Elias Bachaalany [eb]
+//   Version: 2.0 (FormatFuzzer generation-optimized)
+//   Purpose: Generate an AVI (RIFF) movie file.
+//  Category: Video
+// File Mask: *.avi
+//  ID Bytes: 52 49 46 46 [+4] 41 56 49 20 //RIFF????AVI
+//
+// FormatFuzzer modifications (derived from
+// results_ai/avi-orig/llm_reterived_constraints_avi-orig_opus4.7.json):
+//
+// The original template is a passive RIFF parser that trusts every chunk id and
+// length. A fuzzer driving it emits broken FourCCs and chunk lengths that walk
+// off the end of the buffer, so nothing it produces is a playable AVI.
+//
+// This generation version emits a complete, self-consistent single-stream AVI
+// (one uncompressed 24-bit RGB video frame) with the real RIFF/AVI structure:
+//   RIFF 'AVI '
+//     LIST 'hdrl'
+//       'avih' MainAVIHeader (56 bytes)
+//       LIST 'strl'
+//         'strh' AVIStreamHeader (fccType 'vids')
+//         'strf' BITMAPINFOHEADER (biCompression 0 = BI_RGB)
+//     LIST 'movi'
+//       '00db' <one raw RGB frame>
+//     'idx1' <one index entry>
+// Every RIFF/LIST length is COMPUTED from the bytes actually written (patched
+// afterwards); the magic/FourCC anchors and fixed header lengths are pinned.
+// Fuzzable: frame width/height and the pixel bytes.
+//
+//   History:
+//   2.0   2026-06-24 FormatFuzzer generation-optimization pass.
+//   1.2   2016-01-27 SweetScape: header for repository submission.
+//   1.0   bl: Initial release.
+//------------------------------------------------
+
+LittleEndian();
+local int evil = SetEvilBit(false);   // honour the pinned structural layout
+
+// --- RIFF header ---
+SetBackColor( cLtRed );
+char  riffId[4]   = { "RIFF" };       // RIFF root (RIFF/RIFX -> pin RIFF)
+local int64 riffSizePos = FTell();
+uint  riffSize;                       // patched to fileSize-8 (calculated_value)
+char  riffForm[4] = { "AVI " };       // fixed form type
+
+// --- LIST 'hdrl' ---
+SetBackColor( cLtBlue );
+char  hdrlId[4]   = { "LIST" };
+local int64 hdrlSizePos = FTell();
+uint  hdrlSize;                       // patched (calculated_value)
+char  hdrlType[4] = { "hdrl" };
+
+// --- 'avih' MainAVIHeader (56 bytes) ---
+SetBackColor( cLtGreen );
+char  avihId[4]   = { "avih" };
+uint  avihLen     = { 56 };           // fixed: sizeof(MainAVIHeader)
+uint  dwMicroSecPerFrame    = { 66666 };  // ~15 fps
+uint  dwMaxBytesPerSec      = { 0 };
+uint  dwPaddingGranularity  = { 0 };
+uint  dwFlags               = { 0x10 };   // AVIF_HASINDEX
+uint  dwTotalFrames         = { 1 };
+uint  dwInitialFrames       = { 0 };
+uint  dwStreams             = { 1 };
+uint  dwSuggestedBufferSize = { 0 };
+uint  dwWidth      <min=8, max=48>;   // fuzzable frame width
+uint  dwHeight     <min=8, max=48>;   // fuzzable frame height
+local uint imgW = dwWidth;
+local uint imgH = dwHeight;
+local uint rowSize   = ((imgW * 24 + 31) / 32) * 4;   // 4-byte aligned stride
+local uint frameSize = rowSize * imgH;
+local short imgWs = imgW;
+local short imgHs = imgH;
+uint  dwReserved0  = { 0 };           // dwReserved[4] - all 0 (fixed)
+uint  dwReserved1  = { 0 };
+uint  dwReserved2  = { 0 };
+uint  dwReserved3  = { 0 };
+
+// --- LIST 'strl' ---
+SetBackColor( cLtBlue );
+char  strlId[4]   = { "LIST" };
+local int64 strlSizePos = FTell();
+uint  strlSize;                       // patched (calculated_value)
+char  strlType[4] = { "strl" };
+
+// --- 'strh' AVIStreamHeader (56 bytes) ---
+SetBackColor( cLtGreen );
+char  strhId[4]   = { "strh" };
+uint  strhLen     = { 56 };           // fixed
+char  fccType[4]  = { "vids" };       // video stream
+uint  fccHandler  = { 0 };            // 0 = uncompressed
+uint  sh_dwFlags  = { 0 };
+ushort wPriority  = { 0 };
+ushort wLanguage  = { 0 };
+uint  sh_dwInitialFrames = { 0 };
+uint  dwScale     = { 1 };
+uint  dwRate      = { 15 };           // 15/1 = 15 fps
+uint  dwStart     = { 0 };
+uint  dwLength    = { 1 };            // one frame
+uint  sh_dwSuggestedBufferSize = { frameSize };
+uint  dwQuality   = { 0 };
+uint  dwSampleSize = { 0 };           // 0 = variable (video)
+short rcLeft      = { 0 };
+short rcTop       = { 0 };
+short rcRight     = { imgWs };
+short rcBottom    = { imgHs };
+
+// --- 'strf' BITMAPINFOHEADER (40 bytes) ---
+SetBackColor( cLtPurple );
+char  strfId[4]   = { "strf" };
+uint  strfLen     = { 40 };           // fixed: sizeof(BITMAPINFOHEADER)
+uint  biSize      = { 40 };
+uint  biWidth     = { imgW };
+uint  biHeight    = { imgH };
+ushort biPlanes   = { 1 };            // fixed 1
+ushort biBitCount = { 24 };
+uint  biCompression = { 0 };          // BI_RGB
+uint  biSizeImage = { frameSize };
+uint  biXPelsPerMeter = { 0 };
+uint  biYPelsPerMeter = { 0 };
+uint  biClrUsed   = { 0 };
+uint  biClrImportant = { 0 };
+
+// patch strl LIST size = bytes written after its size field
+local int64 here = FTell();
+local uint strlSizeVal = here - strlSizePos - 4;
+FSeek( strlSizePos );
+uint strlSize = { strlSizeVal };
+FSeek( here );
+
+// patch hdrl LIST size
+here = FTell();
+local uint hdrlSizeVal = here - hdrlSizePos - 4;
+FSeek( hdrlSizePos );
+uint hdrlSize = { hdrlSizeVal };
+FSeek( here );
+
+// --- LIST 'movi' ---
+SetBackColor( cLtBlue );
+char  moviId[4]   = { "LIST" };
+local int64 moviSizePos = FTell();
+uint  moviSize;                       // patched (calculated_value)
+char  moviType[4] = { "movi" };
+local int64 moviDataPos = FTell();    // start of frame chunks (idx1 base)
+
+// --- one uncompressed frame: '00db' + size + pixels ---
+SetBackColor( cNone );
+local int64 frameChunkPos = FTell();  // offset of this chunk's id
+char  frameId[4]  = { "00db" };       // stream 0, uncompressed DIB
+uint  frameLen    = { frameSize };
+ubyte frameData[ frameSize ];         // fuzzable pixels
+
+// patch movi LIST size
+here = FTell();
+local uint moviSizeVal = here - moviSizePos - 4;
+FSeek( moviSizePos );
+uint moviSize = { moviSizeVal };
+FSeek( here );
+
+// --- 'idx1' index (one 16-byte AVIINDEXENTRY) ---
+SetBackColor( cLtGray );
+local uint idxOffset = frameChunkPos - moviDataPos;   // chunk offset rel. movi
+char  idx1Id[4]   = { "idx1" };
+uint  idx1Len     = { 16 };           // 1 entry * 16 (multiple of 16)
+char  ie_ckid[4]  = { "00db" };
+uint  ie_dwFlags  = { 0x10 };         // AVIIF_KEYFRAME
+uint  ie_dwOffset = { idxOffset };    // offset of '00db' rel. to 'movi' data
+uint  ie_dwLength = { frameSize };
+
+// --- patch RIFF size = total file size - 8 ---
+local int64 endPos = FTell();
+local uint riffSizeVal = endPos - 8;
+FSeek( riffSizePos );
+uint riffSize = { riffSizeVal };
+FSeek( endPos );
+
+SetEvilBit( evil );
