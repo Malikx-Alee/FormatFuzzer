@@ -7,6 +7,7 @@ Learning Constraints is a modular system for file format fuzzing and constraint 
 ## Architecture
 
 ### Module Structure
+
 ```
 learning_constraints/
 ├── __init__.py          # Package initialization and exports
@@ -21,6 +22,7 @@ learning_constraints/
 ```
 
 ### Data Directory Structure
+
 ```
 testcases_4_learn/
 └── {file_type}/
@@ -34,23 +36,27 @@ testcases_4_learn/
 ## Core Components
 
 ### 1. Configuration Management (`config.py`)
+
 - **Config class**: Centralized configuration with file type management
 - **GlobalState class**: Tracks processing statistics and blacklisted attributes
 - **Dynamic paths**: Automatically updates paths when file type changes
 - **Directory management**: Creates required directories automatically
 
 ### 2. File Validation (`validators.py`)
+
 - **FileValidator class**: Format-specific validation using external tools
 - **Supported formats**: Images (ImageMagick), Audio/Video (FFmpeg), Archives (zipfile), Network (tshark), MIDI (timidity)
 - **Validation strategies**: Each file type uses appropriate validation tools
 
 ### 3. File Parsing (`parsers.py`)
+
 - **FileParser class**: Extracts file structure and byte ranges using format-specific fuzzers
 - **Attribute extraction**: Identifies file format attributes and their byte positions
 - **Blacklist management**: Filters out attributes larger than 8 bytes
 - **Hierarchical processing**: Handles nested file structures
 
 ### 4. File Mutation (`mutators.py`)
+
 - **FileMutator class**: Performs two types of mutations:
   - **Smart Abstraction Mutation**: Uses fuzzer's abstract command for intelligent mutations
   - **Random Overwrite Mutation**: Performs random byte overwrites for chaos testing
@@ -58,6 +64,7 @@ testcases_4_learn/
 - **Validation integration**: Ensures mutated files remain valid
 
 ### 5. Result Transformation (`transformers.py`)
+
 - **ResultTransformer class**: Flattens nested JSON structures for easier analysis
 - **JSON flattening**: Converts nested structures to flat key-value pairs
 - **Duplicate key merging**: Combines values from duplicate keys into arrays
@@ -65,6 +72,7 @@ testcases_4_learn/
 - **Selective processing**: Only transforms hex values files, preserves blacklist files
 
 ### 6. Main Orchestrator (`main.py`)
+
 - **LearningConstraintsOrchestrator class**: Coordinates the complete workflow
 - **File processing**: Handles individual files and batch directory processing
 - **Result management**: Saves results and transforms them automatically
@@ -74,7 +82,7 @@ testcases_4_learn/
 ## Supported File Types
 
 - **Images**: GIF, JPG, PNG, BMP
-- **Audio**: MP3, WAV  
+- **Audio**: MP3, WAV
 - **Video**: MP4, AVI
 - **Archives**: ZIP
 - **Network**: PCAP
@@ -93,6 +101,7 @@ testcases_4_learn/
 ## Output Files
 
 ### Generated Results
+
 ```
 testcases_4_learn/results/{file_type}/
 ├── {file_type}_parsed_values_hex_original.json           # Raw hex values (nested)
@@ -103,6 +112,7 @@ testcases_4_learn/results/{file_type}/
 ### File Contents
 
 #### Hex Values File (Flattened)
+
 ```json
 {
   "attribute_name": ["value1", "value2"],
@@ -112,6 +122,7 @@ testcases_4_learn/results/{file_type}/
 ```
 
 #### Blacklisted Attributes File
+
 ```json
 {
   "blacklisted_attributes": ["large_attr1", "large_attr2"],
@@ -124,6 +135,7 @@ testcases_4_learn/results/{file_type}/
 ## Usage Examples
 
 ### Basic Usage
+
 ```python
 from learning_constraints import LearningConstraintsOrchestrator
 
@@ -137,11 +149,12 @@ results = orchestrator.run_complete_process()
 ```
 
 ### Command Line Usage
+
 ```bash
 # Process all BMP files
 python run_learning_constraints.py bmp
 
-# Process only 10 PNG files  
+# Process only 10 PNG files
 python run_learning_constraints.py png 10
 
 # Process all files (default: gif)
@@ -149,6 +162,7 @@ python run_learning_constraints.py
 ```
 
 ### Individual Component Usage
+
 ```python
 from learning_constraints import FileParser, FileMutator, ResultTransformer, GlobalState
 
@@ -169,6 +183,7 @@ transformer.transform_results_directory()
 ```
 
 ### Configuration Management
+
 ```python
 from learning_constraints import Config, set_file_type
 
@@ -187,6 +202,7 @@ Config.ensure_directories_exist()
 ## Advanced Features
 
 ### File Limit Control
+
 ```python
 # Process specific number of files
 orchestrator = LearningConstraintsOrchestrator(file_type="png", max_files=10)
@@ -196,6 +212,7 @@ successful, total = orchestrator.process_directory("path/to/files", max_files=5)
 ```
 
 ### Manual Result Transformation
+
 ```python
 from learning_constraints import ResultTransformer
 
@@ -209,6 +226,7 @@ successful, total = transformer.transform_results_directory()
 ```
 
 ### Direct JSON Flattening
+
 ```python
 from learning_constraints import flatten_json
 
@@ -227,12 +245,14 @@ flattened = flatten_json(nested_data)
 ## Requirements
 
 ### External Tools
+
 - **ImageMagick**: For image validation (`identify` command)
-- **FFmpeg**: For audio/video validation (`ffprobe` command)  
+- **FFmpeg**: For audio/video validation (`ffprobe` command)
 - **Wireshark**: For PCAP validation (`tshark` command)
 - **TiMidity**: For MIDI validation (`timidity` command)
 
 ### Format-Specific Fuzzers
+
 - Requires `{file_type}-fuzzer` executables (e.g., `gif-fuzzer`, `png-fuzzer`)
 - Fuzzers must support `parse` and `abstract` commands
 
@@ -246,8 +266,9 @@ flattened = flatten_json(nested_data)
 ## Statistics & Monitoring
 
 The system provides comprehensive statistics:
+
 - **Files processed**: Valid files and special files counts
-- **Mutations**: Smart abstraction and random overwrite counts  
+- **Mutations**: Smart abstraction and random overwrite counts
 - **Discoveries**: New attributes found during processing
 - **Transformations**: Result transformation success rates
 - **Blacklisted items**: Attributes filtered due to size
@@ -267,3 +288,23 @@ The system provides comprehensive statistics:
 - **Parallel potential**: Architecture supports future parallel processing
 
 This comprehensive system provides a complete solution for file format constraint discovery through systematic mutation and analysis.
+
+NOTES:
+
+./png-fuzzer fuzz seed\_{1..10000}.png
+
+Comparison:
+
+1. Report enum or fixed values.
+2. Don't rely on the ranges.
+3. Which templates are better manual or from llm?
+4. In some cases where llm is correct and in some cases manual is correct and wrong?
+5. Do the analysis?
+6. One format multiple parsers (norman) - validity constraint rafael
+
+How good is the llm?
+How best its performing?
+To compare against the mannual approach.
+
+Better prompt experiment.
+How to make prompt better?
