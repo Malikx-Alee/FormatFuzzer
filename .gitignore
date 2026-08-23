@@ -19,6 +19,9 @@ __pycache__
 .coverage
 
 # compilation
+# build.sh/build_new.sh put all *-fuzzer/*.so/*.o/*.dSYM output in build/ -
+# the patterns below already cover it by extension, this just makes it explicit
+build/
 *.o
 *.so
 *.dSYM
@@ -71,3 +74,16 @@ logs/
 testcases_fuzz_generated/
 testcases_fuzz_generated_copy/
 results_ai/
+output/
+samples_updated/
+build_updated/
+
+# scripts/target_coverage.py: downloaded/built target programs and per-format
+# lcov results (large, third-party, machine-specific - not repo content)
+coverage_targets/
+coverage_results/
+coverage_targets_afl/
+
+# scripts/target_coverage_afl_ffmut.py / _llm.py: raw afl-fuzz output
+# (queue/, crashes/, hangs/, fuzzer_stats, mutations.log - machine-specific)
+afl_runs/
