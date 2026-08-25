@@ -92,6 +92,50 @@ def run(cmd, cwd=None, check=True, env=None):
     return result
 
 
+_LCOV_IGNORE_ERRORS_CACHE: dict = {}
+
+
+def run_lcov(cmd: List[str], categories: List[str], cache_key: str, check: bool = False) -> subprocess.CompletedProcess:
+    """Run an lcov/genhtml command that takes a trailing --ignore-errors
+    <categories>, adaptively dropping any category the installed lcov
+    version doesn't recognize.
+
+    Distro-packaged lcov (e.g. apt's on many Linux servers) can lag
+    Homebrew's by several years and reject newer category names (seen in
+    practice: "inconsistent" on a server's lcov, accepted fine on a Mac's).
+    geninfo/genhtml only report an unrecognized category by aborting
+    mid-run ("unknown argument for --ignore-errors: X"), not at
+    argument-parsing time, so there's no way to probe support up front -
+    instead, a reported-bad category is dropped and the command retried.
+    The resulting working set is cached under cache_key so later calls
+    (e.g. once per snapshot, over an hours-long run) don't re-pay the
+    discovery cost.
+    """
+    categories = list(_LCOV_IGNORE_ERRORS_CACHE.get(cache_key, categories))
+    while True:
+        full_cmd = list(cmd)
+        if categories:
+            full_cmd += ["--ignore-errors", ",".join(categories)]
+        log(f"$ {' '.join(full_cmd)}")
+        result = subprocess.run(full_cmd, capture_output=True, text=True)
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        # Category name is quoted on some lcov versions (2.x: 'inconsistent'),
+        # bare on others (older geninfo: inconsistent) - strip either way.
+        m = re.search(r"unknown argument for --ignore-errors:\s*['\"]?([\w-]+)['\"]?", result.stderr)
+        if m and m.group(1) in categories:
+            bad = m.group(1)
+            log(f"installed lcov/genhtml doesn't recognize --ignore-errors "
+                f"category '{bad}' - dropping it and retrying")
+            categories = [c for c in categories if c != bad]
+            continue
+        break
+    _LCOV_IGNORE_ERRORS_CACHE[cache_key] = categories
+    if check and result.returncode != 0:
+        raise RuntimeError(f"command failed (exit {result.returncode}): {' '.join(full_cmd)}")
+    return result
+
+
 def download(url: str, dest: Path) -> None:
     if dest.exists() and dest.stat().st_size > 0:
         log(f"already downloaded: {dest.name}")
@@ -584,10 +628,10 @@ def main() -> None:
     partials = []
     for idx, d in enumerate(build_result.gcov_dirs):
         partial = results_dir / f"_partial_{idx}.info"
-        r = run(["lcov", "--capture", "--directory", str(d), "--base-directory", str(d),
-                 "--output-file", str(partial),
-                 "--ignore-errors", "inconsistent,inconsistent,gcov,gcov,unsupported,unsupported"],
-                check=False)
+        r = run_lcov(["lcov", "--capture", "--directory", str(d), "--base-directory", str(d),
+                      "--output-file", str(partial)],
+                     ["inconsistent", "inconsistent", "gcov", "gcov", "unsupported", "unsupported"],
+                     cache_key="lcov_capture")
         if partial.exists():
             partials.append(partial)
     if not partials:
@@ -605,8 +649,8 @@ def main() -> None:
         p.unlink()
 
     html_dir = results_dir / "html"
-    run(["genhtml", str(info_path), "--output-directory", str(html_dir),
-         "--ignore-errors", "category,category"], check=False)
+    run_lcov(["genhtml", str(info_path), "--output-directory", str(html_dir)],
+             ["category", "category"], cache_key="genhtml")
 
     summary = subprocess.run(["lcov", "--summary", str(info_path)], capture_output=True, text=True)
     (results_dir / "summary.txt").write_text(summary.stdout + summary.stderr)
