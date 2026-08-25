@@ -315,10 +315,10 @@ def capture_lcov(gcov_build: tc.BuildResult, out_info: Path, html_dir: Optional[
     partials = []
     for idx, d in enumerate(gcov_build.gcov_dirs):
         partial = out_info.parent / f"_partial_{idx}.info"
-        tc.run(["lcov", "--capture", "--directory", str(d), "--base-directory", str(d),
-                "--output-file", str(partial),
-                "--ignore-errors", "inconsistent,inconsistent,gcov,gcov,unsupported,unsupported"],
-               check=False)
+        tc.run_lcov(["lcov", "--capture", "--directory", str(d), "--base-directory", str(d),
+                     "--output-file", str(partial)],
+                    ["inconsistent", "inconsistent", "gcov", "gcov", "unsupported", "unsupported"],
+                    cache_key="lcov_capture")
         if partial.exists():
             partials.append(partial)
     if not partials:
@@ -335,8 +335,8 @@ def capture_lcov(gcov_build: tc.BuildResult, out_info: Path, html_dir: Optional[
         p.unlink()
 
     if html_dir is not None:
-        tc.run(["genhtml", str(out_info), "--output-directory", str(html_dir),
-                "--ignore-errors", "category,category"], check=False)
+        tc.run_lcov(["genhtml", str(out_info), "--output-directory", str(html_dir)],
+                    ["category", "category"], cache_key="genhtml")
 
     summary = subprocess.run(["lcov", "--summary", str(out_info)], capture_output=True, text=True)
     (out_info.parent / "summary.txt").write_text(summary.stdout + summary.stderr)
@@ -484,8 +484,8 @@ def main(variant: Variant, argv=None) -> None:
         snap_dir.mkdir(parents=True, exist_ok=True)
         info_path = snap_dir / f"{fmt}_target.info"
         lcov_stats = capture_lcov(gcov_build, info_path, snap_dir / "html" if final else None)
-        if not final:
-            info_path.unlink(missing_ok=True)  # snapshots keep only meta.json + summary.txt
+        if not final and info_path.exists():
+            info_path.unlink()  # snapshots keep only meta.json + summary.txt
 
         afl_stats = parse_fuzzer_stats(afl_instance_dir)
         meta = {
