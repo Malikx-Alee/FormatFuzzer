@@ -234,6 +234,19 @@ def launch_afl_fuzz(afl_fuzz_bin: Path, instance_name: str, seeds: Path, sync_di
         # /bin/sh isn't instrumented, so AFL++'s check_binary() would
         # otherwise FATAL("No instrumentation detected") before starting.
         env["AFL_SKIP_BIN_CHECK"] = "1"
+    if sys.platform == "darwin":
+        # check_crash_handling() (afl-fuzz-init.c, __APPLE__-gated) FATALs
+        # unless this is set, because macOS forwards crashes to
+        # ReportCrash instead of letting waitpid() see them directly. A
+        # no-op on Linux, where the check doesn't exist.
+        env["AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"] = "1"
+    else:
+        # check_cpu_governor() (afl-fuzz-init.c, __linux__-gated) FATALs on
+        # an on-demand/powersave scaling governor unless this is set;
+        # switching the governor to "performance" needs root, which this
+        # script shouldn't assume it has. A no-op where the check doesn't
+        # exist (e.g. macOS).
+        env["AFL_SKIP_CPUFREQ"] = "1"
 
     tc.log("$ " + " ".join(args))
     return subprocess.Popen(args, cwd=tc.REPO_ROOT, env=env, start_new_session=True)

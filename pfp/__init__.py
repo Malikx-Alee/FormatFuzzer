@@ -5,6 +5,18 @@ import six
 import sys
 
 import py010parser.c_parser
+import py010parser.c_ast as _c_ast
+
+# py010parser's Union node does not accept the `args` kwarg that the grammar
+# emits for parameterized unions like `union Id_(uint32 size) { ... }`.
+# Patch Union to accept and store `args` the same way Struct already does so
+# pfp can compile parameterized union templates.
+if "args" not in _c_ast.Union.__init__.__code__.co_varnames:
+    _orig_union_init = _c_ast.Union.__init__
+    def _patched_union_init(self, name, decls, coord=None, args=None):
+        _orig_union_init(self, name, decls, coord)
+        self.args = args
+    _c_ast.Union.__init__ = _patched_union_init
 
 import pfp.interp
 from pfp.bitwrap import BitwrappedStream

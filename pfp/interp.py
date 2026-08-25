@@ -829,7 +829,7 @@ class PfpInterp(object):
         elif isinstance(node, AST.For):
             decls += self.get_decls(node.stmt)
             return decls
-        elif node is None or node.__class__ in [AST.UnaryOp, AST.Break, AST.Continue, AST.FuncCall, AST.Return, AST.Assignment, AST.EmptyStatement]:
+        elif node is None or node.__class__ in [AST.UnaryOp, AST.Break, AST.Continue, AST.FuncCall, AST.Return, AST.Assignment, AST.EmptyStatement, AST.Typedef]:
             return []
         raise errors.PfpError("unhandled get_decls " + str(node.__class__))
 
@@ -1641,19 +1641,57 @@ class PfpInterp(object):
             if type(child) is tuple:
                 child = child[1]
             if not isinstance(child, (AST.FuncDef, AST.Typedef)) \
-                    and not  is_forward_declared_struct(child):
+                    and not  is_forward_declared_struct(child) \
+                    and not is_typedef_named_struct_or_union(child):
                 continue
             self._handle_node(child, scope, ctxt, stream)
             if child.cpp:
                 node.cpp += child.cpp + ";\n"
             scope.clear_meta()
 
+        # Pre-register top-level struct/union array variable types so that
+        # _handle_array_ref can recognize them when they're referenced from
+        # earlier struct bodies (forward references like `ttf[ttfId-1]` in
+        # ttf-orig.bt where `ttf` is declared at the end of the file).
+        _native_names = {"char", "uchar", "byte", "ubyte", "short", "ushort",
+                         "int", "uint", "long", "ulong", "int64", "uint64",
+                         "hfloat", "float", "double", "string",
+                         "BYTE", "UBYTE", "CHAR", "UCHAR", "WCHAR", "wchar_t",
+                         "SHORT", "USHORT", "INT", "UINT", "LONG", "ULONG",
+                         "QUAD", "UQUAD", "WORD", "DWORD", "QWORD"}
+        for child in children:
+            if type(child) is tuple:
+                child = child[1]
+            try:
+                _scan_decls = self.get_decls(child)
+            except errors.PfpError:
+                continue
+            for decl in _scan_decls:
+                if not hasattr(decl, "type") or decl.type.__class__ != AST.ArrayDecl:
+                    continue
+                inner = decl.type.type
+                if inner.__class__ != AST.TypeDecl:
+                    continue
+                names = getattr(inner.type, "names", None)
+                if not names:
+                    sname = getattr(inner.type, "name", None)
+                    if sname:
+                        names = [sname]
+                if not names:
+                    continue
+                joined = " ".join(names)
+                if joined in _native_names or any(n in _native_names for n in names):
+                    continue
+                if decl.name not in self._variable_types:
+                    self._variable_types[decl.name] = joined.replace(" ", "_") + "_array_class"
+
         node.cpp1 = ""
         for child in children:
             if type(child) is tuple:
                 child = child[1]
             if isinstance(child, (AST.FuncDef, AST.Typedef)) or \
-                    is_forward_declared_struct(child):
+                    is_forward_declared_struct(child) or \
+                    is_typedef_named_struct_or_union(child):
                 continue
             self._handle_node(child, scope, ctxt, stream)
             for decl in self.get_decls(child):
@@ -1900,6 +1938,13 @@ class PfpInterp(object):
             #print("decl:forward")
             node.cpp = ""
             scope.add_type_class(node.type.name, field)
+
+        elif is_typedef_named_struct_or_union(node):
+            # `typedef struct NAME { ... };` — _handle_struct already
+            # registered NAME in scope as a side effect of the
+            # `_handle_node(node.type, ...)` call above.
+            node.cpp = ""
+            return
 
         elif getattr(node, "is_func_param", False):
             #print("decl:func_param")
@@ -2184,6 +2229,31 @@ class PfpInterp(object):
                         self._globals.append((node.name + "_element", element_classname + " " + node.name + "_element" + "(" + element_classname + "_" + node.name + "_element_instances);\n"))
                         self._instances += "std::vector<" + element_classname + "*> " + element_classname + "_" + node.name + "_element_instances;\n"
 
+                # When the element is a struct with free-variable parameters
+                # (forwarded from the enclosing scope), the array wrapper's
+                # generate(size) must thread those params through to
+                # element.generate(...). Build the sig/call fragments once.
+                # _raw forms are bare names for use inside _array_class body.
+                # _marker form uses /**/<n>() so auto-promotion in the
+                # enclosing struct picks the free vars up as its own params.
+                element_extra_sig = ""
+                element_extra_call_raw = ""
+                element_extra_call_marker = ""
+                if (not is_native and not is_char_array
+                        and 'classnode' in dir()
+                        and hasattr(classnode, "args")
+                        and classnode.args is not None):
+                    for param in classnode.args.params:
+                        ptype = getattr(param.type, "cpp", None)
+                        if not ptype:
+                            continue
+                        ref = "" if ptype.endswith("&") else "&"
+                        if getattr(param, "is_func_param", False):
+                            ref = ""
+                        element_extra_sig += ", " + ptype + ref + " " + param.name
+                        element_extra_call_raw += ", " + param.name
+                        element_extra_call_marker += ", /**/" + param.name + "()"
+
                 cpp = ""
                 if classname.replace(" ", "_") + "_array_class" not in self._defined:
                     self._defined[classname.replace(" ", "_") + "_array_class"] = None
@@ -2210,7 +2280,7 @@ class PfpInterp(object):
                         cpp += "\t" + classname.replace(" ", "_") + "_array_class(" + element_classname + "& element, std::vector<std::string> known_values)\n\t\t: element(element), known_values(known_values) {}\n"
                         cpp += "\n\t" + node.type.cpp + " generate(unsigned size, std::vector<std::string> possible_values = {}) {\n"
                     else:
-                        cpp += "\n\t" + node.type.cpp + " generate(unsigned size) {\n"
+                        cpp += "\n\t" + node.type.cpp + " generate(unsigned size" + element_extra_sig + ") {\n"
                     cpp += "\t\tcheck_array_length(size);\n"
                     cpp += "\t\t_startof = FTell();\n"
                     if is_char_array:
@@ -2248,7 +2318,7 @@ class PfpInterp(object):
                         cpp += "\t\t\t\t_sizeof += sizeof(" + classtype + ");\n"
                         cpp += "\t\t\t}\n"
                     else:
-                        cpp += "\t\t\tvalue.push_back(element.generate());\n"
+                        cpp += "\t\t\tvalue.push_back(element.generate(" + element_extra_call_raw.lstrip(", ") + "));\n"
                         cpp += "\t\t\t_sizeof += element._sizeof;\n"
                     cpp += "\t\t}\n"
                     cpp += "\t\treturn value;\n"
@@ -2288,6 +2358,10 @@ class PfpInterp(object):
                         node.cpp += expr.cpp + ", "
                     node.cpp = node.cpp[:-2]
                     node.cpp += " }"
+                # Forward enclosing-scope free vars to the wrapper, which in
+                # turn passes them to element.generate(...). Marker form so
+                # auto-promotion in the enclosing struct picks them up.
+                node.cpp += element_extra_call_marker
                 node.cpp += "))"
             elif isinstance(node.type.type, AST.Enum):
                 classname = " ".join(node.type.type.names)
@@ -3290,8 +3364,10 @@ class PfpInterp(object):
 
         """
         if node.name == "__root":
+            node.cpp = "(*::g)"
             return self._root
         if node.name == "__this" or node.name == "this":
+            node.cpp = "(*this)"
             return ctxt
 
         self._dlog("handling id {}".format(node.name))
@@ -3773,7 +3849,25 @@ class PfpInterp(object):
         """
         ary = self._handle_node(node.name, scope, ctxt, stream)
         subscript = self._handle_node(node.subscript, scope, ctxt, stream)
-        if hasattr(ary, "field_cls") and not hasattr(ary.field_cls, "format") and ary.field_cls != fields.String and ary._pfp__name in self._variable_types and "_array_class" in self._variable_types[ary._pfp__name]:
+        is_struct_array_wrapper = False
+        if hasattr(ary, "field_cls") and not hasattr(ary.field_cls, "format") and ary.field_cls != fields.String:
+            is_struct_array_wrapper = True
+        elif ary is None or not hasattr(ary, "field_cls"):
+            # generate-mode ID lookup may not return a populated ary; fall
+            # back to the variable_types registry — but skip native-typed
+            # array_class entries so we don't wrap plain numeric arrays.
+            ary_name = getattr(node.name, "name", None)
+            if isinstance(ary_name, str) and ary_name in self._variable_types and "_array_class" in self._variable_types[ary_name]:
+                vt = self._variable_types[ary_name]
+                base = vt[:-len("_array_class")] if vt.endswith("_array_class") else vt
+                native_bases = {"WORD", "DWORD", "QWORD", "USHORT", "UINT", "ULONG", "UQUAD",
+                                "SHORT", "INT", "LONG", "QUAD", "BYTE", "UBYTE", "CHAR", "UCHAR",
+                                "WCHAR", "wchar_t", "byte", "ubyte", "short", "ushort", "int",
+                                "uint", "long", "ulong", "int64", "uint64", "hfloat", "float",
+                                "double", "char", "uchar", "string"}
+                if base not in native_bases:
+                    is_struct_array_wrapper = True
+        if is_struct_array_wrapper:
             node.cpp = "(*" + node.name.cpp + "[" + node.subscript.cpp + "])"
         else:
             node.cpp = node.name.cpp + "[" + node.subscript.cpp + "]"
@@ -4320,5 +4414,27 @@ def is_forward_declared_struct(node):
         and node.init is None
         and isinstance(node.type, AST.Struct)
         and node.type.decls is None
+    )
+
+
+def is_typedef_named_struct_or_union(node):
+    """typedef struct NAME { ... };  or  typedef union NAME { ... };
+    and also the non-typedef bare named struct/union form:
+        struct NAME { ... };
+
+    py010parser represents both as an AST.Decl with name=None whose type
+    is a named Struct/Union with decls. (storage=['typedef'] in the first
+    case, [] in the second.) Both are distinct from AST.Typedef, which
+    wraps `typedef struct { ... } NAME;`.
+
+    Hoisting these in the first pass of _handle_file_ast lets later
+    function definitions reference the struct/union type by name.
+    """
+    return (
+        isinstance(node, AST.Decl)
+        and node.name is None
+        and isinstance(node.type, (AST.Struct, AST.Union))
+        and node.type.name is not None
+        and node.type.decls is not None
     )
 
