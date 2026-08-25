@@ -5,7 +5,7 @@ export CPLUS_INCLUDE_PATH=$(brew --prefix boost)/include:$CPLUS_INCLUDE_PATH
 mkdir -p build
 
 # Produce format-specific C++ code
-./ffcompile templates/$1.bt $1.cpp
+./ffcompile templates_originals_llm/$1.bt $1.cpp
 git checkout -- png.cpp
 
 # Build format-specific executable
