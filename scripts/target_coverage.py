@@ -287,9 +287,14 @@ def build_jpg(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
     build_dir = src / "build"
     if not already_built(build_dir, force):
         build_dir.mkdir(exist_ok=True)
+        # -lm: libjpeg-turbo 3.2.0's bundled spng.c uses fpclassify() (libm)
+        # but its CMake target doesn't link libm itself - harmless on macOS
+        # (libm is folded into libSystem, linked unconditionally) but a
+        # hard "undefined reference to `__fpclassifyf'" on Linux/glibc,
+        # where libm is a separate lib that must be requested explicitly.
         run(f'cmake -G "Unix Makefiles" -DCMAKE_C_COMPILER="{toolchain.cc}" '
             f'-DCMAKE_C_FLAGS="{toolchain.cflags}" '
-            f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags}" -DENABLE_SHARED=FALSE '
+            f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags} -lm" -DENABLE_SHARED=FALSE '
             f'-DWITH_SIMD=FALSE ..', cwd=build_dir)
         run("make -j4 djpeg-static", cwd=build_dir)
         mark_built(build_dir)
@@ -338,10 +343,17 @@ def build_midi(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
     timidity_dir = src / "timidity"
     if not already_built(timidity_dir, force):
         fix_config_sub(src)
+        # --build=...-apple-darwin tells autoconf to configure as if for
+        # macOS (needed there so it picks the CoreAudio backend correctly);
+        # on Linux the same flag would make it try to build that same
+        # CoreAudio backend and fail ("CoreAudio/AudioHardware.h not
+        # found"), so only force it on the platform it's actually true for
+        # - elsewhere let autoconf detect the native build natively.
+        build_triple = f"--build={platform.machine()}-apple-darwin" if sys.platform == "darwin" else ""
         run(f'./configure CC="{toolchain.cc}" '
             f'CFLAGS="{toolchain.cflags} -Wno-implicit-function-declaration -Wno-implicit-int" '
             f'LDFLAGS="{toolchain.ldflags}" --without-x --disable-network --disable-alsaseq '
-            f'--disable-server --build={platform.machine()}-apple-darwin', cwd=src)
+            f'--disable-server {build_triple}', cwd=src)
         run("make -j4", cwd=src)
         mark_built(timidity_dir)
     cfg = timidity_dir / "dummy.cfg"
