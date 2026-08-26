@@ -220,9 +220,9 @@ def build_target_argv(recipe: tc.Recipe, afl_build: tc.BuildResult) -> Tuple[Lis
 def launch_afl_fuzz(afl_fuzz_bin: Path, instance_name: str, seeds: Path, sync_dir: Path,
                      so_path: Path, dict_path: Optional[Path], timeout_s: int,
                      target_argv: List[str], needs_shell: bool,
-                     extra_flags: List[str]) -> subprocess.Popen:
+                     extra_flags: List[str], mem_limit: str = "none") -> subprocess.Popen:
     args = [str(afl_fuzz_bin), "-i", str(seeds), "-o", str(sync_dir), "-M", instance_name,
-            "-t", str(timeout_s * 1000)]
+            "-t", str(timeout_s * 1000), "-m", str(mem_limit)]
     if dict_path:
         args += ["-x", str(dict_path)]
     args += list(extra_flags)
@@ -382,6 +382,10 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
                          help="seconds between coverage snapshots (default 1800 = 30min)")
     parser.add_argument("--timeout", type=int, default=20,
                          help="per-file driver timeout in seconds; also used (as ms) for afl-fuzz's -t")
+    parser.add_argument("--mem-limit", default="none",
+                         help="afl-fuzz -m value (default: none - AFL's own recommended default for "
+                              "dynamically-linked targets, whose shared-library mappings can exceed a "
+                              "tight virtual-memory cap and falsely look like a fork-server crash)")
     parser.add_argument("--afl-dir", type=Path, default=tc.REPO_ROOT.parent / "AFLplusplus",
                          help="path to a built AFLplusplus checkout (default: sibling ../AFLplusplus)")
     parser.add_argument("--seeds", type=Path, default=None,
@@ -456,7 +460,7 @@ def main(variant: Variant, argv=None) -> None:
     afl_sync_dir.parent.mkdir(parents=True, exist_ok=True)
 
     proc = launch_afl_fuzz(afl_fuzz_bin, afl_instance, seeds, afl_sync_dir, so_path, dict_path,
-                            args.timeout, target_argv, needs_shell, args.extra_afl_flag)
+                            args.timeout, target_argv, needs_shell, args.extra_afl_flag, args.mem_limit)
 
     time.sleep(3)
     if proc.poll() is not None:
