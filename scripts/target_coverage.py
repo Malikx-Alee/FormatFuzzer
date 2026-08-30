@@ -170,12 +170,32 @@ def marker(build_dir: Path) -> Path:
     return build_dir / ".coverage_build_ok"
 
 
-def already_built(build_dir: Path, force: bool) -> bool:
-    return (not force) and marker(build_dir).exists()
+def toolchain_fingerprint(toolchain: "Toolchain") -> str:
+    return f"{toolchain.cc}|{toolchain.cxx}|{toolchain.cflags}|{toolchain.ldflags}"
 
 
-def mark_built(build_dir: Path) -> None:
-    marker(build_dir).write_text(datetime.now().isoformat())
+def already_built(build_dir: Path, force: bool, toolchain: Optional[Toolchain] = None) -> bool:
+    """A build_dir is only "already built" if its marker's recorded
+    toolchain fingerprint matches the one being asked for now. Without this,
+    a directory first built with one compiler (e.g. the plain gcov Toolchain
+    default, or an earlier/broken --afl-dir attempt) would be silently
+    reused for a totally different one (e.g. afl-clang-fast) on a later run
+    - producing an uninstrumented binary that AFL's forkserver handshake
+    then fails against, with no build output at all to explain why (see
+    docs_llm/ for the incident this was written to fix). A missing or
+    old-format (pre-fingerprint) marker is treated as stale, not reusable."""
+    m = marker(build_dir)
+    if force or not m.exists():
+        return False
+    if toolchain is None:
+        return True
+    lines = m.read_text().splitlines()
+    return len(lines) >= 2 and lines[1] == toolchain_fingerprint(toolchain)
+
+
+def mark_built(build_dir: Path, toolchain: Optional[Toolchain] = None) -> None:
+    fp = toolchain_fingerprint(toolchain) if toolchain is not None else ""
+    marker(build_dir).write_text(f"{datetime.now().isoformat()}\n{fp}\n")
 
 
 def find_brew_build_aux(name: str) -> Optional[Path]:
@@ -242,12 +262,12 @@ def build_zip(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
     src = work_dir / "unzip60"
     ensure_extracted(work_dir, "https://downloads.sourceforge.net/infozip/unzip60.tar.gz",
                       "unzip60.tar.gz", src)
-    if not already_built(src, force):
+    if not already_built(src, force, toolchain):
         # unzip60/unix/Makefile sets "CC = cc" unconditionally, so CC must be
         # passed as an explicit make command-line argument, not just an env var.
         run(f'make -f unix/Makefile unzips CC="{toolchain.cc}" '
             f'CFLAGS="{toolchain.cflags} -Wall -DBSD" LF2="{toolchain.ldflags}"', cwd=src)
-        mark_built(src)
+        mark_built(src, toolchain)
     return BuildResult([src], src)
 
 
@@ -265,10 +285,10 @@ def build_gif(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
     src = work_dir / "giflib-5.2.2"
     ensure_extracted(work_dir, "https://sourceforge.net/projects/giflib/files/giflib-5.2.2.tar.gz/download",
                       "giflib.tar.gz", src)
-    if not already_built(src, force):
+    if not already_built(src, force, toolchain):
         run(f'make CC="{toolchain.cc}" CFLAGS="-std=gnu99 -fPIC {toolchain.cflags} -Wall" '
             f'LDFLAGS="{toolchain.ldflags}" gif2rgb', cwd=src)
-        mark_built(src)
+        mark_built(src, toolchain)
     return BuildResult([src], src)
 
 
@@ -285,7 +305,7 @@ def build_jpg(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
     ensure_extracted(work_dir, "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.2.0.tar.gz",
                       "libjpeg-turbo.tar.gz", src)
     build_dir = src / "build"
-    if not already_built(build_dir, force):
+    if not already_built(build_dir, force, toolchain):
         build_dir.mkdir(exist_ok=True)
         # -lm: libjpeg-turbo 3.2.0's bundled spng.c uses fpclassify() (libm)
         # but its CMake target doesn't link libm itself - harmless on macOS
@@ -297,7 +317,7 @@ def build_jpg(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
             f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags} -lm" -DENABLE_SHARED=FALSE '
             f'-DWITH_SIMD=FALSE ..', cwd=build_dir)
         run("make -j4 djpeg-static", cwd=build_dir)
-        mark_built(build_dir)
+        mark_built(build_dir, toolchain)
     return BuildResult([build_dir], build_dir)
 
 
@@ -313,11 +333,11 @@ def build_png(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
     src = work_dir / "libpng-1.6.57"
     ensure_extracted(work_dir, "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.57.tar.gz",
                       "libpng.tar.gz", src)
-    if not already_built(src, force):
+    if not already_built(src, force, toolchain):
         run(f'./configure CC="{toolchain.cc}" CFLAGS="{toolchain.cflags}" '
             f'LDFLAGS="{toolchain.ldflags}" --disable-shared', cwd=src)
         run("make pngtest", cwd=src)
-        mark_built(src)
+        mark_built(src, toolchain)
     return BuildResult([src], src)
 
 
@@ -341,7 +361,7 @@ def build_midi(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
         "https://downloads.sourceforge.net/project/timidity/TiMidity%2B%2B/TiMidity%2B%2B-2.15.0/TiMidity%2B%2B-2.15.0.tar.gz",
         "timidity.tar.gz", src)
     timidity_dir = src / "timidity"
-    if not already_built(timidity_dir, force):
+    if not already_built(timidity_dir, force, toolchain):
         fix_config_sub(src)
         # --build=...-apple-darwin tells autoconf to configure as if for
         # macOS (needed there so it picks the CoreAudio backend correctly);
@@ -355,7 +375,7 @@ def build_midi(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
             f'LDFLAGS="{toolchain.ldflags}" --without-x --disable-network --disable-alsaseq '
             f'--disable-server {build_triple}', cwd=src)
         run("make -j4", cwd=src)
-        mark_built(timidity_dir)
+        mark_built(timidity_dir, toolchain)
     cfg = timidity_dir / "dummy.cfg"
     if not cfg.exists():
         cfg.write_text("\n")
@@ -375,13 +395,13 @@ def build_wav(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
     ensure_extracted(work_dir, "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
                       "wavpack.tar.gz", src)
     build_dir = src / "build"
-    if not already_built(build_dir, force):
+    if not already_built(build_dir, force, toolchain):
         build_dir.mkdir(exist_ok=True)
         run(f'cmake -DCMAKE_C_COMPILER="{toolchain.cc}" -DCMAKE_C_FLAGS="{toolchain.cflags}" '
             f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags}" '
             f'-DBUILD_SHARED_LIBS=OFF ..', cwd=build_dir)
         run("make -j4 wavpackapp", cwd=build_dir)
-        mark_built(build_dir)
+        mark_built(build_dir, toolchain)
     return BuildResult([build_dir], build_dir)
 
 
@@ -408,7 +428,7 @@ def build_pcap(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
     ensure_extracted(work_dir, "https://github.com/the-tcpdump-group/tcpdump/archive/refs/tags/tcpdump-4.99.6.tar.gz",
                       "tcpdump.tar.gz", tcpdump_src)
 
-    if not already_built(tcpdump_build, force):
+    if not already_built(tcpdump_build, force, toolchain):
         libpcap_build.mkdir(parents=True, exist_ok=True)
         run(f'cmake -DCMAKE_C_COMPILER="{toolchain.cc}" -DCMAKE_C_FLAGS="{toolchain.cflags}" '
             f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags}" '
@@ -422,7 +442,7 @@ def build_pcap(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
             f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags}" '
             f'-DCMAKE_PREFIX_PATH="{local_prefix}" ..', cwd=tcpdump_build)
         run("make -j4 tcpdump", cwd=tcpdump_build)
-        mark_built(tcpdump_build)
+        mark_built(tcpdump_build, toolchain)
 
     return BuildResult([tcpdump_build, libpcap_build], tcpdump_build)
 
@@ -445,7 +465,7 @@ def build_ffmpeg(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()
     ff_dir = work_dir.parent / "_ffmpeg_shared"
     src = ff_dir / "ffmpeg-6.1"
     ensure_extracted(ff_dir, "https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz", "ffmpeg-6.1.tar.xz", src)
-    if not already_built(src, force):
+    if not already_built(src, force, toolchain):
         # FFmpeg's ./configure is a homegrown script (cc_default="gcc"
         # hardcoded), not autoconf - it takes its own --cc/--cxx flags rather
         # than honoring a CC/CXX environment variable.
@@ -453,7 +473,7 @@ def build_ffmpeg(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()
             f'--extra-cflags="{toolchain.cflags}" --extra-ldflags="{toolchain.ldflags}" '
             f'--disable-doc --disable-ffplay --disable-debug', cwd=src)
         run("make -j4", cwd=src)
-        mark_built(src)
+        mark_built(src, toolchain)
     return BuildResult([src], src)
 
 
@@ -500,7 +520,7 @@ def build_bmp(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
         work_dir.mkdir(parents=True, exist_ok=True)
         run(["git", "clone", "--depth", "1", "--branch", "2.42.12",
              "https://gitlab.gnome.org/GNOME/gdk-pixbuf.git", str(src)])
-    if not already_built(build_dir, force):
+    if not already_built(build_dir, force, toolchain):
         if build_dir.exists():
             shutil.rmtree(build_dir)
         # -Dman=false: avoids requiring rst2man (python-docutils), not installed here.
@@ -539,7 +559,7 @@ def build_bmp(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
                                capture_output=True, text=True, check=True).stdout.strip()
         run(f'{toolchain.cc} {toolchain.cflags} {cflags} harness.c {libs} {toolchain.ldflags} -o harness',
             cwd=build_dir)
-        mark_built(build_dir)
+        mark_built(build_dir, toolchain)
     return BuildResult([build_dir], build_dir)
 
 
