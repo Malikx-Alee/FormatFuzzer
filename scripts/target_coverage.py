@@ -429,17 +429,21 @@ def build_pcap(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
                       "tcpdump.tar.gz", tcpdump_src)
 
     if not already_built(tcpdump_build, force, toolchain):
-        # Disable every optional hardware-capture backend libpcap's cmake
-        # auto-detects (RDMA/InfiniBand, Endace DAG, Septel, Myricom SNF,
-        # Riverbed TurboCap, netmap, Linux usbmon) in addition to
-        # Bluetooth/D-Bus. None of these are needed for replaying .pcap
-        # *files* (our only use case: `tcpdump -nr <file>`), and any of them
-        # auto-enabling because the relevant hardware/dev library happens to
-        # be installed (e.g. libibverbs on an HPC cluster) breaks the final
-        # tcpdump link with "undefined reference" - libpcap.a ends up with
-        # object files whose external symbols (e.g. ibv_*) tcpdump's own
-        # link step was never told to link against. Seen in practice on a
-        # cluster with libibverbs present but not on a Mac without it.
+        # Disable every optional hardware-capture backend and optional
+        # network-library integration libpcap's cmake auto-detects
+        # (RDMA/InfiniBand, Endace DAG, Septel, Myricom SNF, Riverbed
+        # TurboCap, netmap, Linux usbmon, libnl-based netlink queries,
+        # rpcap remote-capture) in addition to Bluetooth/D-Bus. None of
+        # these are needed for replaying .pcap *files* (our only use case:
+        # `tcpdump -nr <file>`), and any of them auto-enabling because the
+        # relevant hardware/dev library happens to be installed (seen in
+        # practice on an HPC cluster: libibverbs enabled RDMA, then
+        # libnl-genl-3 enabled netlink support - neither present on a Mac)
+        # breaks the final tcpdump link with "undefined reference": the
+        # object file referencing the library's symbols gets compiled into
+        # libpcap.a, but tcpdump's own link step is never told to link
+        # against that library too. ENABLE_REMOTE is disabled pre-emptively
+        # for the same reason, not because it's failed yet.
         if libpcap_build.exists():
             shutil.rmtree(libpcap_build)  # clear any stale cache/objects from a build with different DISABLE_* flags
         libpcap_build.mkdir(parents=True, exist_ok=True)
@@ -448,7 +452,7 @@ def build_pcap(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
             f'-DCMAKE_INSTALL_PREFIX="{local_prefix}" -DBUILD_SHARED_LIBS=OFF '
             f'-DDISABLE_DBUS=ON -DDISABLE_BLUETOOTH=ON -DDISABLE_RDMA=ON -DDISABLE_DAG=ON '
             f'-DDISABLE_SEPTEL=ON -DDISABLE_SNF=ON -DDISABLE_TC=ON -DDISABLE_NETMAP=ON '
-            f'-DDISABLE_LINUX_USBMON=ON ..', cwd=libpcap_build)
+            f'-DDISABLE_LINUX_USBMON=ON -DBUILD_WITH_LIBNL=OFF -DENABLE_REMOTE=OFF ..', cwd=libpcap_build)
         run("make -j4", cwd=libpcap_build)
         if local_prefix.exists():
             shutil.rmtree(local_prefix)  # stale install from a previous (differently-configured) libpcap build
