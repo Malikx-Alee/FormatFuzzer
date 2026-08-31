@@ -406,6 +406,17 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
                          help="re-run configure/make/cmake for both the AFL and gcov target builds")
     parser.add_argument("--purge-afl-out", action="store_true",
                          help="delete afl_runs/<name>/ after a successful final snapshot (default: keep)")
+    parser.add_argument("--fresh", action="store_true",
+                         help="delete afl_runs/<name>/ and coverage_results/<name>/ before starting, "
+                              "if they exist. Needed to actually restart from zero: afl-fuzz itself "
+                              "refuses to auto-wipe an output dir holding more than "
+                              "AFLplusplus/include/config.h's OUTPUT_GRACE (25) minutes of prior "
+                              "fuzzing (FATALs with 'At-risk data found') rather than silently "
+                              "discard real progress - this flag is the explicit, visible opt-in to "
+                              "do that deletion yourself. Does NOT touch coverage_targets_afl/<fmt>/ "
+                              "(the AFL-instrumented target binary - safe and worth keeping) or "
+                              "coverage_targets/<name>/ (the gcov target; its .gcda counters are reset "
+                              "every run regardless, with or without this flag).")
     parser.add_argument("--extra-afl-flag", action="append", default=[],
                          help="extra flag appended verbatim to the afl-fuzz argv (repeatable)")
     parser.add_argument("--list", action="store_true", help="list supported formats and exit")
@@ -432,6 +443,12 @@ def main(variant: Variant, argv=None) -> None:
     afl_instance_dir = afl_sync_dir / afl_instance
     results_dir = tc.RESULTS_DIR / name
     afl_target_work_dir = AFL_TARGETS_DIR / fmt
+
+    if args.fresh:
+        for d in (afl_sync_dir, results_dir):
+            if d.exists():
+                tc.log(f"--fresh: deleting {d}")
+                shutil.rmtree(d)
     # variant-specific, NOT just tc.TARGETS_DIR / fmt: the gcov copy's .gcda
     # counters accumulate for the life of a run and are never reset except
     # at process start (see the gcda.unlink() loop below), so if the
