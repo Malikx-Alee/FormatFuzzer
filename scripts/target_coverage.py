@@ -429,14 +429,33 @@ def build_pcap(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
                       "tcpdump.tar.gz", tcpdump_src)
 
     if not already_built(tcpdump_build, force, toolchain):
+        # Disable every optional hardware-capture backend libpcap's cmake
+        # auto-detects (RDMA/InfiniBand, Endace DAG, Septel, Myricom SNF,
+        # Riverbed TurboCap, netmap, Linux usbmon) in addition to
+        # Bluetooth/D-Bus. None of these are needed for replaying .pcap
+        # *files* (our only use case: `tcpdump -nr <file>`), and any of them
+        # auto-enabling because the relevant hardware/dev library happens to
+        # be installed (e.g. libibverbs on an HPC cluster) breaks the final
+        # tcpdump link with "undefined reference" - libpcap.a ends up with
+        # object files whose external symbols (e.g. ibv_*) tcpdump's own
+        # link step was never told to link against. Seen in practice on a
+        # cluster with libibverbs present but not on a Mac without it.
+        if libpcap_build.exists():
+            shutil.rmtree(libpcap_build)  # clear any stale cache/objects from a build with different DISABLE_* flags
         libpcap_build.mkdir(parents=True, exist_ok=True)
         run(f'cmake -DCMAKE_C_COMPILER="{toolchain.cc}" -DCMAKE_C_FLAGS="{toolchain.cflags}" '
             f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags}" '
             f'-DCMAKE_INSTALL_PREFIX="{local_prefix}" -DBUILD_SHARED_LIBS=OFF '
-            f'-DDISABLE_DBUS=ON -DDISABLE_BLUETOOTH=ON ..', cwd=libpcap_build)
+            f'-DDISABLE_DBUS=ON -DDISABLE_BLUETOOTH=ON -DDISABLE_RDMA=ON -DDISABLE_DAG=ON '
+            f'-DDISABLE_SEPTEL=ON -DDISABLE_SNF=ON -DDISABLE_TC=ON -DDISABLE_NETMAP=ON '
+            f'-DDISABLE_LINUX_USBMON=ON ..', cwd=libpcap_build)
         run("make -j4", cwd=libpcap_build)
+        if local_prefix.exists():
+            shutil.rmtree(local_prefix)  # stale install from a previous (differently-configured) libpcap build
         run("make install", cwd=libpcap_build)
 
+        if tcpdump_build.exists():
+            shutil.rmtree(tcpdump_build)
         tcpdump_build.mkdir(parents=True, exist_ok=True)
         run(f'cmake -DCMAKE_C_COMPILER="{toolchain.cc}" -DCMAKE_C_FLAGS="{toolchain.cflags}" '
             f'-DCMAKE_EXE_LINKER_FLAGS="{toolchain.ldflags}" '
