@@ -406,7 +406,10 @@ def build_wav(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
 
 
 def drive_wav(build: BuildResult, f: Path) -> str:
-    return f"./wavpack -y '{f}' -o /tmp/target_coverage_wav_out.wv >/dev/null 2>&1"
+    # PID-suffixed, not a fixed name: concurrent processes (e.g. the
+    # optimized and original AFL+FFMut variants running in parallel) would
+    # otherwise race on writing the same /tmp file.
+    return f"./wavpack -y '{f}' -o /tmp/target_coverage_wav_out_{os.getpid()}.wv >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------
@@ -480,12 +483,21 @@ def drive_pcap(build: BuildResult, f: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def build_ffmpeg(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -> BuildResult:
-    # ff_dir is derived from work_dir's parent (not the TARGETS_DIR global) so
-    # that callers building into a different work_dir tree - e.g. an AFL
-    # target build under coverage_targets_afl/ instead of coverage_targets/ -
-    # get their own separate FFmpeg checkout+build instead of silently
-    # colliding with (and overwriting) a different toolchain's build of it.
-    ff_dir = work_dir.parent / "_ffmpeg_shared"
+    # ff_dir is keyed off work_dir itself, NOT work_dir.parent. An earlier
+    # version used .parent specifically so mp4 and avi (different work_dir
+    # leaves under the same parent) would share one FFmpeg build - but
+    # target_coverage_afl_ffmut.py's per-variant gcov_target_work_dir
+    # (coverage_targets/<fmt>-afl-ffmut/ vs coverage_targets/<fmt>-orig-afl-
+    # ffmut/) shares that SAME parent (coverage_targets/) regardless of
+    # variant, so .parent collapsed straight back to one shared directory
+    # across variants too - silently defeating that isolation exactly the
+    # way the plain per-fmt gcov_target_work_dir sharing did before it was
+    # fixed (see docs_llm/target_coverage_afl_ffmut_shared_gcov_bug.md).
+    # Using work_dir directly costs a redundant FFmpeg build per work_dir
+    # (mp4 and avi no longer share one within the same script/variant) in
+    # exchange for correctness under concurrent variant runs, which matters
+    # far more given FFmpeg is a few minutes to build vs. an 8h campaign.
+    ff_dir = work_dir / "_ffmpeg_shared"
     src = ff_dir / "ffmpeg-6.1"
     ensure_extracted(ff_dir, "https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz", "ffmpeg-6.1.tar.xz", src)
     if not already_built(src, force, toolchain):
@@ -509,11 +521,13 @@ def build_avi(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
 
 
 def drive_mp4(build: BuildResult, f: Path) -> str:
-    return f"./ffmpeg -y -i '{f}' -c:v mpeg4 -c:a copy /tmp/target_coverage_mp4_out.mp4 >/dev/null 2>&1"
+    # PID-suffixed for the same reason as drive_wav above.
+    return f"./ffmpeg -y -i '{f}' -c:v mpeg4 -c:a copy /tmp/target_coverage_mp4_out_{os.getpid()}.mp4 >/dev/null 2>&1"
 
 
 def drive_avi(build: BuildResult, f: Path) -> str:
-    return f"./ffmpeg -y -f avi -i '{f}' /tmp/target_coverage_avi_out.avi >/dev/null 2>&1"
+    # PID-suffixed for the same reason as drive_wav above.
+    return f"./ffmpeg -y -f avi -i '{f}' /tmp/target_coverage_avi_out_{os.getpid()}.avi >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------

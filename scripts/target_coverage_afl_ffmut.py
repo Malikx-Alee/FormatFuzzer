@@ -339,10 +339,17 @@ def capture_lcov(gcov_build: tc.BuildResult, out_info: Path, html_dir: Optional[
                     ["category", "category"], cache_key="genhtml")
 
     summary = subprocess.run(["lcov", "--summary", str(out_info)], capture_output=True, text=True)
-    (out_info.parent / "summary.txt").write_text(summary.stdout + summary.stderr)
+    summary_text = summary.stdout + summary.stderr
+    (out_info.parent / "summary.txt").write_text(summary_text)
 
-    m_lines = re.search(r"lines\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) lines\)", summary.stdout)
-    m_funcs = re.search(r"functions\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) functions\)", summary.stdout)
+    # Search the combined stream, not summary.stdout alone: this lcov's
+    # "Summary coverage rate:" block prints to stderr (version/distro
+    # dependent - confirmed different from the lcov this was developed
+    # against, which puts it on stdout), so searching stdout only silently
+    # left every meta.json's lines_pct/functions_pct etc. null despite
+    # summary.txt on disk clearly containing the real numbers.
+    m_lines = re.search(r"lines\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) lines\)", summary_text)
+    m_funcs = re.search(r"functions\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) functions\)", summary_text)
     return {
         "lines_pct": float(m_lines.group(1)) if m_lines else None,
         "lines_hit": int(m_lines.group(2)) if m_lines else None,
@@ -424,7 +431,21 @@ def main(variant: Variant, argv=None) -> None:
     afl_instance_dir = afl_sync_dir / afl_instance
     results_dir = tc.RESULTS_DIR / name
     afl_target_work_dir = AFL_TARGETS_DIR / fmt
-    gcov_target_work_dir = tc.TARGETS_DIR / fmt
+    # variant-specific, NOT just tc.TARGETS_DIR / fmt: the gcov copy's .gcda
+    # counters accumulate for the life of a run and are never reset except
+    # at process start (see the gcda.unlink() loop below), so if the
+    # optimized and original variants for the same format are run
+    # concurrently (as they naturally would be, launched as two separate
+    # background processes) while sharing one directory, each snapshot's
+    # lcov capture would silently report the POOLED coverage of both
+    # processes' driven files, not either one's own - both variants'
+    # coverage would converge and read identically despite AFL genuinely
+    # exploring differently for each (confirmed happened: see
+    # docs_llm/target_coverage_afl_ffmut_shared_gcov_bug.md). Unlike
+    # afl_target_work_dir (the AFL-instrumented binary, which accumulates no
+    # mutable state itself and is safe to read/exec from concurrent
+    # processes), this one genuinely needs isolation per variant.
+    gcov_target_work_dir = tc.TARGETS_DIR / name
     afl_dir = args.afl_dir.resolve()
 
     if not recipe.verified:

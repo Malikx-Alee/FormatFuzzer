@@ -6,7 +6,12 @@ mkdir -p build
 
 # Produce format-specific C++ code
 ./ffcompile templates_originals_llm/$1.bt $1.cpp
-git checkout -- png.cpp
+# (build.sh has a `git checkout -- png.cpp` here, needed because templates/
+# png.bt's regeneration needs reverting to a hand-fixed committed png.cpp -
+# not carried over here: templates_originals_llm/ has no bare "png.bt", only
+# "png-orig.bt", so $1 is always "*-orig" and $1.cpp is never literally
+# png.cpp - the line would just unconditionally stomp on an unrelated
+# file on every build, including racing a concurrently-running png build.)
 
 # Build format-specific executable
 g++ -c -I . -std=c++17 -g -O3 -Wall fuzzer.cpp -o build/fuzzer.o
