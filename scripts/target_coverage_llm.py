@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Measure target-program code coverage for one format, using the ORIGINAL
-(pre-optimization) 010 Editor template instead of this repo's FormatFuzzer-
-tuned one.
+"""Measure target-program code coverage for one format, using the
+pre-optimization 010 Editor template (from templates_llm/) instead of this
+repo's FormatFuzzer-tuned one.
 
 This is a variant of scripts/target_coverage.py that swaps which fuzzer
 binary drives the corpus:
@@ -9,14 +9,14 @@ binary drives the corpus:
                             (source: templates/<format>.bt - hand-optimized
                             for generation, per README's "Creating and
                             Customizing Binary Templates")
-  - target_coverage_llm.py builds `<format>-orig-fuzzer`  via ./build_new.sh
-                            (source: templates_originals_llm/<format>-orig.bt
+  - target_coverage_llm.py builds `<format>-llm-fuzzer`  via ./build_new.sh
+                            (source: templates_llm/<format>-llm.bt
                             - the untouched original template)
 
 Same real-world target program, build system, and drive command per format
 either way (both scripts share the RECIPES below) - only the corpus-
 generating fuzzer differs. Running both for the same format and comparing
-coverage_results/<format>/ vs coverage_results/<format>-orig/ answers "does
+coverage_results/<format>/ vs coverage_results/<format>-llm/ answers "does
 FormatFuzzer's template optimization actually improve target-program
 coverage, not just validity%?" (this repo's existing BENCHMARK_REPORT.md /
 benchmark_all.py already runs this original-vs-optimized comparison for
@@ -32,12 +32,12 @@ Use --list to see all supported formats (and which recipes are build-tested
 vs. best-effort - identical list to target_coverage.py, since the target
 program per format is unchanged).
 
-Outputs land in coverage_results/<format>-orig/ (distinct from
+Outputs land in coverage_results/<format>-llm/ (distinct from
 target_coverage.py's coverage_results/<format>/, so both can coexist):
-    coverage_results/<format>-orig/<format>_target.info   lcov trace file
-    coverage_results/<format>-orig/html/index.html         HTML report
-    coverage_results/<format>-orig/summary.txt             lcov --summary text
-    coverage_results/<format>-orig/meta.json               machine-readable summary
+    coverage_results/<format>-llm/<format>_target.info   lcov trace file
+    coverage_results/<format>-llm/html/index.html         HTML report
+    coverage_results/<format>-llm/summary.txt             lcov --summary text
+    coverage_results/<format>-llm/meta.json               machine-readable summary
 
 The target program's build (e.g. libpng, unzip) is cached under
 coverage_targets/<format>/ - the SAME directory target_coverage.py uses,
@@ -400,8 +400,11 @@ def drive_pcap(build: BuildResult, f: Path) -> str:
 # docs_llm/target_coverage_results_orig.md.
 # ---------------------------------------------------------------------------
 
-def build_ffmpeg(force: bool) -> BuildResult:
-    ff_dir = TARGETS_DIR / "_ffmpeg_shared"
+def build_ffmpeg(work_dir: Path, force: bool) -> BuildResult:
+    # Keyed off work_dir (mp4's and avi's differ), not a bare TARGETS_DIR
+    # global - see target_coverage.py's build_ffmpeg for why sharing this
+    # across mp4/avi isn't worth the concurrent-run collision risk.
+    ff_dir = work_dir / "_ffmpeg_shared"
     src = ff_dir / "ffmpeg-6.1"
     ensure_extracted(ff_dir, "https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz", "ffmpeg-6.1.tar.xz", src)
     if not already_built(src, force):
@@ -413,11 +416,11 @@ def build_ffmpeg(force: bool) -> BuildResult:
 
 
 def build_mp4(work_dir: Path, force: bool) -> BuildResult:
-    return build_ffmpeg(force)
+    return build_ffmpeg(work_dir, force)
 
 
 def build_avi(work_dir: Path, force: bool) -> BuildResult:
-    return build_ffmpeg(force)
+    return build_ffmpeg(work_dir, force)
 
 
 def drive_mp4(build: BuildResult, f: Path) -> str:
@@ -512,7 +515,7 @@ def list_formats() -> None:
     print(f"{'format':<6} {'ext':<5} {'status':<20} target                          fuzzer binary used")
     for name, r in sorted(RECIPES.items()):
         status = "verified" if r.verified else "best-effort/unverified"
-        print(f"{name:<6} {r.ext:<5} {status:<20} {r.label:<32} {name}-orig-fuzzer")
+        print(f"{name:<6} {r.ext:<5} {status:<20} {r.label:<32} {name}-llm-fuzzer")
 
 
 def main() -> None:
@@ -533,9 +536,9 @@ def main() -> None:
             sys.exit(0 if args.list else 1)
 
     recipe = RECIPES[args.format]
-    fuzzer_bin = REPO_ROOT / "build" / f"{args.format}-orig-fuzzer"
+    fuzzer_bin = REPO_ROOT / "build" / f"{args.format}-llm-fuzzer"
     work_dir = TARGETS_DIR / args.format
-    results_dir = RESULTS_DIR / f"{args.format}-orig"
+    results_dir = RESULTS_DIR / f"{args.format}-llm"
     work_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -544,10 +547,10 @@ def main() -> None:
             f"end-to-end. It may fail - if it does, please report the exact error.")
 
     if not fuzzer_bin.exists():
-        log(f"{fuzzer_bin.name} not found, building it via ./build_new.sh {args.format}-orig")
-        run(["./build_new.sh", f"{args.format}-orig"], cwd=REPO_ROOT)
+        log(f"{fuzzer_bin.name} not found, building it via ./build_new.sh {args.format}-llm")
+        run(["./build_new.sh", f"{args.format}-llm"], cwd=REPO_ROOT)
     if not fuzzer_bin.exists():
-        die(f"{fuzzer_bin} still missing after ./build_new.sh {args.format}-orig - build it manually first")
+        die(f"{fuzzer_bin} still missing after ./build_new.sh {args.format}-llm - build it manually first")
 
     corpus_dir = work_dir / "corpus"
     if corpus_dir.exists():
@@ -619,7 +622,7 @@ def main() -> None:
     m_funcs = re.search(r"functions\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) functions\)", summary.stdout)
     meta = {
         "format": args.format,
-        "variant": "templates_originals_llm",
+        "variant": "templates_llm",
         "fuzzer_binary": fuzzer_bin.name,
         "target_label": recipe.label,
         "verified_recipe": recipe.verified,

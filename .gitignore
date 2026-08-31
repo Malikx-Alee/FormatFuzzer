@@ -82,6 +82,7 @@ build_updated/
 # lcov results (large, third-party, machine-specific - not repo content)
 coverage_targets/
 coverage_results/
+coverage_results_server/
 coverage_targets_afl/
 
 # scripts/target_coverage_afl_ffmut.py / _llm.py: raw afl-fuzz output

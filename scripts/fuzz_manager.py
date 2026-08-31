@@ -13,9 +13,9 @@ If FILETYPE or COUNT are omitted, the defaults configured below are used.
 
 Examples:
     python3 fuzz_manager.py                     # use defaults
-    python3 fuzz_manager.py tif-orig            # override filetype only
-    python3 fuzz_manager.py tif-orig 100        # override both
-    python3 fuzz_manager.py tif-orig 100 --evil-bit  # enable evil bit
+    python3 fuzz_manager.py tif-llm             # override filetype only
+    python3 fuzz_manager.py tif-llm 100         # override both
+    python3 fuzz_manager.py tif-llm 100 --evil-bit  # enable evil bit
 """
 
 import argparse
@@ -34,7 +34,7 @@ from typing import Tuple
 # Configuration. Edit these to run the script without CLI arguments.
 # CLI arguments, when supplied, always override these values.
 # ---------------------------------------------------------------------------
-DEFAULT_FILETYPE = "png-orig"
+DEFAULT_FILETYPE = "png-llm"
 DEFAULT_COUNT = 10000
 DEFAULT_WORKDIR = "."
 DEFAULT_EVIL_BIT = False  # Set to True to enable evil bit by default
@@ -79,8 +79,8 @@ EXTENSIONS = {
 
 
 def base_format(filetype: str) -> str:
-    """Strip a trailing '-orig' suffix so '7zip-orig' maps to '7zip'."""
-    return filetype[:-5] if filetype.endswith("-orig") else filetype
+    """Strip a trailing '-llm' suffix so '7zip-llm' maps to '7zip'."""
+    return filetype[: -len("-llm")] if filetype.endswith("-llm") else filetype
 
 
 def format_duration(seconds: float) -> str:
@@ -224,7 +224,7 @@ def main() -> int:
         "filetype",
         nargs="?",
         default=DEFAULT_FILETYPE,
-        help=f"Fuzzer prefix, e.g. 'tif-orig' (default: {DEFAULT_FILETYPE!r})",
+        help=f"Fuzzer prefix, e.g. 'tif-llm' (default: {DEFAULT_FILETYPE!r})",
     )
     ap.add_argument(
         "count",

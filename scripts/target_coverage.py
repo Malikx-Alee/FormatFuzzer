@@ -487,7 +487,7 @@ def build_ffmpeg(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()
     # version used .parent specifically so mp4 and avi (different work_dir
     # leaves under the same parent) would share one FFmpeg build - but
     # target_coverage_afl_ffmut.py's per-variant gcov_target_work_dir
-    # (coverage_targets/<fmt>-afl-ffmut/ vs coverage_targets/<fmt>-orig-afl-
+    # (coverage_targets/<fmt>-afl-ffmut/ vs coverage_targets/<fmt>-llm-afl-
     # ffmut/) shares that SAME parent (coverage_targets/) regardless of
     # variant, so .parent collapsed straight back to one shared directory
     # across variants too - silently defeating that isolation exactly the

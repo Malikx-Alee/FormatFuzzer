@@ -1,5 +1,11 @@
 # Optimized vs. original templates: target-program coverage, head-to-head
 
+> **Naming note:** this document was written before `templates_originals_llm/`
+> and the `-orig` suffix were renamed to `templates_llm/`/`-llm`. The
+> comparison and data below are real; treat every `-orig`/
+> `templates_originals_llm` reference as what current code calls
+> `-llm`/`templates_llm`.
+
 Direct comparison of the two complete 10,000-file result sets:
 [target_coverage_results.md](target_coverage_results.md) (FormatFuzzer's
 generation-optimized `templates/<format>.bt`, built via `./build.sh`) vs.
