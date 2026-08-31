@@ -21,8 +21,8 @@ except ImportError:
 
 # Templates to benchmark
 ORIGINAL_TEMPLATES = ["avi", "gif", "bmp", "jpg", "midi", "mp3", "mp4", "png"]
-OPTIMIZED_TEMPLATES = ["avi-orig", "gif-orig", "bmp-orig", "jpg-orig",
-                       "midi-orig", "mp3-orig", "mp4-orig", "png-orig"]
+OPTIMIZED_TEMPLATES = ["avi-llm", "gif-llm", "bmp-llm", "jpg-llm",
+                       "midi-llm", "mp3-llm", "mp4-llm", "png-llm"]
 
 # Fuzzing parameters
 FUZZ_COUNT = 10000

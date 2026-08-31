@@ -17,9 +17,12 @@ def main():
             gen = report['generation']
             val = report['validation']
 
-            # Determine type (Original vs Optimized)
-            is_orig = '-orig' in filetype
-            template_type = "Optimized" if is_orig else "Original"
+            # Determine type (Original vs Optimized). Checks both suffixes:
+            # "-orig" for historical output/ data predating the rename of
+            # templates_originals_llm/ to templates_llm/, "-llm" for runs
+            # since.
+            is_llm_variant = '-orig' in filetype or '-llm' in filetype
+            template_type = "Optimized" if is_llm_variant else "Original"
 
             results.append({
                 'template': filetype,

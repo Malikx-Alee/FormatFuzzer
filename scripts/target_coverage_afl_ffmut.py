@@ -20,8 +20,9 @@ coverage-over-time curve as a side effect.
 
 This is the OPTIMIZED-template variant: it fuzzes templates/<format>.bt
 (built via ./build.sh <format> into <format>.so). See
-target_coverage_afl_ffmut_llm.py, its thin sibling, for the original/-llm
-template variant - it imports and reuses everything in this file.
+target_coverage_afl_ffmut_llm.py, its thin sibling, for the templates_llm/
+(pre-optimization) template variant - it imports and reuses everything in
+this file.
 
 Run once per format:
 
@@ -110,14 +111,14 @@ def _build_so_optimized(fmt: str) -> None:
         tc.die(f"{so} still missing after ./build.sh {fmt} - build it manually first")
 
 
-def _build_so_original(fmt: str) -> None:
-    orig_fmt = f"{fmt}-orig"
-    so = tc.REPO_ROOT / "build" / f"{orig_fmt}.so"
+def _build_so_llm(fmt: str) -> None:
+    llm_fmt = f"{fmt}-llm"
+    so = tc.REPO_ROOT / "build" / f"{llm_fmt}.so"
     if not so.exists():
-        tc.log(f"{so.name} not found, building it via ./build_new.sh {orig_fmt}")
-        tc.run(["./build_new.sh", orig_fmt], cwd=tc.REPO_ROOT)
+        tc.log(f"{so.name} not found, building it via ./build_new.sh {llm_fmt}")
+        tc.run(["./build_new.sh", llm_fmt], cwd=tc.REPO_ROOT)
     if not so.exists():
-        tc.die(f"{so} still missing after ./build_new.sh {orig_fmt} - build it manually first")
+        tc.die(f"{so} still missing after ./build_new.sh {llm_fmt} - build it manually first")
 
 
 OPTIMIZED = Variant(
@@ -127,11 +128,11 @@ OPTIMIZED = Variant(
     build_so=_build_so_optimized,
 )
 
-ORIGINAL = Variant(
-    label="original (templates_originals_llm/<fmt>-orig.bt)",
-    suffix="orig-afl-ffmut",
-    so_path=lambda fmt: tc.REPO_ROOT / "build" / f"{fmt}-orig.so",
-    build_so=_build_so_original,
+LLM = Variant(
+    label="llm (templates_llm/<fmt>-llm.bt)",
+    suffix="llm-afl-ffmut",
+    so_path=lambda fmt: tc.REPO_ROOT / "build" / f"{fmt}-llm.so",
+    build_so=_build_so_llm,
 )
 
 

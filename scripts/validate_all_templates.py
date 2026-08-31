@@ -11,12 +11,12 @@ Usage:
     python3 validate_all_templates.py [COUNT] [FILETYPE...]
 
 If no FILETYPEs are given, every templates/*.bt basename is used. Pass
-explicit filetypes (e.g. "-orig" variants) to restrict the run to those.
+explicit filetypes (e.g. "-llm" variants) to restrict the run to those.
 
 Examples:
     python3 validate_all_templates.py                        # all templates/*.bt, 10000 files each
     python3 validate_all_templates.py 1000                   # all templates/*.bt, 1000 files each
-    python3 validate_all_templates.py 10000 png-orig mp3-orig  # only these two, 10000 files each
+    python3 validate_all_templates.py 10000 png-llm mp3-llm    # only these two, 10000 files each
 """
 
 import shutil

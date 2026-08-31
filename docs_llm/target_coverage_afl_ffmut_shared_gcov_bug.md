@@ -1,5 +1,11 @@
 # Bug: concurrent optimized/original AFL+FFMut runs shared one gcov target, pooling their coverage
 
+> **Naming note:** this document was written before `templates_originals_llm/`
+> and the `-orig` suffix were renamed to `templates_llm/`/`-llm`. The bug,
+> diagnosis, and fix described below are unaffected by the rename (it's the
+> exact same bug either way) — treat every `-orig`/`templates_originals_llm`
+> reference as what current code calls `-llm`/`templates_llm`.
+
 ## Summary
 
 `scripts/target_coverage_afl_ffmut.py` (optimized templates) and

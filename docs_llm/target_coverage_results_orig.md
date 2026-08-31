@@ -1,5 +1,12 @@
 # Target-program coverage results — original templates (10,000 files per format)
 
+> **Naming note:** this document (including its filename) predates the
+> rename of `templates_originals_llm/` and the `-orig` suffix to
+> `templates_llm/`/`-llm`. The data below is real and was collected under
+> the old naming — treat every `-orig`/`templates_originals_llm` reference
+> as what current code calls `-llm`/`templates_llm`. Re-running today
+> produces `coverage_results/<format>-llm/`, not `-orig/`.
+
 Results from running [scripts/target_coverage_llm.py](../scripts/target_coverage_llm.py)
 with the default 10,000-file corpus per format, read directly from each
 format's `coverage_results/<format>-orig/meta.json`. This is the

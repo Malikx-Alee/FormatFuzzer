@@ -1,5 +1,10 @@
 # Target-program coverage script: per-format verification notes
 
+> **Naming note:** this document was written before `templates_originals_llm/`
+> and the `-orig` suffix were renamed to `templates_llm/`/`-llm`. Paths and
+> flags below showing `-orig`/`templates_originals_llm` reflect the naming
+> at the time this was written; current code uses `-llm`/`templates_llm`.
+
 [scripts/target_coverage.py](../scripts/target_coverage.py) automates the
 target-program coverage recipe (§4 of
 [code_coverage_of_generated_outputs.md](code_coverage_of_generated_outputs.md))
