@@ -326,7 +326,9 @@ def build_wav(work_dir: Path, force: bool) -> BuildResult:
 
 
 def drive_wav(build: BuildResult, f: Path) -> str:
-    return f"./wavpack -y '{f}' -o /tmp/target_coverage_wav_out.wv >/dev/null 2>&1"
+    # PID-suffixed, not a fixed name: concurrent processes would otherwise
+    # race on writing the same /tmp file.
+    return f"./wavpack -y '{f}' -o /tmp/target_coverage_wav_out_{os.getpid()}.wv >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------
@@ -419,11 +421,13 @@ def build_avi(work_dir: Path, force: bool) -> BuildResult:
 
 
 def drive_mp4(build: BuildResult, f: Path) -> str:
-    return f"./ffmpeg -y -i '{f}' -c:v mpeg4 -c:a copy /tmp/target_coverage_mp4_out.mp4 >/dev/null 2>&1"
+    # PID-suffixed for the same reason as drive_wav above.
+    return f"./ffmpeg -y -i '{f}' -c:v mpeg4 -c:a copy /tmp/target_coverage_mp4_out_{os.getpid()}.mp4 >/dev/null 2>&1"
 
 
 def drive_avi(build: BuildResult, f: Path) -> str:
-    return f"./ffmpeg -y -f avi -i '{f}' /tmp/target_coverage_avi_out.avi >/dev/null 2>&1"
+    # PID-suffixed for the same reason as drive_wav above.
+    return f"./ffmpeg -y -f avi -i '{f}' /tmp/target_coverage_avi_out_{os.getpid()}.avi >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------
