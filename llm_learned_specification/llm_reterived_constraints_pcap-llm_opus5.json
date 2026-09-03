@@ -1,0 +1,2278 @@
+{
+  "meta": {
+    "format": "pcap",
+    "source_template": "templates_originals/pcap-orig.bt",
+    "model": "claude-opus-5",
+    "spec_reference": "The libpcap savefile format as documented at the Wireshark wiki page the template cites at line 20 (wiki.wireshark.org/Development/LibpcapFileFormat), the pcap-savefile(5) man page, and the IETF draft draft-gharris-opsawg-pcap (PCAP Capture File Format); the tcpdump.org LINKTYPE registry for PCAPHEADER.network; IEEE 802.3 for the Ethernet header and IEEE 802.1Q-2011 for the VLAN tag; the IANA EtherType registry; RFC 791 and RFC 1122 for IPv4, with RFC 2474 and RFC 3168 for the DiffServ/ECN byte and RFC 1071 for the header checksum; the IANA Protocol Numbers registry for Layer_3.L4proto; RFC 768 for UDP and RFC 9293 for TCP; RFC 6335 for the port number ranges and RFC 1112 for the IPv4 multicast MAC mapping.",
+    "schema_extensions": [
+      {
+        "name": "bitfield_layout",
+        "where": "the six constraints entries whose field is a bitfield - Dot1q.priority, Dot1q.dei, Dot1q.id, Layer_3.version, Layer_3.ip_hdr_len and Layer_4.tcp_hdr_len, plus Layer_4.Reserved",
+        "why": "This template declares seven bitfields but never calls BitfieldLeftToRight() or BitfieldRightToLeft() - it relies entirely on BigEndian() at line 141 making 010 Editor pack the first-declared member into the most significant bits. Nothing in the base schema records bit position, yet a generator that packs the other way would swap the IPv4 version with the header length and the TCP data offset with the reserved nibble: every field individually legal and every byte wrong. This key names the exact bit range each field occupies."
+      },
+      {
+        "name": "bit_width",
+        "where": "the fixed_value entries for Layer_3.version and Layer_4.Reserved",
+        "why": "required_value_hex is specified to match the field width, but a 4-bit field has no natural hex width. bit_width states the real width so the single nibble is not misread as a full byte."
+      },
+      {
+        "name": "fixed_result",
+        "where": "the PCAPRECORD.L2 and PCAPRECORD.d1q entries",
+        "why": "Both are typed calculated_value because their presence is conditional and derived, yet each has an invariant byte count - the structs carry explicit `<size=14>` and `<size=4>` attributes at lines 47 and 55. fixed_result records the constant so the rewrite step can emit it directly, while algorithm/covers/includes_self still document the presence condition."
+      },
+      {
+        "name": "template_deviations",
+        "where": "new fifth top-level section",
+        "why": "This template validates only the file magic, and it disagrees with the specifications in fourteen concrete places: an L3 struct dereferenced after a branch that may never create it, every non-101 link type assumed to be Ethernet, a raw-IP branch that hard-codes IPv4, four unguarded length subtractions of which one underflows a uint to four billion, an incl_len never used to bound the parse, three of four legal magics rejected, two composite fields collapsed into opaque reads, undeclared bitfield ordering, a misnamed parameter and four fields read but never used. A generator that imitated the parser's laxity would emit captures this template accepts and no analyser does, so these must be visible as data rather than buried in prose."
+      },
+      {
+        "name": "note on the absent lookahead and enum sections",
+        "where": "this meta block, and the last two template_deviations entries",
+        "why": "Recorded here rather than as a key: this template contains NO typedef enum and NO ReadUByte, ReadUShort, ReadByte, ReadBytes or ReadUInt call of any kind. The `lookahead` schema key therefore never applies, and every enumerated_values entry in this file comes from a published registry rather than from a mined enum block. The mineable literals are instead the eleven direct field comparisons at lines 25, 75, 95, 102, 121, 125, 144, 149, 152, 160 and 168. Both absences are facts about the template rather than gaps in this extraction."
+      },
+      {
+        "name": "cross_layer emphasis in generation_range rationales",
+        "where": "Layer_3.total_length, Layer_4.udp_hdr_len, Layer_4.tcp_hdr_len, PCAPRECORD.incl_len and PCAPRECORD.AppData",
+        "why": "These five fields form one arithmetic chain that spans four struct types: incl_len bounds total_length, which bounds the layer 4 header length, which determines the payload length. None of them can be drawn independently, and the schema has no key for 'this must be computed after the inner layers exist', so the requirement is stated inside each rationale where a generator author will read it alongside the bound."
+      }
+    ],
+    "structure_note": "A fixed 24-byte global header followed by an unbounded, terminator-free stream of packet records, each a 16-byte header whose incl_len field is the only delimiter, followed by that many bytes of raw packet data parsed as a strictly nested Ethernet/VLAN/IPv4/TCP-or-UDP chain in the opposite byte order to the record header itself."
+  },
+  "constraints": {
+    "PCAPHEADER.magic_number": {
+      "type": "fixed_value",
+      "description": "The libpcap file magic; the template aborts with a Warning on anything other than 0xA1B2C3D4 read little-endian.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "required_value": 2712847316,
+      "required_value_hex": "0xA1B2C3D4",
+      "required_value_ascii": "\\xD4\\xC3\\xB2\\xA1",
+      "endianness": "little",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 25,
+        "snippet": "if(magic_number != 0xA1B2C3D4) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 24 and checked by the guard at lines 25-28, the template's only validation of any kind. Because LittleEndian() is in force (line 214) the constant 0xA1B2C3D4 is the byte sequence D4 C3 B2 A1 on disk, which is exactly what the template's own header records at line 11 as its ID bytes. The libpcap format defines FOUR magic values and the magic is how a reader detects both byte order and timestamp resolution: 0xA1B2C3D4 (host-order, microsecond), 0xD4C3B2A1 (the same value byte-swapped, meaning the writer's byte order is the opposite of the reader's), 0xA1B23C4D (nanosecond resolution) and 0x4D3CB2A1 (byte-swapped nanosecond). This template accepts only the first, so a generator must emit only that one."
+    },
+    "PCAPHEADER.version_major": {
+      "type": "fixed_value",
+      "description": "Major version of the libpcap file format; it has been 2 since the format was defined and no other value has ever been published.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "spec",
+      "required_value": 2,
+      "required_value_hex": "0x0002",
+      "required_value_ascii": "\\x02\\x00",
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "libpcap savefile format (Wireshark Development/LibpcapFileFormat, and the pcap-savefile(5) man page): 'version_major - major version number', which is 2 in every file libpcap has ever written. Readers that check it reject anything else. The template reads a plain uint16 and performs no check.",
+        "line": 29,
+        "snippet": "uint16 version_major;  /* major version number */"
+      },
+      "confidence": "high"
+    },
+    "PCAPHEADER.version_minor": {
+      "type": "fixed_value",
+      "description": "Minor version of the libpcap file format; it has been 4 since the format was defined.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "spec",
+      "required_value": 4,
+      "required_value_hex": "0x0004",
+      "required_value_ascii": "\\x04\\x00",
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "libpcap savefile format: 'version_minor - minor version number', which is 4 in every file libpcap has ever written, giving the version pair 2.4. The template reads a plain uint16 and performs no check.",
+        "line": 30,
+        "snippet": "uint16 version_minor;  /* minor version number */"
+      },
+      "confidence": "high"
+    },
+    "PCAPHEADER.thiszone": {
+      "type": "fixed_value",
+      "description": "Correction in seconds between the timestamps and GMT; the specification says it is always zero in practice and timestamps are always GMT.",
+      "corruption_risk": "low",
+      "field_type": "int32",
+      "source": "spec",
+      "required_value": 0,
+      "required_value_hex": "0x00000000",
+      "required_value_ascii": "\\x00\\x00\\x00\\x00",
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "libpcap savefile format: 'thiszone - the correction time in seconds between GMT (UTC) and the local timezone of the following packet header timestamps. Examples: If the timestamps are in GMT (UTC), thiszone is simply 0. If the timestamps are in Central European time (Amsterdam, Berlin, ...) which is GMT + 1:00, thiszone must be -3600. In practice, time stamps are always in GMT, so thiszone is always 0.' The template reads a plain int32 and performs no check.",
+        "line": 31,
+        "snippet": "int32  thiszone;       /* GMT to local correction */"
+      },
+      "confidence": "high",
+      "notes": "This is one of two header fields the specification describes as always zero; treating them as free 32-bit values is the most common way a hand-built pcap header looks wrong to a human reader even though tools ignore it."
+    },
+    "PCAPHEADER.sigfigs": {
+      "type": "fixed_value",
+      "description": "Accuracy of the timestamps; the specification says it is always zero in practice.",
+      "corruption_risk": "low",
+      "field_type": "uint32",
+      "source": "spec",
+      "required_value": 0,
+      "required_value_hex": "0x00000000",
+      "required_value_ascii": "\\x00\\x00\\x00\\x00",
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "libpcap savefile format: 'sigfigs - in theory, the accuracy of time stamps in the capture; in practice, all tools set it to 0'. The template reads a plain uint32 and performs no check.",
+        "line": 32,
+        "snippet": "uint32 sigfigs;        /* accuracy of timestamps */"
+      },
+      "confidence": "high"
+    },
+    "PCAPHEADER.snaplen": {
+      "type": "calculated_value",
+      "description": "Maximum number of bytes captured from each packet; every record's incl_len must be no larger than it.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "algorithm": "byte count = the largest PCAPRECORD.incl_len in the file, or the capture limit the writer configured; it is an upper bound rather than an exact total",
+      "covers": "nothing itself; it bounds the incl_len of every PCAPRECORD in the file",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "PCAPRECORD.incl_len"
+      ],
+      "generation_range": {
+        "min": 68,
+        "max": 65535,
+        "rationale": "A 32-bit field that every reader uses to size its packet buffer before reading a single record, so a uniform value asks a decoder to allocate up to 4 GB from four header bytes - the classic pcap resource-exhaustion shape. 65535 is the value tcpdump writes for a full capture and 262144 is libpcap's modern default; the floor of 68 is the smallest snaplen tcpdump accepts. It must be at least as large as the biggest incl_len actually written."
+      },
+      "preferred_value": 65535,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 33,
+        "snippet": "uint32 snaplen;        /* max length of captured packets, in octets */"
+      },
+      "confidence": "high",
+      "notes": "libpcap savefile format: 'snaplen - the \"snapshot length\" for the capture (typically 65535 or even more, but might be limited by the user)'. The template reads it and never uses it for anything, so a wrong value is invisible here and misleads every real reader."
+    },
+    "PCAPHEADER.network": {
+      "type": "enumerated_values",
+      "description": "LINKTYPE value naming the data link layer of every packet in the file; it selects whether each record begins with an Ethernet header or straight with an IP header.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "valid_values": [
+        0,
+        1,
+        3,
+        6,
+        8,
+        9,
+        10,
+        50,
+        51,
+        100,
+        101,
+        105,
+        113,
+        114,
+        127,
+        141,
+        143,
+        147,
+        201,
+        204,
+        209,
+        224,
+        228,
+        229,
+        276
+      ],
+      "value_names": [
+        "LINKTYPE_NULL - BSD loopback, 4-byte host-order AF_ value",
+        "LINKTYPE_ETHERNET - IEEE 802.3 Ethernet",
+        "LINKTYPE_AX25",
+        "LINKTYPE_IEEE802_5 - Token Ring",
+        "LINKTYPE_ARCNET_BSD",
+        "LINKTYPE_SLIP",
+        "LINKTYPE_PPP",
+        "LINKTYPE_PPP_HDLC",
+        "LINKTYPE_PPP_ETHER",
+        "LINKTYPE_ATM_RFC1483",
+        "LINKTYPE_RAW - raw IP, no link layer header at all",
+        "LINKTYPE_IEEE802_11 - wireless",
+        "LINKTYPE_LINUX_SLL - Linux cooked capture v1",
+        "LINKTYPE_LOOP - OpenBSD loopback",
+        "LINKTYPE_IEEE802_11_RADIOTAP",
+        "LINKTYPE_MTP3",
+        "LINKTYPE_DOCSIS",
+        "LINKTYPE_LINUX_LAPD",
+        "LINKTYPE_BLUETOOTH_HCI_H4",
+        "LINKTYPE_USB_LINUX",
+        "LINKTYPE_IPMB_LINUX",
+        "LINKTYPE_IEEE802_15_4",
+        "LINKTYPE_USB_LINUX_MMAPPED",
+        "LINKTYPE_FC_2",
+        "LINKTYPE_IPV4 - raw IPv4"
+      ],
+      "preferred_value": 1,
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 144,
+        "snippet": "if (network == 101) { // Raw IP; the packet begins with an IPv4 or IPv6 header"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 34, passed to every record at line 219 and tested against 101 at line 144: LINKTYPE_RAW (101) makes the template parse each packet as a bare IPv4 header, and EVERY other value makes it parse an Ethernet header first. TEMPLATE DEVIATION: that else branch is wrong for all but LINKTYPE_ETHERNET (1) - a Linux cooked capture, a radiotap frame or a loopback frame is not an Ethernet frame, and the template would mis-parse every one of them. So for generation only 1 and 101 are self-consistent, and 1 is preferred because it reaches the full Ethernet/IP/TCP chain. valid_values lists the commonly-encountered assignments from the tcpdump.org LINKTYPE registry, which defines around 300 in total."
+    },
+    "MACaddr.Byte[0]": {
+      "type": "bitmask_constraint",
+      "description": "First octet of a MAC address; its two low bits are the individual/group and universal/local flags, and they are what make an address multicast or locally administered.",
+      "corruption_risk": "medium",
+      "field_type": "uchar",
+      "source": "spec",
+      "valid_bits": "bit 0 (0x01) is the individual/group bit - 0 means a unicast address, 1 means multicast or broadcast; bit 1 (0x02) is the universal/local bit - 0 means an OUI-assigned global address, 1 means locally administered. The remaining six bits are the top of the OUI and are free",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "global unicast (both flags clear)",
+        "global multicast",
+        "locally administered unicast",
+        "locally administered multicast"
+      ],
+      "preferred_value": 2,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "IEEE 802 (and IEEE 802.3 clause 3.2.3): the least significant bit of the first octet of a MAC address is the Individual/Group bit and the next bit is the Universal/Local bit. A source address must always have the I/G bit clear. The template reads six opaque uchars and performs no check.",
+        "line": 39,
+        "snippet": "uchar Byte[6];"
+      },
+      "confidence": "high",
+      "notes": "valid_values records the four legal states of the two masked flag bits, not of the whole octet, whose upper six bits are free. Bytes 1 through 5 of the address are genuinely free and deliberately have no entries. A locally administered unicast address (0x02) is preferred: it needs no registered OUI and is unambiguously valid. The all-ones address FF:FF:FF:FF:FF:FF is the Ethernet broadcast and is legal as a destination but never as a source."
+    },
+    "Layer_2.DstMac": {
+      "type": "bitmask_constraint",
+      "description": "Destination MAC address of the Ethernet frame; unlike the source it may legally be a multicast or the broadcast address.",
+      "corruption_risk": "medium",
+      "field_type": "MACaddr",
+      "source": "spec",
+      "valid_bits": "the individual/group bit (bit 0 of the first octet) may be either 0 for unicast or 1 for multicast/broadcast; every other bit is free",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "unicast destination",
+        "multicast or broadcast destination"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "IEEE 802.3: the destination address field may carry an individual, multicast or broadcast address. FF:FF:FF:FF:FF:FF is the broadcast address and 01:00:5E:xx:xx:xx is the IPv4 multicast range. The template reads a plain MACaddr and performs no check.",
+        "line": 44,
+        "snippet": "MACaddr DstMac<name=\"Destination MAC\">;"
+      },
+      "confidence": "high",
+      "notes": "A unicast destination is preferred because a multicast or broadcast destination paired with a unicast IP destination is internally inconsistent and some analysers flag it."
+    },
+    "Layer_2.SrcMac": {
+      "type": "bitmask_constraint",
+      "description": "Source MAC address of the Ethernet frame; the individual/group bit MUST be clear because a frame cannot originate from a group address.",
+      "corruption_risk": "medium",
+      "field_type": "MACaddr",
+      "source": "spec",
+      "valid_bits": "the individual/group bit (bit 0 of the first octet) must be 0; the universal/local bit is free and the remaining bits are free",
+      "valid_values": [
+        0
+      ],
+      "value_names": [
+        "unicast source - the only legal kind"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "IEEE 802.3 clause 3.2.5: 'The Source Address field shall be an individual address', i.e. the I/G bit must be zero. A frame whose source is a multicast or broadcast address is malformed and Wireshark flags it. The template reads a plain MACaddr and performs no check.",
+        "line": 45,
+        "snippet": "MACaddr SrcMac<name=\"Source MAC\">;"
+      },
+      "confidence": "high",
+      "notes": "This is the one MAC constraint that is a hard rule rather than a convention, and it is exactly the kind of thing a uniform random generator violates one time in two."
+    },
+    "Layer_2.L3type": {
+      "type": "enumerated_values",
+      "description": "Ethernet Type/Length field; values of 1536 or more are an EtherType naming the layer 3 protocol, and it is what the template branches on to decide whether an IP header or a VLAN tag follows.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "valid_values": [
+        2048,
+        2054,
+        32821,
+        32923,
+        33011,
+        33024,
+        33079,
+        33284,
+        34525,
+        34824,
+        34825,
+        34841,
+        34887,
+        34888,
+        34915,
+        34916,
+        34984,
+        35020,
+        35045,
+        35078,
+        36864
+      ],
+      "value_names": [
+        "IPv4",
+        "ARP",
+        "RARP",
+        "AppleTalk",
+        "AARP",
+        "IEEE 802.1Q VLAN-tagged frame",
+        "Novell IPX",
+        "QNX Qnet",
+        "IPv6",
+        "Ethernet flow control",
+        "LACP / Slow Protocols",
+        "CobraNet",
+        "MPLS unicast",
+        "MPLS multicast",
+        "PPPoE Discovery",
+        "PPPoE Session",
+        "IEEE 802.1ad Q-in-Q",
+        "LLDP",
+        "MACsec",
+        "FCoE",
+        "Ethernet Configuration Testing Protocol"
+      ],
+      "preferred_value": 2048,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 149,
+        "snippet": "if (L2.L3type == 0x0800) {"
+      },
+      "confidence": "high",
+      "notes": "Endianness switches mid-record: LittleEndian() is set at line 214 for the file header and the per-record header, BigEndian() at line 141 for everything from the Layer 2 header onward, and LittleEndian() is restored at line 179. Every packet field is therefore network byte order while every pcap metadata field is host byte order. Declared at line 46 and tested twice in PCAPRECORD: against 0x0800 at line 149 to parse an IPv4 header directly and against 0x8100 at line 152 to parse a VLAN tag first. TEMPLATE DEVIATION: any other value - including every other EtherType in valid_values - leaves the Layer_3 struct L3 uninstantiated, and line 158 then dereferences L3.ip_hdr_len unconditionally, so the parse fails. 0x0800 is therefore the only value that reaches deep parsing, and 0x8100 the only other that parses at all. The specification also allows this field to be a LENGTH rather than a type when its value is 1500 or less, which the template does not model at all."
+    },
+    "Dot1q.priority": {
+      "type": "range_constraint",
+      "description": "802.1p Priority Code Point: a three-bit traffic class from 0 (best effort) to 7 (network control).",
+      "corruption_risk": "low",
+      "field_type": "uint16 : 3",
+      "source": "both",
+      "min": 0,
+      "max": 7,
+      "bitfield_layout": "bits 15-13 of the 16-bit Tag Control Information word, i.e. the first-declared bitfield takes the most significant bits because BigEndian() is in force at line 141",
+      "preferred_value": 0,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 51,
+        "snippet": "uint16 priority:3;"
+      },
+      "confidence": "high",
+      "notes": "IEEE 802.1Q: the TCI word is PCP(3), DEI(1), VID(12) from the most significant bit down. The whole three-bit range is legal, so this entry is a range rather than an enumeration, but 0 is best-effort and is what an untagged-equivalent frame carries."
+    },
+    "Dot1q.dei": {
+      "type": "enumerated_values",
+      "description": "Drop Eligible Indicator: a single bit marking the frame as droppable under congestion; formerly the Canonical Format Indicator, which had to be 0 on Ethernet.",
+      "corruption_risk": "low",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "not drop eligible (and, under the older CFI reading, canonical MAC address format)",
+        "drop eligible"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bit 12 of the 16-bit Tag Control Information word",
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 52,
+        "snippet": "uint16 dei:1;"
+      },
+      "confidence": "high",
+      "notes": "IEEE 802.1Q-2011 renamed the CFI bit to DEI. In the original 802.1Q this bit had to be 0 for Ethernet frames, so 0 is both the safe and the historically required value."
+    },
+    "Dot1q.id": {
+      "type": "range_constraint",
+      "description": "VLAN identifier; the twelve-bit field spans 0-4095 but 0 and 4095 are both reserved, so a real VLAN tag carries 1-4094.",
+      "corruption_risk": "medium",
+      "field_type": "uint16 : 12",
+      "source": "both",
+      "min": 1,
+      "max": 4094,
+      "bitfield_layout": "bits 11-0 of the 16-bit Tag Control Information word",
+      "generation_range": {
+        "min": 1,
+        "max": 4094,
+        "rationale": "The field is only 12 bits so there is no size blow-up, but 0 (priority-tagged frame, no VLAN) and 4095 (reserved for implementation use) are both excluded by the specification."
+      },
+      "preferred_value": 1,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 53,
+        "snippet": "uint16 id:12<name=\"Vlan Id\">;"
+      },
+      "confidence": "high",
+      "notes": "IEEE 802.1Q: 'The null VID. Indicates that the tag header contains only priority information; no VLAN identifier is present' for 0, and VID 4095 is reserved. Only 1 through 4094 identify an actual VLAN."
+    },
+    "Dot1q.L3type": {
+      "type": "enumerated_values",
+      "description": "EtherType of the protocol carried inside the VLAN tag; it takes the place the untagged frame's type field would have occupied.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "valid_values": [
+        2048,
+        2054,
+        34525,
+        33024,
+        34887,
+        34888,
+        35020
+      ],
+      "value_names": [
+        "IPv4",
+        "ARP",
+        "IPv6",
+        "802.1Q again - QinQ double tagging",
+        "MPLS unicast",
+        "MPLS multicast",
+        "LLDP"
+      ],
+      "preferred_value": 2048,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 155,
+        "snippet": "Layer_3 L3(d1q.L3type) <name=\"Layer 3\">;"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 54 and passed straight into Layer_3 at line 155 as its proto_type parameter. TEMPLATE DEVIATION: unlike the Layer_2 case, this value is NOT tested - the template instantiates Layer_3 unconditionally - so a non-IPv4 EtherType here produces a Layer_3 that takes its else branch at line 85 and reads hdr_length-4 opaque bytes. 0x0800 is the only value that reaches the IPv4 fields."
+    },
+    "IPv4addr.Byte[0]": {
+      "type": "range_constraint",
+      "description": "First octet of an IPv4 address; it is what determines whether the address is unicast, multicast, or one of the reserved ranges.",
+      "corruption_risk": "medium",
+      "field_type": "uchar",
+      "source": "spec",
+      "min": 0,
+      "max": 255,
+      "generation_range": {
+        "min": 1,
+        "max": 223,
+        "rationale": "0 is the 'this network' range and 127 is loopback; 224-239 is multicast and 240-255 is reserved, with 255.255.255.255 the limited broadcast. 1-223 keeps the address in the unicast space, and the RFC 1918 private ranges 10.x, 172.16-31.x and 192.168.x are the values a synthetic capture should use."
+      },
+      "preferred_value": 192,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 1122 section 3.2.1.3 and RFC 5735: an IPv4 address whose first octet is 0 or 127 is not routable, 224-239 is class D multicast, and 240-255 is reserved. RFC 1122 also forbids a multicast or broadcast address as an IP SOURCE address. The template reads four opaque uchars and performs no check.",
+        "line": 59,
+        "snippet": "uchar Byte[4];"
+      },
+      "confidence": "high",
+      "notes": "Bytes 1 through 3 of the address are genuinely free and deliberately have no entries. The read function IPv4addrName at lines 62-67 formats all four as decimal but checks nothing."
+    },
+    "Layer_3.version": {
+      "type": "fixed_value",
+      "description": "IP version nibble; it must be 4 because the only branch this template decodes is the IPv4 one selected by EtherType 0x0800.",
+      "corruption_risk": "high",
+      "field_type": "uchar : 4",
+      "source": "both",
+      "required_value": 4,
+      "required_value_hex": "0x4",
+      "required_value_ascii": "\\x04",
+      "bit_width": 4,
+      "bitfield_layout": "the HIGH nibble of the first IP header byte - the first-declared bitfield takes the most significant bits because BigEndian() is in force at line 141",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 70,
+        "snippet": "uchar version:4;"
+      },
+      "confidence": "high",
+      "notes": "RFC 791: 'Version: 4 bits. The Version field indicates the format of the internet header.' Value 4 is IPv4 and 6 is IPv6. TEMPLATE DEVIATION: the template never checks this nibble, and it has no IPv6 handling at all despite line 144's comment claiming the raw-IP branch handles 'an IPv4 or IPv6 header'. A version of 6 would be read as an IPv4 header and mis-parsed field by field. Endianness switches mid-record: LittleEndian() is set at line 214 for the file header and the per-record header, BigEndian() at line 141 for everything from the Layer 2 header onward, and LittleEndian() is restored at line 179. Every packet field is therefore network byte order while every pcap metadata field is host byte order."
+    },
+    "Layer_3.ip_hdr_len": {
+      "type": "calculated_value",
+      "description": "IHL: the IPv4 header length in 32-bit words, so the header is four times this value; the minimum legal value is 5 because a header without options is 20 bytes.",
+      "corruption_risk": "high",
+      "field_type": "uchar : 4",
+      "source": "both",
+      "algorithm": "header length in 32-bit words = (20 + IPv4 options byte count) / 4; the byte count is ip_hdr_len * 4",
+      "covers": "the whole IPv4 header from the version nibble through any options, up to but not including the layer 4 header; it excludes the Ethernet header and the packet payload",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.total_length",
+        "Layer_4.SrcPort"
+      ],
+      "bitfield_layout": "the LOW nibble of the first IP header byte",
+      "generation_range": {
+        "min": 5,
+        "max": 15,
+        "rationale": "The 4-bit field caps it at 15, i.e. a 60-byte header, so there is no size blow-up - but values 0 through 4 describe a header shorter than the 20 mandatory bytes and are structurally impossible. 5 is the no-options header every synthetic packet should use, and it is the value that makes ip_hdr_len*4 - 13 in the TCP branch and total_length - ip_hdr_length in the fallback branch come out right."
+      },
+      "preferred_value": 5,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 71,
+        "snippet": "uchar ip_hdr_len:4;"
+      },
+      "confidence": "high",
+      "notes": "RFC 791: 'IHL: 4 bits. Internet Header Length is the length of the internet header in 32 bit words, and thus points to the beginning of the data. Note that the minimum value for a correct header is 5.' The template computes hdr_length = ip_hdr_len*4 into a local at line 72, passes the raw nibble into Layer_4 as VER_HDR at line 158, and uses it again at line 162 to size the TCP application data - so this one nibble drives three separate length computations and a value below 5 makes all three go wrong at once."
+    },
+    "Layer_3.DiffServField": {
+      "type": "bitmask_constraint",
+      "description": "The IPv4 Type of Service byte as redefined by DiffServ: a six-bit DSCP codepoint plus a two-bit ECN field.",
+      "corruption_risk": "low",
+      "field_type": "BYTE",
+      "source": "spec",
+      "valid_bits": "bits 7-2 are the DSCP codepoint, 0-63, of which the class selectors 0, 8, 16, 24, 32, 40, 48 and 56 and the assured forwarding and expedited forwarding codepoints are the standardised values; bits 1-0 are ECN, where 00 is Not-ECT, 01 and 10 are ECT and 11 is Congestion Experienced",
+      "valid_values": [
+        0,
+        32,
+        64,
+        96,
+        128,
+        160,
+        184,
+        192,
+        224
+      ],
+      "value_names": [
+        "CS0 / default best effort",
+        "CS1",
+        "CS2",
+        "CS3",
+        "CS4",
+        "CS5",
+        "EF - expedited forwarding",
+        "CS6",
+        "CS7"
+      ],
+      "preferred_value": 0,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 2474 redefines the RFC 791 Type of Service octet as a six-bit Differentiated Services Code Point plus two bits later assigned to ECN by RFC 3168. Every bit pattern is technically encodable, but only the class-selector, AF and EF codepoints have standardised meanings. The template reads a plain BYTE and performs no check.",
+        "line": 73,
+        "snippet": "BYTE DiffServField;"
+      },
+      "confidence": "high",
+      "notes": "valid_values lists the standardised DSCP codepoints with ECN clear; 0 is the default best-effort value every synthetic packet should carry."
+    },
+    "Layer_3.total_length": {
+      "type": "calculated_value",
+      "description": "Total length of the IP datagram in bytes, header included; it is the field that decides how much of the captured packet the template treats as IP, and three later length computations subtract from it.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "algorithm": "byte count = ip_hdr_len * 4 + the layer 4 header length + the application payload length",
+      "covers": "the whole IP datagram from the version nibble to the last payload byte; it excludes the Ethernet header, any VLAN tag and any layer 2 trailer padding",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.ip_hdr_len",
+        "Layer_4.tcp_hdr_len",
+        "Layer_4.udp_hdr_len",
+        "PCAPRECORD.incl_len"
+      ],
+      "generation_range": {
+        "min": 20,
+        "max": 1500,
+        "rationale": "The spec ceiling is 65535, but the field is used in three subtractions with no lower guard - `total_length - ip_hdr_length` at line 114, `total_length - ip_hdr_len*4 - tcp_hdr_len*4` at line 162 and `incl_len - len_before_l3 - total_length` at line 177 - so a value below the header lengths makes all three go negative. It must also be no larger than incl_len minus the layer 2 header, or the datagram runs past the end of the captured record. 1500 is the Ethernet MTU and is the largest value a normal frame carries; 20 is a bare header with no payload."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 74,
+        "snippet": "uint16 total_length;"
+      },
+      "confidence": "high",
+      "notes": "RFC 791: 'Total Length is the length of the datagram, measured in octets, including internet header and data.' This is the most load-bearing single field in the packet portion of the format: the template reads it back four times, at lines 114, 158, 162 and 176-177. Endianness switches mid-record: LittleEndian() is set at line 214 for the file header and the per-record header, BigEndian() at line 141 for everything from the Layer 2 header onward, and LittleEndian() is restored at line 179. Every packet field is therefore network byte order while every pcap metadata field is host byte order."
+    },
+    "Layer_3.Identification": {
+      "type": "range_constraint",
+      "description": "Identifier used to group the fragments of one datagram; it need only be unique among datagrams in flight between the same source, destination and protocol.",
+      "corruption_risk": "low",
+      "field_type": "uint16",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 65535,
+        "rationale": "Genuinely free within its 16 bits and it costs no file bytes, so no cap is needed. RFC 6864 additionally requires it to be 0 for atomic datagrams - those with DF set and MF clear and a zero fragment offset - which is what a generator should emit alongside the recommended Flags value."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 791: 'Identification: 16 bits. An identifying value assigned by the sender to aid in assembling the fragments of a datagram.' RFC 6864 section 4.1: 'Originating sources MAY set the IPv4 ID field of atomic datagrams to any value.' The template reads a plain uint16 and performs no check.",
+        "line": 77,
+        "snippet": "uint16 Identification;"
+      },
+      "confidence": "high"
+    },
+    "Layer_3.Flags": {
+      "type": "bitmask_constraint",
+      "description": "The combined IPv4 flags and fragment offset word: three flag bits of which the top one must be zero, followed by a thirteen-bit fragment offset measured in eight-byte units.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "valid_bits": "bit 15 is Reserved and MUST be 0; bit 14 is Don't Fragment; bit 13 is More Fragments; bits 12-0 are the fragment offset in units of 8 bytes, so a non-zero offset means this is not the first fragment",
+      "valid_values": [
+        0,
+        16384
+      ],
+      "value_names": [
+        "no flags, offset 0 - a complete unfragmented datagram",
+        "Don't Fragment set, offset 0 - an atomic datagram"
+      ],
+      "preferred_value": 16384,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 78,
+        "snippet": "uint16 Flags;"
+      },
+      "confidence": "high",
+      "notes": "TEMPLATE DEVIATION: the template declares this as a single `uint16 Flags`, but RFC 791 splits the word into a 3-bit flags field and a 13-bit fragment offset - the field name covers only the top three bits. Bit 15 is the reserved 'evil bit' of RFC 3514 and must always be 0. valid_values lists the two whole-word values that describe a complete, unfragmented datagram; any value with More Fragments set or a non-zero offset promises further fragments that a single generated packet will not supply, so a reassembling analyser will hold the packet and never complete it."
+    },
+    "Layer_3.TTL": {
+      "type": "range_constraint",
+      "description": "Time To Live: the hop budget, decremented by every router; a datagram arriving with zero would have been discarded rather than captured.",
+      "corruption_risk": "low",
+      "field_type": "BYTE",
+      "source": "spec",
+      "min": 1,
+      "max": 255,
+      "generation_range": {
+        "min": 32,
+        "max": 255,
+        "rationale": "The whole 1-255 range is legal, but real stacks initialise it to 64 (Linux, macOS), 128 (Windows) or 255 (network equipment), and a captured packet has always been decremented at least zero times from one of those. 0 is excluded because a router must discard rather than forward such a datagram."
+      },
+      "preferred_value": 64,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 791: 'Time to Live: 8 bits. This field indicates the maximum time the datagram is allowed to remain in the internet system. If this field contains the value zero, then the datagram must be destroyed.' RFC 1122 section 3.2.1.7 recommends an initial value of 64. The template reads a plain BYTE and performs no check.",
+        "line": 79,
+        "snippet": "BYTE   TTL;"
+      },
+      "confidence": "high"
+    },
+    "Layer_3.L4proto": {
+      "type": "enumerated_values",
+      "description": "IANA protocol number naming the layer 4 protocol; it is what the template branches on to choose between a UDP header, a TCP header and an opaque payload.",
+      "corruption_risk": "high",
+      "field_type": "BYTE",
+      "source": "both",
+      "valid_values": [
+        1,
+        2,
+        6,
+        17,
+        41,
+        47,
+        50,
+        51,
+        58,
+        89,
+        103,
+        112,
+        132,
+        136
+      ],
+      "value_names": [
+        "ICMP",
+        "IGMP",
+        "TCP",
+        "UDP",
+        "IPv6 encapsulation",
+        "GRE",
+        "ESP",
+        "AH",
+        "ICMPv6",
+        "OSPF",
+        "PIM",
+        "VRRP",
+        "SCTP",
+        "UDPLite"
+      ],
+      "preferred_value": 6,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 102,
+        "snippet": "else if (L4proto == 0x6) // TCP"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 80 with a read function L4protoName at lines 119-133 that names exactly two values, 0x06 TCP and 0x11 UDP, and calls everything else 'Unknown'. The value is passed into Layer_4 at line 158 and tested at lines 95 and 102 to pick the header layout, then tested again at lines 160 and 168 to size the application data. Only 6 and 17 reach a decoded layer 4 header; every other value takes the else branch at line 112 and reads total_length - ip_hdr_length opaque bytes. TCP is preferred because it exercises the deepest chain - a decoded header, a computed options region and a computed application payload. valid_values lists the commonly-seen assignments from the IANA Protocol Numbers registry, which defines 256 in total."
+    },
+    "Layer_3.HdrChecksum": {
+      "type": "calculated_value",
+      "description": "Internet checksum over the IPv4 header only; every router verifies it and a wrong value makes the packet dropped rather than forwarded.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "algorithm": "the 16-bit one's complement of the one's complement sum of all 16-bit words of the IPv4 header, computed with this checksum field itself taken as zero - the standard Internet checksum of RFC 1071",
+      "covers": "the ip_hdr_len * 4 bytes of the IPv4 header, from the version nibble through any options; it excludes the Ethernet header, any VLAN tag, the layer 4 header, the payload, and this checksum field itself which is treated as zero during computation",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.version",
+        "Layer_3.ip_hdr_len",
+        "Layer_3.DiffServField",
+        "Layer_3.total_length",
+        "Layer_3.Identification",
+        "Layer_3.Flags",
+        "Layer_3.TTL",
+        "Layer_3.L4proto",
+        "Layer_3.SRC_IP",
+        "Layer_3.DST_IP"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 81,
+        "snippet": "uint16 HdrChecksum;"
+      },
+      "confidence": "high",
+      "notes": "RFC 791: 'Header Checksum: 16 bits. A checksum on the header only. Since some header fields change (e.g., time to live), this is recomputed and verified at each point that the internet header is processed.' The risk is medium rather than high because a capture file is a record of bytes that were seen, so Wireshark displays a bad checksum as a warning and carries on decoding - but the packet would never have been forwarded in reality. This is the only checksum in the format and the template computes nothing."
+    },
+    "Layer_3.SRC_IP": {
+      "type": "range_constraint",
+      "description": "Source IPv4 address; RFC 1122 forbids a multicast or broadcast address here, so it must be a unicast address.",
+      "corruption_risk": "medium",
+      "field_type": "IPv4addr",
+      "source": "spec",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "big",
+      "generation_range": {
+        "min": 167772161,
+        "max": 3232301054,
+        "rationale": "Expressed as the 32-bit value of the four octets. A source address must be unicast, so the multicast range 224.0.0.0-239.255.255.255 and the reserved range 240.0.0.0-255.255.255.255 are excluded, as are 0.0.0.0 and the limited broadcast. The RFC 1918 private ranges - 10.0.0.0/8, 172.16.0.0/12 and 192.168.0.0/16 - are what a synthetic capture should use so it never resembles real traffic to a real host."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 1122 section 3.2.1.3: 'A datagram whose source address does not define a single host -- e.g., a broadcast or multicast address -- MUST NOT be sent.' RFC 5735 lists the special-use ranges. The template reads a plain IPv4addr and performs no check.",
+        "line": 82,
+        "snippet": "IPv4addr SRC_IP<name=\"Source IP\">;"
+      },
+      "confidence": "high",
+      "notes": "See IPv4addr.Byte[0] for the per-octet flag semantics; the individual bytes beyond the first are free."
+    },
+    "Layer_3.DST_IP": {
+      "type": "range_constraint",
+      "description": "Destination IPv4 address; unlike the source it may legally be unicast, multicast or broadcast.",
+      "corruption_risk": "medium",
+      "field_type": "IPv4addr",
+      "source": "spec",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "big",
+      "generation_range": {
+        "min": 167772161,
+        "max": 3232301054,
+        "rationale": "Same private-range reasoning as SRC_IP. A multicast destination is legal but should then be paired with a multicast destination MAC address in the 01:00:5E range, and a broadcast destination with FF:FF:FF:FF:FF:FF - consistency a generator drawing the two independently will not achieve."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 791 and RFC 1122: the destination address may be an individual host, a multicast group (224.0.0.0/4) or a broadcast address. The template reads a plain IPv4addr and performs no check.",
+        "line": 83,
+        "snippet": "IPv4addr DST_IP<name=\"Dest IP\">;"
+      },
+      "confidence": "high",
+      "notes": "Should differ from SRC_IP; a packet addressed to its own source is not something a capture would contain."
+    },
+    "Layer_3.Unknown": {
+      "type": "calculated_value",
+      "description": "The remainder of a layer 3 header the template does not decode, reached when the EtherType is not IPv4; its length is the declared header length minus the four bytes already read.",
+      "corruption_risk": "high",
+      "field_type": "BYTE[hdr_length-4]",
+      "source": "template",
+      "algorithm": "byte count = Layer_3.ip_hdr_len * 4 - 4, i.e. the local hdr_length computed at line 72 minus the four bytes consumed by the version/IHL byte, the DiffServ byte and the two-byte total length",
+      "covers": "the layer 3 header bytes after the first four, to the end of the header the IHL nibble declares",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "Layer_3.ip_hdr_len",
+        "Layer_3.version"
+      ],
+      "generation_range": {
+        "min": 16,
+        "max": 56,
+        "rationale": "Derived entirely from the IHL nibble: 5*4-4 = 16 for a minimal header up to 15*4-4 = 56 for a maximal one. TEMPLATE DEVIATION: values 0 through 4 in the IHL nibble make this subtraction negative, and nothing guards it. This branch is also fundamentally wrong for a non-IPv4 protocol - an IPv6 header has no IHL field at all, so reading its first nibble as a word count produces an arbitrary length."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 87,
+        "snippet": "BYTE Unknown[hdr_length-4];"
+      },
+      "confidence": "high",
+      "notes": "Reached by the else at line 85 whenever the proto_type parameter is not 0x0800, which in practice means a VLAN-tagged frame carrying something other than IPv4, since the Layer_2 path only instantiates Layer_3 for 0x0800."
+    },
+    "Layer_4.SrcPort": {
+      "type": "range_constraint",
+      "description": "Source port of the TCP or UDP header; port 0 is reserved and never used by a real endpoint.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "min": 1,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1024,
+        "max": 65535,
+        "rationale": "The ephemeral range. Ports 0-1023 are the IANA system ports and a source port in that range implies a privileged server originating the connection, which is unusual; 49152-65535 is the IANA-recommended dynamic range. Port 0 is reserved outright."
+      },
+      "preferred_value": 49152,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 97,
+        "snippet": "uint16 SrcPort<name=\"Source Port\">;"
+      },
+      "confidence": "high",
+      "notes": "Declared twice under the same name in mutually exclusive branches, at line 97 for UDP and line 104 for TCP, so a single entry covers both. RFC 6335: 'port number 0 ... is reserved and cannot be used'. Endianness switches mid-record: LittleEndian() is set at line 214 for the file header and the per-record header, BigEndian() at line 141 for everything from the Layer 2 header onward, and LittleEndian() is restored at line 179. Every packet field is therefore network byte order while every pcap metadata field is host byte order."
+    },
+    "Layer_4.DstPort": {
+      "type": "range_constraint",
+      "description": "Destination port of the TCP or UDP header; port 0 is reserved and never used by a real endpoint.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "min": 1,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1,
+        "max": 65535,
+        "rationale": "The whole range less port 0 is usable, and unlike the source port a well-known destination is the normal case. Choosing a registered service port - 80, 443, 53, 22 - makes an analyser apply its protocol dissector and reach far deeper parsing than a random high port would."
+      },
+      "preferred_value": 80,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 98,
+        "snippet": "uint16 DstPort<name=\"Destination Port\">;"
+      },
+      "confidence": "high",
+      "notes": "Declared twice under the same name, at line 98 for UDP and line 105 for TCP. Wireshark selects its application-layer dissector primarily from this field, so it is the single highest-leverage value for reaching deep parsing in a real analyser."
+    },
+    "Layer_4.udp_hdr_len": {
+      "type": "calculated_value",
+      "description": "Total length of the UDP datagram in bytes, its own eight-byte header included; the template subtracts 8 from it to size the application data.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "algorithm": "byte count = 8 + the UDP payload length",
+      "covers": "the whole UDP datagram - the four header fields and the payload; it excludes the IP header and any layer 2 header or trailer",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.total_length",
+        "Layer_3.ip_hdr_len"
+      ],
+      "generation_range": {
+        "min": 8,
+        "max": 1480,
+        "rationale": "The spec ceiling is 65535, but the template computes `udp_hdr_len - 8` at line 170 with no lower guard, so any value below 8 makes the application data length underflow a uint and become roughly 4 billion - the single cheapest way to make this template ask for an enormous array. It must also equal Layer_3.total_length minus the IP header length exactly; 1480 is a full Ethernet MTU less a 20-byte IP header."
+      },
+      "preferred_value": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 99,
+        "snippet": "uint16 udp_hdr_len<name=\"Datagram Length\">;"
+      },
+      "confidence": "high",
+      "notes": "RFC 768: 'Length is the length in octets of this user datagram including this header and the data. (This means the minimum value of the length is eight.)' The template's own display name for the field is 'Datagram Length', which is correct, but the identifier calls it a header length, which is not."
+    },
+    "Layer_4.ChkSum": {
+      "type": "calculated_value",
+      "description": "UDP checksum computed over a pseudo-header, the UDP header and the payload; in IPv4 the value 0 means the checksum was not computed.",
+      "corruption_risk": "low",
+      "field_type": "uint16",
+      "source": "both",
+      "algorithm": "the 16-bit one's complement of the one's complement sum of a 12-byte pseudo-header (source address, destination address, a zero byte, the protocol number 17 and the UDP length), the UDP header with this field taken as zero, and the payload padded to an even length; if the result is zero it is transmitted as 0xFFFF",
+      "covers": "the IPv4 pseudo-header fields, the four UDP header fields and the whole UDP payload; it excludes the Ethernet header, the rest of the IP header and this checksum field itself, which is treated as zero during computation",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.SRC_IP",
+        "Layer_3.DST_IP",
+        "Layer_3.L4proto",
+        "Layer_4.udp_hdr_len",
+        "Layer_4.SrcPort",
+        "Layer_4.DstPort"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 100,
+        "snippet": "uint16 ChkSum<name=\"Checksum\">;"
+      },
+      "confidence": "high",
+      "notes": "RFC 768: 'An all zero transmitted checksum value means that the transmitter generated no checksum (for debugging or for higher level protocols that don't care).' That escape is what makes this the one checksum in the format a generator can satisfy for free - emit 0 and no receiver verifies it. Note the escape exists only for IPv4; over IPv6 the checksum is mandatory. The value 0xFFFF is used when the computed sum is zero, so that a real checksum is never confused with the not-computed sentinel."
+    },
+    "Layer_4.SEQ": {
+      "type": "range_constraint",
+      "description": "TCP sequence number: the byte offset of the first data octet of this segment within the stream, or the initial sequence number when the SYN flag is set.",
+      "corruption_risk": "low",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 4294967295,
+        "rationale": "Genuinely free within its 32 bits and it costs no file bytes, so no cap is needed. RFC 6528 recommends the initial value be unpredictable, so a random draw is actually correct here - one of very few fields in this format where that is true."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 9293 section 3.1: 'Sequence Number: 32 bits. The sequence number of the first data octet in this segment (except when the SYN flag is set). If SYN is set, the sequence number is the initial sequence number (ISN) and the first data octet is ISN+1.' The template reads a plain uint32 and performs no check.",
+        "line": 106,
+        "snippet": "uint32 SEQ;"
+      },
+      "confidence": "high"
+    },
+    "Layer_4.ACK": {
+      "type": "range_constraint",
+      "description": "TCP acknowledgment number: the next sequence number the sender expects to receive; it is meaningful only when the ACK flag is set.",
+      "corruption_risk": "low",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 4294967295,
+        "rationale": "Free within its 32 bits and it costs no file bytes. RFC 9293 requires it to be 0 when the ACK control bit is clear, which is the case for the initial SYN of a connection."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RFC 9293 section 3.1: 'Acknowledgment Number: 32 bits. If the ACK control bit is set, this field contains the value of the next sequence number the sender of the segment is expecting to receive. Once a connection is established, this is always sent.' The template reads a plain uint32 and performs no check, and it does not decode the flags byte at all, so the ACK bit is invisible to it.",
+        "line": 107,
+        "snippet": "uint32 ACK;"
+      },
+      "confidence": "high"
+    },
+    "Layer_4.tcp_hdr_len": {
+      "type": "calculated_value",
+      "description": "TCP data offset: the header length in 32-bit words, so the header is four times this value; the minimum is 5 because a header without options is 20 bytes.",
+      "corruption_risk": "high",
+      "field_type": "uchar : 4",
+      "source": "both",
+      "algorithm": "header length in 32-bit words = (20 + TCP options byte count) / 4; the byte count is tcp_hdr_len * 4",
+      "covers": "the whole TCP header from the source port through any options, up to but not including the application payload; it excludes the IP header and the payload",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.total_length",
+        "Layer_3.ip_hdr_len"
+      ],
+      "bitfield_layout": "the HIGH nibble of the thirteenth TCP header byte - the first-declared bitfield takes the most significant bits because BigEndian() is in force at line 141",
+      "generation_range": {
+        "min": 5,
+        "max": 15,
+        "rationale": "The 4-bit field caps it at 15, i.e. a 60-byte header, so there is no size blow-up - but values 0 through 3 make `tcp_hdr_len*4 - 13` at line 110 negative and value 4 gives 3, describing a 16-byte header that is shorter than the mandatory 20. It is also subtracted at line 162 to size the application data, so a value too large makes that underflow instead. 5 is the no-options header every synthetic segment should use."
+      },
+      "preferred_value": 5,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 108,
+        "snippet": "uchar tcp_hdr_len:4;"
+      },
+      "confidence": "high",
+      "notes": "RFC 9293 section 3.1: 'Data Offset (DOffset): 4 bits. The number of 32-bit words in the TCP header. This indicates where the data begins. The TCP header (even one including options) is an integer multiple of 32 bits long.' The minimum is 5."
+    },
+    "Layer_4.Reserved": {
+      "type": "fixed_value",
+      "description": "The four reserved bits following the TCP data offset; the specification requires them to be zero.",
+      "corruption_risk": "medium",
+      "field_type": "uchar : 4",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x0",
+      "required_value_ascii": "\\x00",
+      "bit_width": 4,
+      "bitfield_layout": "the LOW nibble of the thirteenth TCP header byte",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 109,
+        "snippet": "uchar Reserved:4;"
+      },
+      "confidence": "high",
+      "notes": "RFC 9293 section 3.1: 'Rsrvd: 4 bits. A set of control bits reserved for future use. Must be zero in generated segments and must be ignored in received segments, if corresponding future features are unimplemented by the sending or receiving host.' This is the only reserved field in the entire template. Note that RFC 3168 later reassigned the lowest of these four bits as the NS flag, which RFC 9293 has since deprecated back to reserved."
+    },
+    "Layer_4.Crap": {
+      "type": "calculated_value",
+      "description": "The remainder of the TCP header after the thirteen bytes the template names: the flags byte, window, checksum, urgent pointer and any options.",
+      "corruption_risk": "high",
+      "field_type": "BYTE[tcp_hdr_len*4-13]",
+      "source": "both",
+      "algorithm": "byte count = Layer_4.tcp_hdr_len * 4 - 13, the 13 being the two ports, the sequence and acknowledgment numbers and the data-offset/reserved byte already read",
+      "covers": "the TCP header bytes from the flags byte to the end of the options region: 1 byte of control flags, 2 bytes of window size, 2 bytes of checksum, 2 bytes of urgent pointer and (tcp_hdr_len - 5) * 4 bytes of options",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "Layer_4.tcp_hdr_len"
+      ],
+      "generation_range": {
+        "min": 7,
+        "max": 47,
+        "rationale": "Derived entirely from the data offset: 5*4-13 = 7 for a minimal header up to 15*4-13 = 47 for a maximal one. A data offset below 4 makes the subtraction negative and nothing guards it."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 110,
+        "snippet": "BYTE Crap[tcp_hdr_len*4-13];"
+      },
+      "confidence": "high",
+      "notes": "TEMPLATE DEVIATION: the field name is dismissive but the bytes are not junk - the first is the TCP control flags (FIN, SYN, RST, PSH, ACK, URG, ECE, CWR), and every analyser decodes them to follow the connection state machine. Bytes 3-4 of this array are the TCP checksum, computed over a pseudo-header exactly as the UDP one is but with NO zero escape: RFC 9293 makes it mandatory. By collapsing all of this into one opaque array the template makes those two facts invisible."
+    },
+    "Layer_4.packet": {
+      "type": "calculated_value",
+      "description": "The whole layer 4 region read as opaque bytes, used whenever the protocol number is neither TCP nor UDP; its length is the IP total length minus the IP header.",
+      "corruption_risk": "high",
+      "field_type": "BYTE[total_length-ip_hdr_length]",
+      "source": "template",
+      "algorithm": "byte count = Layer_3.total_length - Layer_3.ip_hdr_len * 4, using the local ip_hdr_length computed at line 93 from the VER_HDR parameter",
+      "covers": "every byte of the IP datagram after the IP header, to the end of the datagram the total length declares",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "Layer_3.total_length",
+        "Layer_3.ip_hdr_len",
+        "Layer_3.L4proto"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 1480,
+        "rationale": "Derived from total_length and the IHL nibble with no guard that the first exceeds the second: a total_length below ip_hdr_len*4 makes this array size negative. 1480 is a full Ethernet MTU less a minimal IP header."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 114,
+        "snippet": "BYTE packet[total_length-ip_hdr_length]<name=\"Unknown Layer 4 Data\">;"
+      },
+      "confidence": "high",
+      "notes": "Reached by the else at line 112 for every protocol number other than 6 and 17. The bytes are genuinely free-form to this template, though a real analyser would decode them as ICMP, GRE, ESP or whatever the protocol number names."
+    },
+    "PCAPRECORD.ts_sec": {
+      "type": "range_constraint",
+      "description": "Capture timestamp in whole seconds since the Unix epoch; records must appear in the file in non-decreasing timestamp order.",
+      "corruption_risk": "low",
+      "field_type": "time_t",
+      "source": "both",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "little",
+      "generation_range": {
+        "min": 1000000000,
+        "max": 2000000000,
+        "rationale": "The field is a 32-bit count of seconds and costs no file bytes, but values outside roughly 2001-2033 render as absurd dates and values above 2147483647 wrap negative in the many tools that treat time_t as signed - the 2038 problem. More importantly the value is ORDERED: successive records must not go backwards in time, so a generator must draw a base and increase it monotonically rather than drawing each record independently."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 137,
+        "snippet": "time_t ts_sec;         /* timestamp seconds */"
+      },
+      "confidence": "high",
+      "notes": "Endianness switches mid-record: LittleEndian() is set at line 214 for the file header and the per-record header, BigEndian() at line 141 for everything from the Layer 2 header onward, and LittleEndian() is restored at line 179. Every packet field is therefore network byte order while every pcap metadata field is host byte order. The read function at lines 198-204 formats it with TimeTToString. libpcap savefile format: 'ts_sec - the date and time when this packet was captured. This value is in seconds since January 1, 1970 00:00:00 GMT.' The chronological ordering requirement is what makes this a constrained rather than a free-form timestamp."
+    },
+    "PCAPRECORD.ts_usec": {
+      "type": "range_constraint",
+      "description": "Sub-second part of the capture timestamp in microseconds; it must be less than one million because a full second belongs in ts_sec.",
+      "corruption_risk": "medium",
+      "field_type": "uint32",
+      "source": "both",
+      "min": 0,
+      "max": 999999,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 999999,
+        "rationale": "The whole legal range is only 20 bits wide so there is no size blow-up, but the 32-bit field can hold 4294 times the legal maximum. A uniform draw is out of range 99.98 percent of the time, and Wireshark displays such a record with a malformed-timestamp warning."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 138,
+        "snippet": "uint32 ts_usec;        /* timestamp microseconds */"
+      },
+      "confidence": "high",
+      "notes": "libpcap savefile format: 'ts_usec - in a *.pcap file, the microseconds when this packet was captured, as an offset to ts_sec. Beware: this value shall never reach 1 second (1 000 000), in this case ts_sec must be increased instead!' When the file magic is the nanosecond variant 0xA1B23C4D the unit changes and the bound becomes 999999999 - but this template accepts only the microsecond magic, so 999999 is the operative maximum."
+    },
+    "PCAPRECORD.incl_len": {
+      "type": "calculated_value",
+      "description": "Number of packet bytes actually stored in this record; it is the record's own length field and the only thing separating one record from the next.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "algorithm": "byte count of the packet data following this record header",
+      "covers": "every packet byte of this record - the layer 2 header, any VLAN tag, the IP header, the layer 4 header, the application data and any layer 2 trailer padding; it excludes the sixteen bytes of the record header itself and every other record",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "PCAPRECORD.orig_len",
+        "PCAPHEADER.snaplen",
+        "Layer_3.total_length"
+      ],
+      "generation_range": {
+        "min": 14,
+        "max": 1518,
+        "rationale": "This is the format's principal size lever: a 32-bit byte count with no upper check anywhere, so a uniform value claims up to 4 GB of packet data from four header bytes, and every reader allocates from it. It must be no larger than snaplen and no larger than orig_len. 1518 is a full Ethernet frame with header and FCS; 14 is a bare Ethernet header with nothing after it."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 139,
+        "snippet": "uint32 incl_len;       /* number of octets of packet saved in file */"
+      },
+      "confidence": "high",
+      "notes": "libpcap savefile format: 'incl_len - the number of bytes of packet data actually captured and saved in the file. This value should never become larger than orig_len or the snaplen value of the global header.' TEMPLATE DEVIATION: the template never uses incl_len to bound the packet parse - it walks the layer 2, 3 and 4 headers by shape and only consults incl_len at line 176 to compute trailing padding - so a record whose headers overrun the declared length is parsed anyway and the next record starts in the wrong place. This is the single most important cross-check the parser omits."
+    },
+    "PCAPRECORD.orig_len": {
+      "type": "calculated_value",
+      "description": "Length the packet had on the wire before any truncation; it is at least incl_len, and equal to it when nothing was truncated.",
+      "corruption_risk": "medium",
+      "field_type": "uint32",
+      "source": "both",
+      "algorithm": "byte count of the packet as it appeared on the network, before the capture was truncated to snaplen",
+      "covers": "nothing in the file itself; it describes the original packet of which incl_len bytes were stored",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "PCAPRECORD.incl_len",
+        "PCAPHEADER.snaplen"
+      ],
+      "generation_range": {
+        "min": 14,
+        "max": 1518,
+        "rationale": "Must be at least incl_len; drawing the two independently produces the impossible 'more captured than existed' shape that analysers flag. Bounded together with incl_len, and equal to it for an untruncated capture, which is the simplest self-consistent choice."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 140,
+        "snippet": "uint32 orig_len;       /* actual length of packet */"
+      },
+      "confidence": "high",
+      "notes": "libpcap savefile format: 'orig_len - the length of the packet as it appeared on the network when it was captured. If incl_len and orig_len differ, the actually saved packet size was limited by snaplen.' The template reads it and never uses it for anything."
+    },
+    "PCAPRECORD.L2": {
+      "type": "calculated_value",
+      "description": "The Ethernet header of this record, present for every link type other than raw IP; it is a fixed fourteen bytes.",
+      "corruption_risk": "high",
+      "field_type": "Layer_2",
+      "source": "both",
+      "algorithm": "present when PCAPHEADER.network is not 101; fixed byte count of 14 - six bytes of destination MAC, six of source MAC and two of EtherType",
+      "covers": "the first fourteen packet bytes of the record, before any VLAN tag or IP header",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "PCAPHEADER.network"
+      ],
+      "fixed_result": 14,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 147,
+        "snippet": "Layer_2 L2 <name=\"Layer 2\">;"
+      },
+      "confidence": "high",
+      "notes": "Declared with `<size=14>` at line 47 and instantiated by the else at line 146. The template adds 14 to its len_before_l3 local at line 148, which is what the trailing-padding computation at line 177 later subtracts. Endianness switches mid-record: LittleEndian() is set at line 214 for the file header and the per-record header, BigEndian() at line 141 for everything from the Layer 2 header onward, and LittleEndian() is restored at line 179. Every packet field is therefore network byte order while every pcap metadata field is host byte order."
+    },
+    "PCAPRECORD.d1q": {
+      "type": "calculated_value",
+      "description": "The 802.1Q VLAN tag, present only when the Ethernet EtherType is 0x8100; it is a fixed four bytes.",
+      "corruption_risk": "high",
+      "field_type": "Dot1q",
+      "source": "both",
+      "algorithm": "present when Layer_2.L3type equals 0x8100; fixed byte count of 4 - a two-byte Tag Control Information word and a two-byte inner EtherType",
+      "covers": "the four packet bytes between the Ethernet header and the IP header",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_2.L3type"
+      ],
+      "fixed_result": 4,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 153,
+        "snippet": "Dot1q d1q <name=\"802.1Q Vitual LAN\">;"
+      },
+      "confidence": "high",
+      "notes": "Declared with `<size=4>` at line 55. Note the on-wire VLAN tag is four bytes only because the 0x8100 EtherType that introduces it has already been consumed as Layer_2.L3type - the tag proper is the TCI word plus the inner EtherType. The template adds 4 to len_before_l3 at line 154."
+    },
+    "PCAPRECORD.L3": {
+      "type": "calculated_value",
+      "description": "The IP header of this record; the template instantiates it in three different places and then dereferences it unconditionally, so a packet that reaches none of the three cannot be parsed.",
+      "corruption_risk": "high",
+      "field_type": "Layer_3",
+      "source": "both",
+      "algorithm": "present when PCAPHEADER.network is 101, or when Layer_2.L3type is 0x0800, or when Layer_2.L3type is 0x8100 and the VLAN's inner Dot1q.L3type follows; its byte count is Layer_3.ip_hdr_len * 4",
+      "covers": "the IP header bytes of the record, after any Ethernet header and VLAN tag and before the layer 4 header",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "PCAPHEADER.network",
+        "Layer_2.L3type",
+        "Layer_3.ip_hdr_len"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 145,
+        "snippet": "Layer_3 L3(0x0800) <name=\"Layer 3\">;"
+      },
+      "confidence": "high",
+      "notes": "Instantiated at lines 145, 150 and 155 in three mutually exclusive branches. TEMPLATE DEVIATION and the template's most serious structural bug: line 158 reads L3.ip_hdr_len, L3.total_length and L3.L4proto unconditionally, and lines 160-177 read L3.L4proto and L3.total_length again - but if network is not 101 and Layer_2.L3type is neither 0x0800 nor 0x8100, no L3 was ever created. So an ARP frame, an IPv6 frame or an LLDP frame - all perfectly valid captures - make the template fail. For generation this means Layer_2.L3type is effectively pinned to 0x0800 or 0x8100."
+    },
+    "PCAPRECORD.L4": {
+      "type": "calculated_value",
+      "description": "The layer 4 header of this record; its shape is chosen by the IP protocol number and its length by the data offset or datagram length inside it.",
+      "corruption_risk": "high",
+      "field_type": "Layer_4",
+      "source": "both",
+      "algorithm": "byte count is Layer_4.tcp_hdr_len * 4 for TCP, 8 for UDP, or Layer_3.total_length - Layer_3.ip_hdr_len * 4 for every other protocol number",
+      "covers": "the layer 4 header bytes of the record, between the IP header and the application data",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.L4proto",
+        "Layer_3.ip_hdr_len",
+        "Layer_3.total_length"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 158,
+        "snippet": "Layer_4 L4(L3.ip_hdr_len,L3.total_length,L3.L4proto)<name=\"Layer 4\">;"
+      },
+      "confidence": "high",
+      "notes": "Instantiated unconditionally at line 158 with three parameters taken from L3. Note the parameter mismatch: the struct declares `ushort VER_HDR` at line 91 and computes ip_hdr_length as VER_HDR*4 at line 93, and the call passes L3.ip_hdr_len - the raw IHL nibble - so the naming is confusing but the arithmetic is right."
+    },
+    "PCAPRECORD.AppData": {
+      "type": "calculated_value",
+      "description": "The application payload carried above TCP or UDP; its length is computed by subtraction and the two formulas differ.",
+      "corruption_risk": "high",
+      "field_type": "BYTE[AppDataLen]",
+      "source": "both",
+      "algorithm": "for TCP, byte count = Layer_3.total_length - Layer_3.ip_hdr_len * 4 - Layer_4.tcp_hdr_len * 4; for UDP, byte count = Layer_4.udp_hdr_len - 8",
+      "covers": "the payload bytes after the layer 4 header, to the end of the IP datagram",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "Layer_3.L4proto",
+        "Layer_3.total_length",
+        "Layer_3.ip_hdr_len",
+        "Layer_4.tcp_hdr_len",
+        "Layer_4.udp_hdr_len"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 1460,
+        "rationale": "Both formulas are unguarded subtractions into unsigned locals. The TCP form at line 162 underflows a uint16 when the two header lengths exceed total_length, and the UDP form at line 170 underflows a full uint when udp_hdr_len is below 8 - producing an array of roughly four billion bytes from a single wrong 16-bit field. Both are guarded only by `AppDataLen > 0`, which an underflowed value passes. 1460 is a full Ethernet MTU less minimal IP and TCP headers."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 165,
+        "snippet": "BYTE AppData[AppDataLen]<name=\"TCP Application Data\">;"
+      },
+      "confidence": "high",
+      "notes": "Declared twice under the same name in mutually exclusive branches, at line 165 for TCP and line 173 for UDP. The bytes themselves are genuinely free-form to this template, but a real analyser dissects them according to Layer_4.DstPort."
+    },
+    "PCAPRECORD.padding": {
+      "type": "calculated_value",
+      "description": "Layer 2 trailer bytes between the end of the IP datagram and the end of the captured record, typically the Ethernet minimum-frame padding.",
+      "corruption_risk": "high",
+      "field_type": "uchar[incl_len - len_before_l3 - L3.total_length]",
+      "source": "both",
+      "algorithm": "byte count = PCAPRECORD.incl_len - len_before_l3 - Layer_3.total_length, where len_before_l3 is 0 for raw IP, 14 for a plain Ethernet frame and 18 for a VLAN-tagged one",
+      "covers": "the record bytes after the end of the IP datagram, to the end of the captured data this record declares",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "PCAPRECORD.incl_len",
+        "Layer_3.total_length",
+        "Layer_2.L3type",
+        "PCAPHEADER.network"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 46,
+        "rationale": "Ethernet requires a minimum 60-byte frame excluding the FCS, so a short IP datagram is padded up: 60 - 14 - 20 = 26 bytes for a minimal IP header and up to 46 for an empty payload. The guard at line 176 emits the array only when the sum of the layer 2 length and the IP total length is strictly less than incl_len, so the value is always positive here - this is the one length subtraction in the whole template that IS properly guarded."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 177,
+        "snippet": "uchar padding[incl_len - len_before_l3 - L3.total_length]<name=\"Layer 2 Padding\">;"
+      },
+      "confidence": "high",
+      "notes": "Added by the 0.5 history entry at line 13, 'fix L2 padding'. The bytes are ignored by every analyser and are conventionally zero. This field is what makes incl_len and Layer_3.total_length independent: the record may legitimately hold more bytes than the datagram, and the difference is padding."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "PCAPHEADER.network",
+        "equals": 101
+      },
+      "then": {
+        "section": "PCAPRECORD.L2",
+        "forbidden": true,
+        "note": "LINKTYPE_RAW means the packet begins with an IP header and there is no link layer header at all, so the record's first byte is the IPv4 version nibble"
+      },
+      "description": "The raw-IP link type removes the entire Ethernet header from every record in the file.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 144,
+        "snippet": "if (network == 101) { // Raw IP; the packet begins with an IPv4 or IPv6 header"
+      }
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.network",
+        "equals": 101
+      },
+      "then": {
+        "section": "PCAPRECORD.L3",
+        "required": true,
+        "note": "the template passes the literal 0x0800 as the proto_type parameter at line 145, so the raw-IP branch always decodes an IPv4 header regardless of what the packet actually contains"
+      },
+      "description": "Under LINKTYPE_RAW the IP header is unconditional and is always assumed to be IPv4.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 145,
+        "snippet": "Layer_3 L3(0x0800) <name=\"Layer 3\">;"
+      }
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.network",
+        "equals": 1
+      },
+      "then": {
+        "section": "PCAPRECORD.L2",
+        "required": true,
+        "note": "LINKTYPE_ETHERNET means every record begins with a fourteen-byte Ethernet header, which is what the else branch at line 146 assumes"
+      },
+      "description": "The Ethernet link type puts a fourteen-byte header in front of every packet.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 147,
+        "snippet": "Layer_2 L2 <name=\"Layer 2\">;"
+      }
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.network",
+        "min": 0
+      },
+      "then": {
+        "field": "PCAPHEADER.network",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          101
+        ],
+        "value_names": [
+          "LINKTYPE_ETHERNET",
+          "LINKTYPE_RAW"
+        ],
+        "note": "TEMPLATE DEVIATION: the else at line 146 treats EVERY link type other than 101 as Ethernet, so LINKTYPE_NULL, LINKTYPE_LINUX_SLL, LINKTYPE_IEEE802_11 and every other assignment is mis-parsed. Only 1 and 101 are self-consistent for this template"
+      },
+      "description": "The template's two-way branch collapses roughly 300 link types into two, so only two values produce a coherent parse.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 146,
+        "snippet": "} else { // other wise create L2 header"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "equals": 2048
+      },
+      "then": {
+        "section": "PCAPRECORD.L3",
+        "required": true,
+        "note": "EtherType 0x0800 makes the template instantiate Layer_3 with proto_type 0x0800, which takes the decoded IPv4 branch at line 75"
+      },
+      "description": "The IPv4 EtherType is what opens the fully decoded IP header path.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 149,
+        "snippet": "if (L2.L3type == 0x0800) {"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "equals": 33024
+      },
+      "then": {
+        "section": "PCAPRECORD.d1q",
+        "required": true,
+        "note": "EtherType 0x8100 means a four-byte 802.1Q tag follows before the layer 3 header, and the inner Dot1q.L3type then names the real protocol"
+      },
+      "description": "The VLAN EtherType inserts a four-byte tag between the Ethernet header and the IP header.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 152,
+        "snippet": "else if (L2.L3type == 0x8100) {"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "equals": 33024
+      },
+      "then": {
+        "field": "Layer_3.version",
+        "type": "fixed_value",
+        "required_value": 4,
+        "required_value_hex": "0x4",
+        "note": "the template instantiates Layer_3 unconditionally after the tag at line 155, passing the inner EtherType as proto_type - so an inner type other than 0x0800 takes the undecoded else branch at line 85 and reads hdr_length-4 opaque bytes"
+      },
+      "description": "After a VLAN tag the template always builds a Layer_3 whatever the inner EtherType says, so only IPv4 gives decoded fields.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 155,
+        "snippet": "Layer_3 L3(d1q.L3type) <name=\"Layer 3\">;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "in": [
+          2054,
+          34525,
+          34887,
+          35020,
+          32821
+        ]
+      },
+      "then": {
+        "section": "PCAPRECORD.L3",
+        "forbidden": true,
+        "note": "TEMPLATE DEVIATION and the template's most serious bug: the if/else-if at lines 149-156 has NO final else, so any EtherType other than 0x0800 and 0x8100 leaves L3 uninstantiated - and line 158 then dereferences L3.ip_hdr_len, L3.total_length and L3.L4proto unconditionally. An ARP, IPv6, MPLS or LLDP frame therefore cannot be parsed at all"
+      },
+      "description": "Every EtherType except IPv4 and VLAN makes the template dereference a struct it never created.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 158,
+        "snippet": "Layer_4 L4(L3.ip_hdr_len,L3.total_length,L3.L4proto)<name=\"Layer 4\">;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "max": 1500
+      },
+      "then": {
+        "field": "Layer_2.L3type",
+        "type": "range_constraint",
+        "min": 1536,
+        "max": 65535,
+        "note": "IEEE 802.3 reads a value of 1500 or less as a frame LENGTH rather than an EtherType, with an 802.2 LLC header following; the template models only the EtherType interpretation, so a generator must stay at or above 1536"
+      },
+      "description": "The Ethernet type field has two interpretations chosen by its own magnitude, and this template implements only one of them.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "Layer_3.SRC_IP",
+        "min": 0
+      },
+      "then": {
+        "field": "Layer_2.SrcMac",
+        "type": "bitmask_constraint",
+        "valid_bits": "the individual/group bit of the first octet must be 0",
+        "valid_values": [
+          0
+        ],
+        "note": "a frame carrying a unicast IP source must have a unicast MAC source; the two are independent fields that a generator drawing at random will contradict"
+      },
+      "description": "The MAC and IP source addresses must agree about whether the frame is unicast.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "Layer_3.DST_IP",
+        "min": 3758096384
+      },
+      "then": {
+        "field": "Layer_2.DstMac",
+        "type": "bitmask_constraint",
+        "valid_bits": "an IPv4 multicast destination requires the destination MAC to be in the 01:00:5E:00:00:00 - 01:00:5E:7F:FF:FF range, formed from the low 23 bits of the IP address",
+        "valid_values": [
+          1
+        ],
+        "note": "RFC 1112 section 6.4 defines the mapping; a multicast IP paired with a unicast MAC is a frame no host would have sent"
+      },
+      "description": "An IPv4 multicast destination fixes the destination MAC address through a defined mapping.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "Layer_3.version",
+        "equals": 4
+      },
+      "then": {
+        "field": "Layer_3.ip_hdr_len",
+        "type": "range_constraint",
+        "min": 5,
+        "max": 15,
+        "note": "an IPv4 header without options is 20 bytes, i.e. 5 words; values 0-4 describe a header shorter than the mandatory fields and make hdr_length-4 at line 87 and tcp_hdr_len*4-13 arithmetic go wrong"
+      },
+      "description": "The IPv4 version fixes the minimum header length at five 32-bit words.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 72,
+        "snippet": "local int hdr_length = ip_hdr_len*4;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_3.ip_hdr_len",
+        "min": 5
+      },
+      "then": {
+        "field": "Layer_3.total_length",
+        "type": "range_constraint",
+        "min": 20,
+        "max": 65535,
+        "note": "total_length must be at least ip_hdr_len * 4, or the three subtractions at lines 114, 162 and 177 go negative"
+      },
+      "description": "The datagram cannot be shorter than its own header.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 114,
+        "snippet": "BYTE packet[total_length-ip_hdr_length]<name=\"Unknown Layer 4 Data\">;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 6
+      },
+      "then": {
+        "section": "Layer_4.tcp_hdr_len",
+        "required": true,
+        "note": "protocol 6 makes the template read the TCP layout at lines 102-111: two ports, a sequence and acknowledgment number, the data-offset/reserved byte and tcp_hdr_len*4-13 further bytes"
+      },
+      "description": "The TCP protocol number selects a twenty-byte-minimum header whose length is declared inside itself.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 102,
+        "snippet": "else if (L4proto == 0x6) // TCP"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 17
+      },
+      "then": {
+        "section": "Layer_4.udp_hdr_len",
+        "required": true,
+        "note": "protocol 17 makes the template read the UDP layout at lines 95-101: two ports, a datagram length and a checksum, exactly eight bytes"
+      },
+      "description": "The UDP protocol number selects a fixed eight-byte header.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 95,
+        "snippet": "if (L4proto == 0x11) // UDP"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "in": [
+          1,
+          2,
+          41,
+          47,
+          50,
+          51,
+          58,
+          89,
+          103,
+          112,
+          132,
+          136
+        ]
+      },
+      "then": {
+        "section": "Layer_4.packet",
+        "required": true,
+        "note": "every protocol number other than 6 and 17 takes the else branch at line 112 and reads total_length - ip_hdr_length opaque bytes, so no layer 4 fields are decoded and PCAPRECORD.AppData is not emitted either"
+      },
+      "description": "Any protocol the template does not decode collapses the whole layer 4 region into one opaque array.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 112,
+        "snippet": "else"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 17
+      },
+      "then": {
+        "field": "Layer_4.udp_hdr_len",
+        "type": "calculated_value",
+        "note": "udp_hdr_len must equal Layer_3.total_length - Layer_3.ip_hdr_len * 4 exactly, and must be at least 8; the template computes udp_hdr_len - 8 at line 170 into an unsigned local with no lower guard, so any value below 8 underflows to roughly four billion"
+      },
+      "description": "The UDP length and the IP total length are two encodings of one number, and a value below 8 underflows the payload size.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 170,
+        "snippet": "local uint AppDataLen = L4.udp_hdr_len-8;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 6
+      },
+      "then": {
+        "field": "Layer_4.tcp_hdr_len",
+        "type": "range_constraint",
+        "min": 5,
+        "max": 15,
+        "note": "the TCP header without options is 20 bytes, i.e. 5 words; a value below 4 makes tcp_hdr_len*4-13 at line 110 negative, and Layer_3.ip_hdr_len*4 + tcp_hdr_len*4 must not exceed Layer_3.total_length or the AppDataLen subtraction at line 162 underflows"
+      },
+      "description": "The TCP data offset is bounded below by the mandatory header size and above by what the IP total length leaves room for.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 162,
+        "snippet": "local uint16 AppDataLen = L3.total_length - L3.ip_hdr_len*4 - L4.tcp_hdr_len*4;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_3.Flags",
+        "in": [
+          8192,
+          8193
+        ]
+      },
+      "then": {
+        "field": "Layer_3.Identification",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "with the More Fragments bit set or a non-zero fragment offset the datagram is one of several fragments that must share this identifier; a single generated packet supplies only one of them, so a reassembling analyser holds it indefinitely"
+      },
+      "description": "Setting a fragmentation bit promises further fragments that a lone generated packet cannot supply.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "Layer_3.Flags",
+        "min": 32768
+      },
+      "then": {
+        "field": "Layer_3.Flags",
+        "type": "bitmask_constraint",
+        "valid_bits": "bit 15 is reserved and MUST be zero",
+        "valid_values": [
+          0
+        ],
+        "note": "RFC 791 reserves the high bit of the flags field; RFC 3514 famously named it the 'evil bit'. It must always be clear"
+      },
+      "description": "The high bit of the IPv4 flags word is reserved and must be zero.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "Layer_3.ip_hdr_len",
+        "min": 5
+      },
+      "then": {
+        "field": "Layer_3.HdrChecksum",
+        "type": "calculated_value",
+        "note": "the Internet checksum covers exactly ip_hdr_len * 4 bytes, so changing the header length changes which bytes are summed as well as the sum"
+      },
+      "description": "The IP header checksum's coverage is itself determined by a header field.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "Layer_4.udp_hdr_len",
+        "min": 8
+      },
+      "then": {
+        "field": "PCAPRECORD.AppData",
+        "type": "calculated_value",
+        "note": "byte count = udp_hdr_len - 8; the array is emitted only when that is greater than 0, but an underflowed value passes that guard"
+      },
+      "description": "The UDP payload length is the datagram length less the fixed eight-byte header.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 170,
+        "snippet": "local uint AppDataLen = L4.udp_hdr_len-8;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_4.tcp_hdr_len",
+        "min": 5
+      },
+      "then": {
+        "field": "PCAPRECORD.AppData",
+        "type": "calculated_value",
+        "note": "byte count = Layer_3.total_length - Layer_3.ip_hdr_len * 4 - tcp_hdr_len * 4; the array is emitted only when that is greater than 0, but the subtraction is into a uint16 local and underflows silently"
+      },
+      "description": "The TCP payload length is what the IP total length leaves after both headers.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 162,
+        "snippet": "local uint16 AppDataLen = L3.total_length - L3.ip_hdr_len*4 - L4.tcp_hdr_len*4;"
+      }
+    },
+    {
+      "when": {
+        "field": "Layer_4.SrcPort",
+        "min": 1
+      },
+      "then": {
+        "field": "Layer_4.ChkSum",
+        "type": "calculated_value",
+        "note": "the UDP checksum's pseudo-header includes Layer_3.SRC_IP, Layer_3.DST_IP, Layer_3.L4proto and Layer_4.udp_hdr_len, so changing any IP header field invalidates a layer 4 checksum computed before it"
+      },
+      "description": "The UDP checksum reaches across layers into the IP header, so the two cannot be generated independently.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "PCAPRECORD.incl_len",
+        "min": 0
+      },
+      "then": {
+        "field": "PCAPRECORD.orig_len",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 4294967295,
+        "note": "orig_len must be greater than or equal to incl_len; a record claiming to have captured more bytes than the packet contained is impossible"
+      },
+      "description": "A record cannot store more bytes than the packet had on the wire.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.snaplen",
+        "min": 1
+      },
+      "then": {
+        "field": "PCAPRECORD.incl_len",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 4294967295,
+        "note": "incl_len must be no larger than PCAPHEADER.snaplen; libpcap truncates every packet to snaplen bytes before writing it"
+      },
+      "description": "The file header's snapshot length is an upper bound on every record's stored length.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PCAPRECORD.incl_len",
+        "min": 1
+      },
+      "then": {
+        "field": "Layer_3.total_length",
+        "type": "range_constraint",
+        "min": 20,
+        "max": 65535,
+        "note": "len_before_l3 + total_length must be no greater than incl_len; the template computes the difference as trailing padding at line 177 and simply omits the array when it is not positive, so an oversized total_length silently runs the parse past the end of the record and into the next one"
+      },
+      "description": "The IP datagram plus the layer 2 header must fit inside the bytes the record says it stored.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 176,
+        "snippet": "if (len_before_l3 + L3.total_length < incl_len) {"
+      }
+    },
+    {
+      "when": {
+        "field": "PCAPRECORD.incl_len",
+        "min": 1
+      },
+      "then": {
+        "section": "PCAPRECORD.padding",
+        "required": true,
+        "note": "present exactly when len_before_l3 + Layer_3.total_length is strictly less than incl_len; its length is the difference, and Ethernet requires padding up to a 60-byte minimum frame"
+      },
+      "description": "Any gap between the end of the IP datagram and the end of the record is layer 2 trailer padding.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 177,
+        "snippet": "uchar padding[incl_len - len_before_l3 - L3.total_length]<name=\"Layer 2 Padding\">;"
+      }
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.magic_number",
+        "equals": 2712847316
+      },
+      "then": {
+        "field": "PCAPRECORD.ts_usec",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 999999,
+        "note": "the microsecond magic fixes the sub-second unit; the nanosecond magic 0xA1B23C4D would raise the bound to 999999999, but this template rejects that magic at line 25"
+      },
+      "description": "The file magic determines the unit of every record's sub-second timestamp field.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "line": 25,
+        "snippet": "if(magic_number != 0xA1B2C3D4) {"
+      }
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.magic_number",
+        "equals": 2712847316
+      },
+      "then": {
+        "section": "every multi-byte field",
+        "note": "the magic read as 0xA1B2C3D4 declares that the writer's byte order matches the reader's, which for this template means little-endian throughout the pcap headers; the byte-swapped magic 0xD4C3B2A1 would mean every pcap field is big-endian, and the template has no handling for that at all"
+      },
+      "description": "The magic number is the format's byte-order mark as well as its signature.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 25,
+        "snippet": "if(magic_number != 0xA1B2C3D4) {"
+      }
+    },
+    {
+      "when": {
+        "field": "PCAPRECORD.ts_sec",
+        "min": 0
+      },
+      "then": {
+        "field": "PCAPRECORD.ts_sec",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 4294967295,
+        "note": "successive records must be in non-decreasing timestamp order; a generator must draw a base time once and increase it monotonically rather than drawing each record independently"
+      },
+      "description": "Packet records are a chronological log, so their timestamps are ordered across records rather than free per record.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "PCAPHEADER",
+      "detail": "the 24-byte global header occupies file offsets 0-23, with the four magic bytes D4 C3 B2 A1 at offsets 0-3; nothing may precede it",
+      "description": "Every libpcap capture file begins with the global header, and the template aborts if its magic is wrong.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one, never repeated",
+      "generation_note": "emit as a fixed 24-byte head element - magic, version 2.4, a zero thiszone and sigfigs, the snapshot length and the link type - with no randomisation of the magic and no evil-bit substitution",
+      "evidence": {
+        "line": 215,
+        "snippet": "PCAPHEADER header;"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "PCAPHEADER",
+      "detail": "the global header is mandatory even in a capture that contains no packets",
+      "description": "It carries the byte order, the timestamp resolution, the snapshot length and the link type, none of which appear anywhere else.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly 1 per file",
+      "generation_note": "always emit it; a valid empty capture is just these 24 bytes",
+      "evidence": {
+        "line": 215,
+        "snippet": "PCAPHEADER header;"
+      }
+    },
+    {
+      "rule": "cardinality",
+      "subject": "PCAPRECORD",
+      "detail": "the parse is `while( !FEof() )`, an unbounded walk over packet records with no count field anywhere and no terminator; the loop ends only at end of file",
+      "description": "The whole body of a capture file is an unbounded repetition of records, which a generator must bound explicitly.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "4 to 32 records per file, each incl_len capped at 1518 bytes, holding generated captures under about 50 KB. The two size levers are this loop and incl_len; there is no count field to back-patch, so the loop bound is purely a generator choice.",
+      "generation_note": "replace the while loop with a bounded array of record elements after the fixed global header, and set snaplen from the largest incl_len actually written",
+      "evidence": {
+        "line": 217,
+        "snippet": "while( !FEof() )"
+      }
+    },
+    {
+      "rule": "last_element",
+      "subject": "none",
+      "detail": "libpcap defines NO terminator, sentinel or trailer of any kind - the record stream simply ends when the file ends",
+      "description": "Unlike a chunked format there is nothing to emit at the end; a reader knows it is finished only by hitting end of file.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "not applicable - there is no tail element to repeat",
+      "generation_note": "do not emit any trailing marker; the last byte written is the last byte of the final record's packet data or its layer 2 padding",
+      "evidence": {
+        "line": 217,
+        "snippet": "while( !FEof() )"
+      }
+    },
+    {
+      "rule": "contiguous",
+      "subject": "PCAPRECORD header then packet data",
+      "detail": "each record is a fixed 16-byte header - ts_sec, ts_usec, incl_len, orig_len - immediately followed by exactly incl_len bytes of packet data, with nothing between records",
+      "description": "incl_len is the only delimiter in the format; there is no signature at a record boundary, so a wrong length silently shifts every record after it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one such group per record, at most 32 records",
+      "generation_note": "generate the packet bytes first, measure them, then write the 16-byte header with the measured incl_len - the length can never be chosen before the packet exists",
+      "evidence": {
+        "line": 139,
+        "snippet": "uint32 incl_len;       /* number of octets of packet saved in file */"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "PCAPHEADER then the PCAPRECORD stream",
+      "detail": "the global header comes first and every record follows it back to back, with no gaps, no padding and no alignment",
+      "description": "Records are located purely by position and by the incl_len of the record before them.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one header, 4 to 32 records",
+      "generation_note": "emit the header as a fixed head element, then the record array, and write nothing between records",
+      "evidence": {
+        "line": 219,
+        "snippet": "PCAPRECORD record(header.network) <name=\"Frame\">;"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "PCAPRECORD timestamps",
+      "detail": "records should appear in non-decreasing ts_sec/ts_usec order, because a capture file is a chronological log",
+      "description": "Analysers compute inter-packet deltas and flow timings from this ordering, and a backwards jump is displayed as a negative time delta.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "4 to 32 records",
+      "generation_note": "draw a base timestamp once and advance it by a bounded delta per record, rather than drawing each record's timestamp independently"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "Layer_2, Dot1q, Layer_3, Layer_4, AppData, padding",
+      "detail": "within one record the protocol headers are strictly nested and back to back: Ethernet, then the optional VLAN tag, then IP, then TCP or UDP, then the application payload, then any layer 2 trailer padding",
+      "description": "Every header's position is fixed by the length fields of the headers above it; there are no markers at any layer.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one such chain per record, at most 32 records",
+      "generation_note": "generate the chain innermost-first - payload, then layer 4 header, then IP header with its total_length, then Ethernet - so each length field is written from a measured value",
+      "evidence": {
+        "line": 158,
+        "snippet": "Layer_4 L4(L3.ip_hdr_len,L3.total_length,L3.L4proto)<name=\"Layer 4\">;"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "PCAPRECORD.L3",
+      "detail": "the template dereferences L3 unconditionally at line 158, so every record must take one of the three branches that create it: link type 101, EtherType 0x0800, or EtherType 0x8100",
+      "description": "This is a template requirement rather than a format one - libpcap happily stores ARP and IPv6 frames - but a generated file must satisfy it or the parse fails.",
+      "corruption_risk": "high",
+      "source": "template",
+      "generation_bound": "one L3 per record",
+      "generation_note": "pin PCAPHEADER.network to 1 or 101, and when it is 1 pin Layer_2.L3type to 0x0800 or 0x8100",
+      "evidence": {
+        "line": 158,
+        "snippet": "Layer_4 L4(L3.ip_hdr_len,L3.total_length,L3.L4proto)<name=\"Layer 4\">;"
+      }
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "the three Layer_3 instantiation sites",
+      "detail": "L3 is created at line 145 for raw IP, at line 150 for a plain IPv4 Ethernet frame, or at line 155 after a VLAN tag - exactly one of the three, never more",
+      "description": "The branches are an if/else chain on the link type and then on the EtherType.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one per record",
+      "generation_note": "choose the link type once for the whole file, then the EtherType per record, and let the branch follow",
+      "evidence": {
+        "line": 150,
+        "snippet": "Layer_3 L3(L2.L3type) <name=\"Layer 3\">;"
+      }
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "the three Layer_4 payload layouts",
+      "detail": "a record's layer 4 region is exactly one of: the eight-byte UDP header, the TCP header of tcp_hdr_len*4 bytes, or one opaque array covering the rest of the datagram",
+      "description": "The branches at lines 95, 102 and 112 are an if/else chain on the IP protocol number.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one layout per record",
+      "generation_note": "model the layer 4 region as a three-way union tagged by Layer_3.L4proto; TCP reaches the deepest parse and UDP the simplest self-consistent one",
+      "evidence": {
+        "line": 112,
+        "snippet": "else"
+      }
+    },
+    {
+      "rule": "forbidden",
+      "subject": "PCAPRECORD.d1q",
+      "detail": "no VLAN tag may appear unless the Ethernet EtherType is exactly 0x8100; emitting one otherwise shifts the IP header by four bytes",
+      "condition": "only when Layer_2.L3type is 0x8100",
+      "description": "The tag has no signature of its own - it is located purely by the EtherType that precedes it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "0 or 1 per record",
+      "generation_note": "gate the tag on the EtherType chosen for the Ethernet header, and add 4 to the layer 2 length used in the padding computation",
+      "evidence": {
+        "line": 153,
+        "snippet": "Dot1q d1q <name=\"802.1Q Vitual LAN\">;"
+      }
+    },
+    {
+      "rule": "requires",
+      "subject": "PCAPRECORD.AppData",
+      "detail": "requires Layer_3.L4proto to be 6 or 17, since the two length formulas at lines 162 and 170 are the only ones the template has",
+      "condition": "only when Layer_3.L4proto is 6 or 17",
+      "description": "For any other protocol the whole layer 4 region including the payload is consumed by Layer_4.packet instead.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "0 or 1 per record, at most 1460 bytes",
+      "generation_note": "emit the payload only in the TCP and UDP branches, and derive its length from the header fields rather than choosing it",
+      "evidence": {
+        "line": 160,
+        "snippet": "if (L3.L4proto == 0x6)"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "endianness within a record",
+      "detail": "the 16-byte record header is little-endian, and everything from the layer 2 header onward is big-endian; BigEndian() is called at line 141 and LittleEndian() restored at line 179",
+      "description": "pcap metadata is written in the capturing host's byte order while packet bytes are network byte order, so a single record contains both.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "not applicable - this is a global encoding rule",
+      "generation_note": "write ts_sec, ts_usec, incl_len and orig_len little-endian and every protocol header field big-endian; a generator that uses one order throughout produces a file where either the record lengths or every port number is byte-swapped",
+      "evidence": {
+        "line": 141,
+        "snippet": "BigEndian();"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "Layer_2",
+      "detail": "a fourteen-byte Ethernet header must open every record whenever the link type is not 101",
+      "condition": "only when PCAPHEADER.network is not 101",
+      "description": "The template's else branch at line 146 assumes it unconditionally, and for LINKTYPE_ETHERNET the format agrees.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one per record when the condition holds",
+      "generation_note": "emit destination MAC, source MAC and EtherType; the struct is declared <size=14> at line 47 so its length is fixed",
+      "evidence": {
+        "line": 147,
+        "snippet": "Layer_2 L2 <name=\"Layer 2\">;"
+      }
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any bytes after the last PCAPRECORD",
+      "detail": "the file ends with the last record's final packet byte; libpcap defines nothing after it",
+      "description": "There is no index, no trailer and no checksum, so trailing bytes would be read as the start of another record header.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "generation_bound": "0 trailing bytes",
+      "generation_note": "stop writing after the final record's packet data"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "PCAPHEADER.network as a per-file constant",
+      "detail": "the link type is read once from the global header and passed to every record at line 219, so all records in a file share one layer 2 encapsulation",
+      "description": "libpcap files are homogeneous: there is no per-record link type field.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one link type per file, at most 32 records sharing it",
+      "generation_note": "choose the link type once before generating any record, and generate every record's layer 2 shape from it",
+      "evidence": {
+        "line": 219,
+        "snippet": "PCAPRECORD record(header.network) <name=\"Frame\">;"
+      }
+    }
+  ],
+  "template_deviations": [
+    {
+      "subject": "L3 is dereferenced unconditionally after a branch that may not create it",
+      "line": 158,
+      "issue": "The if/else-if at lines 149-156 instantiates Layer_3 only for EtherType 0x0800 and 0x8100 and has NO final else. Line 158 then reads L3.ip_hdr_len, L3.total_length and L3.L4proto unconditionally, and lines 160-177 read L3.L4proto and L3.total_length again.",
+      "impact": "An ARP frame (0x0806), an IPv6 frame (0x86DD), an MPLS frame or an LLDP frame - all perfectly ordinary captures - make the template dereference a struct that was never created. This is its most serious structural bug and it effectively pins Layer_2.L3type to two values for generation.",
+      "action": "Emit only EtherType 0x0800 or 0x8100."
+    },
+    {
+      "subject": "every link type other than 101 is assumed to be Ethernet",
+      "line": 146,
+      "issue": "The else at line 146 builds a fourteen-byte Layer_2 header for every link type that is not 101. The tcpdump.org LINKTYPE registry defines roughly 300 values, of which only LINKTYPE_ETHERNET (1) has that shape - LINKTYPE_NULL has a 4-byte header, LINKTYPE_LINUX_SLL a 16-byte one, LINKTYPE_IEEE802_11_RADIOTAP a variable-length one.",
+      "impact": "Any capture that is not Ethernet or raw IP is mis-parsed from its first packet byte.",
+      "action": "Emit network = 1 or 101 only."
+    },
+    {
+      "subject": "the raw-IP branch hard-codes IPv4",
+      "line": 145,
+      "issue": "Line 144's comment says LINKTYPE_RAW means 'the packet begins with an IPv4 or IPv6 header', but line 145 passes the literal 0x0800 as the proto_type parameter, so the IPv4 branch of Layer_3 is always taken. The template has no IPv6 handling anywhere.",
+      "impact": "A raw-IP capture carrying IPv6 is decoded field by field as though it were IPv4, producing nonsense throughout.",
+      "action": "Under network = 101, always emit an IPv4 header with Layer_3.version = 4."
+    },
+    {
+      "subject": "four unguarded length subtractions",
+      "line": 170,
+      "issue": "`udp_hdr_len - 8` at line 170 into a uint, `total_length - ip_hdr_len*4 - tcp_hdr_len*4` at line 162 into a uint16, `tcp_hdr_len*4 - 13` at line 110 and `total_length - ip_hdr_length` at line 114 are all used as array sizes with no check that the result is non-negative. The guards at lines 163 and 171 test only `AppDataLen > 0`, which an underflowed unsigned value passes.",
+      "impact": "A udp_hdr_len of 0 produces an application-data array of roughly four billion bytes from a single wrong 16-bit field - the cheapest route from this template to an enormous allocation. The others go negative or underflow similarly.",
+      "action": "Derive every one of these from the parts actually written; never draw a header length independently of the payload."
+    },
+    {
+      "subject": "incl_len is never used to bound the packet parse",
+      "line": 139,
+      "issue": "The record's own length field is read at line 139 and then used only at lines 176-177 to compute trailing padding. The layer 2, 3 and 4 headers are all walked by shape, and Layer_3.total_length rather than incl_len decides how much is consumed.",
+      "impact": "A record whose headers claim more bytes than incl_len declares is parsed anyway, running into the next record's header and desynchronising the rest of the file. This is the single most important cross-check the parser omits.",
+      "action": "Always set incl_len from the packet bytes actually written, and keep len_before_l3 + total_length no greater than it."
+    },
+    {
+      "subject": "the magic check accepts only one of the four defined magics",
+      "line": 25,
+      "issue": "libpcap defines 0xA1B2C3D4 (host order, microsecond), 0xD4C3B2A1 (opposite byte order), 0xA1B23C4D (nanosecond) and 0x4D3CB2A1 (opposite order, nanosecond). The guard at line 25 accepts only the first and warns on the rest.",
+      "impact": "Three quarters of the legal magic values are rejected. For generation this is a simplification rather than a problem, but it means the template cannot read a big-endian or nanosecond capture at all.",
+      "action": "Emit 0xA1B2C3D4 only, and keep ts_usec below 1000000 to match the microsecond unit it implies."
+    },
+    {
+      "subject": "Layer_3.Flags collapses two fields into one",
+      "line": 78,
+      "issue": "RFC 791 splits the sixteen bits at this offset into a 3-bit flags field and a 13-bit fragment offset; the template reads one `uint16 Flags`.",
+      "impact": "The reserved bit, the DF and MF flags and the fragment offset are all invisible as separate values, so nothing records that bit 15 must be zero or that a non-zero offset means this is not the first fragment.",
+      "action": "Treat the word as the composite bitmask recorded in the Layer_3.Flags entry; 0x4000 (DF set, offset 0) is the safe value."
+    },
+    {
+      "subject": "Layer_4.Crap hides the TCP flags and checksum",
+      "line": 110,
+      "issue": "The seven-plus bytes after the data-offset byte are read as one array named Crap. They are in fact the control flags byte, the window size, the TCP checksum and the urgent pointer, followed by any options.",
+      "impact": "The TCP checksum - which unlike the UDP one has no zero escape and is mandatory - is invisible, as is the flags byte every analyser uses to follow the connection state machine.",
+      "action": "Treat bytes 3-4 of this array as the TCP checksum over the pseudo-header, header and payload if a valid segment is wanted."
+    },
+    {
+      "subject": "no bitfield order is ever declared",
+      "line": 141,
+      "issue": "The template declares six bitfields - version/ip_hdr_len at lines 70-71, priority/dei/id at lines 51-53 and tcp_hdr_len/Reserved at lines 108-109 - but never calls BitfieldLeftToRight() or BitfieldRightToLeft(). It relies on BigEndian() at line 141 making 010 Editor pack the first-declared field into the most significant bits.",
+      "impact": "The packing happens to be correct for all six under big-endian, but nothing in the file states it. A generator that packs the other way would swap the IP version with the header length and the TCP data offset with the reserved nibble - every field individually legal and every byte wrong.",
+      "action": "Pack all bitfields high-to-low in declaration order."
+    },
+    {
+      "subject": "Layer_4's VER_HDR parameter is misnamed",
+      "line": 91,
+      "issue": "The struct declares `ushort VER_HDR` and computes `ip_hdr_length = VER_HDR*4` at line 93, but the call at line 158 passes L3.ip_hdr_len - the IHL nibble alone, not a combined version/header byte.",
+      "impact": "None for parsing - the arithmetic is right - but the name invites a generator to pass the whole first byte, which would quadruple the computed header length.",
+      "action": "Pass the IHL nibble, matching line 158."
+    },
+    {
+      "subject": "snaplen, orig_len and thiszone are read and never used",
+      "line": 33,
+      "issue": "PCAPHEADER.snaplen, PCAPHEADER.thiszone, PCAPHEADER.sigfigs and PCAPRECORD.orig_len are all parsed into fields that nothing in the template ever reads back.",
+      "impact": "All four can be arbitrarily wrong without this template noticing, while a real reader uses snaplen to size its buffer and compares orig_len against incl_len to detect truncation.",
+      "action": "Set snaplen from the largest incl_len written, orig_len equal to incl_len for an untruncated capture, and both thiszone and sigfigs to 0."
+    },
+    {
+      "subject": "no typedef enum anywhere in the file",
+      "line": 34,
+      "issue": "The template has no enum block at all. Its enumerated fields - PCAPHEADER.network, Layer_2.L3type, Layer_3.L4proto - are plain integers, and the only value set stated anywhere in the file is the two-value if/else in the L4protoName display function at lines 119-133.",
+      "impact": "There are no enum declarations for a value-mining pass to harvest, so every enumerated_values entry in this extraction comes from the published registries rather than from the template.",
+      "action": "Take the enumerated_values entries for network, L3type and L4proto as authoritative despite having no template counterpart."
+    },
+    {
+      "subject": "no lookahead call anywhere in the file",
+      "line": 217,
+      "issue": "The template contains no ReadUByte, ReadUShort, ReadByte, ReadBytes or ReadUInt call. Every branch is taken on a field already read, and the top-level loop is a bare `while( !FEof() )` with no peek at all.",
+      "impact": "The `lookahead` schema key never applies. The mineable literals are instead the ten direct field comparisons at lines 25, 75, 95, 102, 121, 125, 144, 149, 152, 160 and 168.",
+      "action": "Treat those comparison sites as the good-known-value set in place of lookahead call sites."
+    },
+    {
+      "subject": "only one validation guard in the whole template",
+      "line": 26,
+      "issue": "The magic check at lines 25-28 is the only Warning, Assert or Exit in the file. Version numbers, snaplen, link type, every length field, every checksum, the timestamp bounds and every address are read and accepted unexamined.",
+      "impact": "The set of files this template accepts is very much larger than the set of valid captures, so its behaviour is no guide to validity.",
+      "action": "Take every 'spec'-sourced constraint in this file as binding despite the template's silence."
+    }
+  ]
+}
