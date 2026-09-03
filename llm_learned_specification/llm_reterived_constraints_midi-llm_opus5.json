@@ -1,0 +1,2728 @@
+{
+  "meta": {
+    "format": "midi",
+    "source_template": "templates_originals/midi-orig.bt",
+    "model": "claude-opus-5",
+    "spec_reference": "Standard MIDI Files 1.0 (MIDI Manufacturers Association, RP-001, 1996 revision of the 1988 specification) for the chunk structure, variable-length quantities, track events and meta-events; MIDI 1.0 Detailed Specification v4.2 (MMA, 1996) for status bytes, the 0-127 data-byte range, running status, channel voice messages, Channel Mode messages (controllers 120-127) and System Exclusive framing; General MIDI System Level 1 (MMA MP-002) for the program-number and key-number conventions.",
+    "schema_extensions": [
+      {
+        "name": "dotted keys for fields inside anonymous nested structs",
+        "where": "the MidiMessage.note_off_event.*, note_on_event.*, note_pressure_event.*, controller_event.*, program_event.*, channel_pressure_event.*, pitch_bend_event.*, meta_event.* and sysex_event.* entries",
+        "why": "The schema keys entries as STRUCT_TYPENAME.field_name, but every event body in this template is an anonymous struct with only an instance name - `struct { ... } note_off_event;` at line 79, `struct { ... } meta_event;` at line 234, and seven more. There is no typename to use, and several field names are reused across sibling branches (m_note appears at lines 77, 85 and 93; m_velocity at 78 and 86; m_pressure at 94 and 116; m_length at 152 and 240), so a single-level key would collide. A two-level dotted key names the enclosing typedef'd struct, then the anonymous instance, then the field; every component is a literal identifier from the .bt, so nothing is invented."
+      },
+      {
+        "name": "fixed_result / fixed_result_hex",
+        "where": "the MidiHeader.m_seclen entry",
+        "why": "The header length is both a byte count AND an invariant, because the header chunk data is three fixed-size fields. fixed_result records the constant 6 so the rewrite step can emit it directly, while algorithm/covers/includes_self still document what it measures."
+      },
+      {
+        "name": "lookahead sub-keys: values_hex, comparison, mask, read_then_unread_line",
+        "where": "the MidiMessage.m_status entry",
+        "why": "The status byte is not decided by a peek in the ordinary sense - it is READ into a field and then conditionally UN-READ by FSeek(FTell()-1) at line 70 when bit 7 is clear, so that the same byte is re-consumed as running-status data. read_then_unread_line records that. The nine dispatch comparisons are also masked rather than exact (`(lastStatus & 0xf0) == 0x80` and so on), so `comparison` and `mask` record that the mined value set is a set of high nibbles with a free channel nibble beneath, not a set of whole-byte literals - without which a generator would emit only channel 0."
+      },
+      {
+        "name": "template_deviations",
+        "where": "new fifth top-level section",
+        "why": "This template is the laxest of the set: it contains not one Assert, Warning or Exit, and it never compares either magic number against anything. Beyond that it disagrees with the specification in fourteen concrete places - signed `char` for every unsigned data byte, signed `short` for the track count and the division word, an ignored header length, a 24-bit bitfield compensated with an FSeek, a variable-length guard that silently truncates a five-byte quantity, a running-status variable never reset between tracks, and an event-loop counter that wraps to 2^32 on overshoot and hangs. A generator that imitated the parser's laxity would emit files this template accepts and no sequencer does, so these must be visible as data rather than buried in prose."
+      },
+      {
+        "name": "generation_range on a field the schema would call free-form",
+        "where": "MidiMessage.m_dtime, and the per-note key-number entries",
+        "why": "Delta time is nominally a free musical value, but it is the one number in the format that multiplies with the tick division to decide when an event actually sounds, and its encodable maximum of 0x0FFFFFFF ticks schedules an event days into the future. Likewise a key number is spec-legal across 0-127 but silent outside roughly 36-96 on a General MIDI instrument. Recording practical bounds on these keeps generated files musically reachable rather than merely parseable."
+      }
+    ],
+    "structure_note": "A chunk stream with no terminator: a fixed 14-byte 'MThd' header declaring the format, the track count and the tick division, followed by exactly that many 'MTrk' chunks, each a 4-byte type, a 32-bit big-endian byte count, and an event stream of variable-length delta times and status-dispatched events that must end with the mandatory End of Track meta-event inside the counted region."
+  },
+  "constraints": {
+    "MidiHeader.m_magic": {
+      "type": "fixed_value",
+      "description": "The four-character chunk type that opens every Standard MIDI File; a file that does not begin with it is not a MIDI file.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "MThd",
+      "required_value_hex": "0x4D546864",
+      "required_value_ascii": "MThd",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 22,
+        "snippet": "char m_magic[4] <format = hex>;"
+      },
+      "confidence": "high",
+      "notes": "The template's own header records this at line 11 as `//  ID Bytes: 4D 54 68 64 //MThd`, but the struct performs no Assert and no comparison of any kind - it simply reads four bytes. SMF 1.0 (MIDI 1.0 Detailed Specification, RP-001): 'MThd' is the header chunk type and must be the first four bytes of the file. This is the single most important fixed value in the format and must never receive an evil value."
+    },
+    "MidiHeader.m_seclen": {
+      "type": "calculated_value",
+      "description": "Byte count of the header chunk data following this length field; the header data is three 16-bit fields, so the value is invariably 6.",
+      "corruption_risk": "high",
+      "field_type": "uint",
+      "source": "both",
+      "algorithm": "byte count",
+      "covers": "the three header data fields that follow it - m_format, m_ntracks and m_tickdiv, two bytes each; it excludes the four magic bytes and this length field itself",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [],
+      "fixed_result": 6,
+      "fixed_result_hex": "0x00000006",
+      "generation_range": {
+        "min": 6,
+        "max": 6,
+        "rationale": "A 32-bit length that the template reads and then completely ignores - it reads the three header fields by shape, not by length. A conforming reader instead skips exactly m_seclen bytes, so any value other than 6 leaves it positioned in the wrong place for the first MTrk chunk. Uniform generation would also claim up to 4 GB of header."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 23,
+        "snippet": "uint m_seclen;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: 'MThd <length> <format> <ntrks> <division>' where <length> is a 32-bit value giving the number of bytes in the chunk data, always 6 for a header chunk. The specification permits a longer header for future expansion, requiring readers to skip the excess, but no encoder writes one."
+    },
+    "MidiHeader.m_format": {
+      "type": "enumerated_values",
+      "description": "The overall organisation of the file: a single multi-channel track, several simultaneous tracks, or several independent patterns.",
+      "corruption_risk": "high",
+      "field_type": "enum <short> (anonymous)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1,
+        2
+      ],
+      "value_names": [
+        "MIDI_SINGLE - one single multi-channel track",
+        "MIDI_MULTIPLE - one or more simultaneous tracks of a single sequence",
+        "MIDI_PATTERN - one or more sequentially independent single-track patterns"
+      ],
+      "preferred_value": 1,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 29,
+        "snippet": "} m_format;"
+      },
+      "confidence": "high",
+      "notes": "Anonymous enum at lines 24-29. SMF 1.0 defines exactly these three formats and states that readers should reject a format they do not recognise. Format 1 is preferred for generation: it is the form nearly every sequencer writes and reads, and unlike format 0 it does not pin the track count to 1."
+    },
+    "MidiHeader.m_ntracks": {
+      "type": "calculated_value",
+      "description": "Number of MTrk chunks that follow the header; it is the array bound for the track list, so it must equal the number of track chunks actually present.",
+      "corruption_risk": "high",
+      "field_type": "short",
+      "source": "both",
+      "algorithm": "element count",
+      "covers": "the MidiTrack tracks[] array that follows the header chunk; it excludes the header chunk itself",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "MidiHeader.m_format"
+      ],
+      "generation_range": {
+        "min": 1,
+        "max": 4,
+        "rationale": "Used directly as the array bound at line 260 with no check. Each track is a full MTrk chunk with its own event stream, so this count directly multiplies file size; and because the template reads exactly this many chunks, a value larger than the number of chunks actually written drives the parse off the end of the file. 1-4 tracks exercises the multi-track path while keeping files small."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 30,
+        "snippet": "short m_ntracks;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: '<ntrks> is a 16-bit value specifying the number of track chunks in the file'. TEMPLATE DEVIATION: declared as `short`, which is SIGNED in 010 Editor, so a track count above 32767 reads as negative and the array bound becomes negative. The specification's field is unsigned, 0-65535, though a file with zero tracks carries no music and format 0 pins the value to 1."
+    },
+    "MidiHeader.m_tickdiv": {
+      "type": "bitmask_constraint",
+      "description": "Time division: bit 15 selects between metrical time (ticks per quarter note) and timecode (SMPTE frames), and the remaining bits mean entirely different things in the two modes.",
+      "corruption_risk": "high",
+      "field_type": "short",
+      "source": "both",
+      "valid_bits": "bit 15 is the mode flag. When it is 0 the whole 15-bit remainder (bits 14-0) is ticks per quarter note, 1-32767. When it is 1 the field is two signed bytes: bits 15-8 are a negative SMPTE frame rate, restricted to -24, -25, -29 (30 drop-frame) or -30, and bits 7-0 are ticks per frame, 1-255. No other bit pattern is meaningful.",
+      "valid_values": [
+        24,
+        48,
+        96,
+        120,
+        128,
+        192,
+        240,
+        384,
+        480,
+        960,
+        59176,
+        57936,
+        58192,
+        59236
+      ],
+      "value_names": [
+        "24 ticks/quarter",
+        "48 ticks/quarter",
+        "96 ticks/quarter",
+        "120 ticks/quarter",
+        "128 ticks/quarter",
+        "192 ticks/quarter",
+        "240 ticks/quarter",
+        "384 ticks/quarter",
+        "480 ticks/quarter",
+        "960 ticks/quarter",
+        "SMPTE 25 fps, 40 ticks/frame",
+        "SMPTE 30 fps, 80 ticks/frame",
+        "SMPTE 29 fps drop-frame, 80 ticks/frame",
+        "SMPTE 24 fps, 100 ticks/frame"
+      ],
+      "preferred_value": 480,
+      "endianness": "big",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 24,
+        "max": 960,
+        "rationale": "Metrical mode only. The tick resolution is the denominator of every delta time in the file, so an extreme value makes every event time meaningless without adding coverage; and a value of 0 in metrical mode is a division by zero in any player computing seconds per tick. 24-960 spans every resolution real sequencers use."
+      },
+      "evidence": {
+        "line": 31,
+        "snippet": "short m_tickdiv;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: '<division> ... If bit 15 of <division> is a zero, the bits 14 thru 0 represent the number of delta-time ticks which make up a quarter-note. If bit 15 of <division> is a one, delta-times in a file correspond to subdivisions of a second, in a way consistent with SMPTE and MIDI time code.' TEMPLATE DEVIATION: declared as `short`, which is signed, so every timecode-mode value (bit 15 set) reads as a negative number. The template performs no check of any kind on this field."
+    },
+    "DeltaTime.t0": {
+      "type": "bitmask_constraint",
+      "description": "Byte 1 of a variable-length quantity; bit 7 is the continuation flag saying whether another byte follows, and the low seven bits carry that byte's slice of the value.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x7F carries the value; bit 0x80 is the continuation flag - set means t1 follows, clear means this is the last byte",
+      "valid_values": [
+        0,
+        128
+      ],
+      "value_names": [
+        "continuation bit clear - this is the final byte of the quantity",
+        "continuation bit set - t1 follows"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 37,
+        "snippet": "char t0;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0, 'Variable-length quantities': 'numbers are represented in 7 bits per byte, most significant bits first. All bytes except the last have bit 7 set, and the last byte has bit 7 clear. If the number is between 0 and 127, it is thus represented exactly as one byte.' The maximum is four bytes, giving 0x0FFFFFFF. The template accumulates the value into the local `total` at lines 36-58 by shifting left 7 and adding the low seven bits of each byte. valid_values records the two legal states of the masked continuation bit, not of the whole byte. Canonical encoders emit no redundant leading zero groups, so a multi-byte quantity should never begin with the byte 0x80. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values."
+    },
+    "DeltaTime.t1": {
+      "type": "bitmask_constraint",
+      "description": "Byte 2 of a variable-length quantity; bit 7 is the continuation flag saying whether another byte follows, and the low seven bits carry that byte's slice of the value.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x7F carries the value; bit 0x80 is the continuation flag - set means t2 follows, clear means this is the last byte",
+      "valid_values": [
+        0,
+        128
+      ],
+      "value_names": [
+        "continuation bit clear - this is the final byte of the quantity",
+        "continuation bit set - t2 follows"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 43,
+        "snippet": "char t1;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0, 'Variable-length quantities': 'numbers are represented in 7 bits per byte, most significant bits first. All bytes except the last have bit 7 set, and the last byte has bit 7 clear. If the number is between 0 and 127, it is thus represented exactly as one byte.' The maximum is four bytes, giving 0x0FFFFFFF. The template accumulates the value into the local `total` at lines 36-58 by shifting left 7 and adding the low seven bits of each byte. valid_values records the two legal states of the masked continuation bit, not of the whole byte. Canonical encoders emit no redundant leading zero groups, so a multi-byte quantity should never begin with the byte 0x80. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values."
+    },
+    "DeltaTime.t2": {
+      "type": "bitmask_constraint",
+      "description": "Byte 3 of a variable-length quantity; bit 7 is the continuation flag saying whether another byte follows, and the low seven bits carry that byte's slice of the value.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x7F carries the value; bit 0x80 is the continuation flag - set means t3 follows, clear means this is the last byte",
+      "valid_values": [
+        0,
+        128
+      ],
+      "value_names": [
+        "continuation bit clear - this is the final byte of the quantity",
+        "continuation bit set - t3 follows"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 49,
+        "snippet": "char t2;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0, 'Variable-length quantities': 'numbers are represented in 7 bits per byte, most significant bits first. All bytes except the last have bit 7 set, and the last byte has bit 7 clear. If the number is between 0 and 127, it is thus represented exactly as one byte.' The maximum is four bytes, giving 0x0FFFFFFF. The template accumulates the value into the local `total` at lines 36-58 by shifting left 7 and adding the low seven bits of each byte. valid_values records the two legal states of the masked continuation bit, not of the whole byte. Canonical encoders emit no redundant leading zero groups, so a multi-byte quantity should never begin with the byte 0x80. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values."
+    },
+    "DeltaTime.t3": {
+      "type": "bitmask_constraint",
+      "description": "The fourth and final byte of a variable-length quantity; because a VLQ is at most four bytes, its continuation bit must be clear and its low seven bits are the least significant seven bits of the value.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x7F carries the value; bit 0x80, the continuation flag, MUST be clear because no fifth byte exists",
+      "valid_values": [
+        0
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 55,
+        "snippet": "char t3;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0, 'Variable-length quantities': 'numbers are represented in 7 bits per byte, most significant bits first. All bytes except the last have bit 7 set, and the last byte has bit 7 clear. If the number is between 0 and 127, it is thus represented exactly as one byte.' The maximum is four bytes, giving 0x0FFFFFFF. The template accumulates the value into the local `total` at lines 36-58 by shifting left 7 and adding the low seven bits of each byte. valid_values records the required state of the masked continuation bit, not of the whole byte, whose low seven bits are free. TEMPLATE DEVIATION: the guard at line 57 breaks when the continuation bit is clear, but if it is SET the struct simply falls off its end and the fifth byte is never read - so this template silently accepts an over-long VLQ and then mis-parses everything after it. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values."
+    },
+    "MidiMessage.m_dtime": {
+      "type": "calculated_value",
+      "description": "Variable-length delta time: the number of ticks between the previous event in this track and this one; every event in every track carries one.",
+      "corruption_risk": "high",
+      "field_type": "DeltaTime",
+      "source": "both",
+      "algorithm": "variable-length quantity, big-endian septets: value = sum over the 1 to 4 bytes of (byte & 0x7F) shifted left by 7 for each byte that follows it; every byte but the last has bit 7 set",
+      "covers": "the 1 to 4 bytes preceding this event's status byte; it excludes the status byte and all event data",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "DeltaTime.t0",
+        "DeltaTime.t1",
+        "DeltaTime.t2",
+        "DeltaTime.t3"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 1920,
+        "rationale": "The encodable maximum is 0x0FFFFFFF ticks. With a typical division of 480 ticks per quarter note that is over 155000 quarter notes for a single gap, which makes a player schedule an event days into the future. 0-1920 keeps every gap within four quarter notes at 480 ticks and, just as importantly, keeps the VLQ to one or two bytes so the encoding stays canonical."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 65,
+        "snippet": "DeltaTime m_dtime;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: '<MTrk event> = <delta-time><event>' and 'delta-time is stored as a variable-length quantity. It represents the amount of time before the following event.' The first event of a track is conventionally at delta time 0. The value is a DELTA, not an absolute time, so it can never be negative and needs no reference point."
+    },
+    "MidiMessage.m_status": {
+      "type": "bitmask_constraint",
+      "description": "The event status byte: bit 7 distinguishes a real status byte from a running-status data byte, bits 6-4 select the message type and bits 3-0 carry the MIDI channel.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "bit 7 must be SET for this byte to be a status byte at all; if it is clear the byte is the first data byte of a running-status message and the template un-reads it. For 0x80-0xEF bits 6-4 are the message type and bits 3-0 are the channel, 0-15, which are free. For 0xF0-0xFF the whole byte is a system message code and there is no channel nibble.",
+      "valid_values": [
+        128,
+        144,
+        160,
+        176,
+        192,
+        208,
+        224,
+        240,
+        247,
+        255
+      ],
+      "value_names": [
+        "Note Off (channel in the low nibble)",
+        "Note On (channel in the low nibble)",
+        "Polyphonic Key Pressure / aftertouch (channel in the low nibble)",
+        "Control Change (channel in the low nibble)",
+        "Program Change (channel in the low nibble)",
+        "Channel Pressure / aftertouch (channel in the low nibble)",
+        "Pitch Bend Change (channel in the low nibble)",
+        "System Exclusive (normal SysEx message)",
+        "System Exclusive (escape / continuation packet)",
+        "Meta event"
+      ],
+      "preferred_value": 144,
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadByte",
+        "call_site_line": 66,
+        "values": [
+          128,
+          144,
+          160,
+          176,
+          192,
+          208,
+          224,
+          240,
+          255
+        ],
+        "values_hex": [
+          "0x80",
+          "0x90",
+          "0xA0",
+          "0xB0",
+          "0xC0",
+          "0xD0",
+          "0xE0",
+          "0xF0",
+          "0xFF"
+        ],
+        "preferred": [
+          144,
+          128,
+          176,
+          192,
+          255
+        ],
+        "comparison": "masked_equals",
+        "mask": 240,
+        "read_then_unread_line": 70,
+        "note": "The byte is read into the field and then, if bit 7 is clear, un-read by FSeek(FTell()-1) at line 70 so that it is re-consumed as data. The nine masked comparisons that dispatch on it are at lines 73, 81, 89, 97, 105, 112, 119, 127 and 236; the test at line 127 is an exact `== -1`, i.e. 0xFF, and is checked BEFORE the 0xF0 mask test so that meta events are separated from SysEx."
+      },
+      "evidence": {
+        "line": 66,
+        "snippet": "char m_status;"
+      },
+      "confidence": "high",
+      "notes": "valid_values lists the base status codes; for 0x80 through 0xE0 a generator ORs in a channel nibble 0-15, giving 112 further legal bytes. The bytes 0xF1-0xF6 and 0xF8-0xFE are MIDI System Common and System Real Time messages: they exist on the wire but SMF 1.0 does not permit them in a file, and the template would route them all to the sysex_event branch where it would read a length that is not there. This is the format's single most important dispatch byte. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values."
+    },
+    "MidiMessage.note_off_event.m_note": {
+      "type": "range_constraint",
+      "description": "Key number of the note being released, on the 128-note MIDI scale where 60 is middle C.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 77,
+        "snippet": "char m_note;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 36,
+        "max": 96,
+        "rationale": "The full 0-127 range is legal, but 36-96 is the five-octave span a General MIDI instrument actually sounds; notes outside it are silent in most synthesisers and add no coverage."
+      },
+      "preferred_value": 60
+    },
+    "MidiMessage.note_off_event.m_velocity": {
+      "type": "range_constraint",
+      "description": "Release velocity of the note; most instruments ignore it, and 64 is the conventional neutral value.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 78,
+        "snippet": "char m_velocity;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "No blow-up risk - the field is one byte - but 0 and 64 are the values real files use."
+      },
+      "preferred_value": 64
+    },
+    "MidiMessage.note_on_event.m_note": {
+      "type": "range_constraint",
+      "description": "Key number of the note being struck, on the 128-note MIDI scale where 60 is middle C.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 85,
+        "snippet": "char m_note;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 36,
+        "max": 96,
+        "rationale": "Same sounding-range reasoning as the note-off key number."
+      },
+      "preferred_value": 60
+    },
+    "MidiMessage.note_on_event.m_velocity": {
+      "type": "range_constraint",
+      "description": "Strike velocity of the note; the value 0 is defined to mean Note Off, which is how running status lets a stream use one status byte for both.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values. MIDI 1.0 additionally defines velocity 0 on a Note On as equivalent to a Note Off, which is why sequencers can run whole passages under a single 0x9n status byte.",
+        "line": 86,
+        "snippet": "char m_velocity;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 1,
+        "max": 127,
+        "rationale": "Velocity 0 is legal but means Note Off, which changes the message's meaning; 1-127 keeps a generated Note On an actual Note On."
+      },
+      "preferred_value": 64
+    },
+    "MidiMessage.note_pressure_event.m_note": {
+      "type": "range_constraint",
+      "description": "Key number the polyphonic aftertouch applies to.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 93,
+        "snippet": "char m_note;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 36,
+        "max": 96,
+        "rationale": "Same sounding-range reasoning as the note-on key number."
+      },
+      "preferred_value": 60
+    },
+    "MidiMessage.note_pressure_event.m_pressure": {
+      "type": "range_constraint",
+      "description": "Aftertouch pressure value for that key.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 94,
+        "snippet": "char m_pressure;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "One byte, no blow-up risk."
+      },
+      "preferred_value": 64
+    },
+    "MidiMessage.controller_event.m_controller": {
+      "type": "range_constraint",
+      "description": "Controller number: 0-119 are continuous and switch controllers, 120-127 are the Channel Mode messages.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values. MIDI 1.0 Table III: controllers 120-127 are Channel Mode Messages (All Sound Off, Reset All Controllers, Local Control, All Notes Off, Omni Off, Omni On, Mono On, Poly On) rather than ordinary continuous controllers.",
+        "line": 101,
+        "snippet": "char m_controller;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 119,
+        "rationale": "Restricting to 0-119 avoids the Channel Mode range 120-127, whose value byte is not free - each of those eight controllers constrains its own value, and several change the channel's whole reception mode."
+      },
+      "preferred_value": 7
+    },
+    "MidiMessage.controller_event.m_value": {
+      "type": "range_constraint",
+      "description": "Value for the named controller; free for controllers 0-119 but constrained for the Channel Mode range.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 102,
+        "snippet": "char m_value;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "One byte, no blow-up risk; but see the dependency covering controller numbers 120-127, where the legal value set narrows sharply."
+      },
+      "preferred_value": 100
+    },
+    "MidiMessage.program_event.m_program": {
+      "type": "range_constraint",
+      "description": "Program (patch) number to select on this channel; in General MIDI it names one of the 128 standard instruments.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 109,
+        "snippet": "char m_program;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "One byte, no blow-up risk."
+      },
+      "preferred_value": 0
+    },
+    "MidiMessage.channel_pressure_event.m_pressure": {
+      "type": "range_constraint",
+      "description": "Channel-wide aftertouch pressure, applying to every note sounding on the channel.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 116,
+        "snippet": "char m_pressure;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "One byte, no blow-up risk."
+      },
+      "preferred_value": 64
+    },
+    "MidiMessage.pitch_bend_event.m_lsb": {
+      "type": "range_constraint",
+      "description": "Least significant seven bits of the 14-bit pitch bend value, sent first.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values. The two bytes combine as (m_msb << 7) | m_lsb to give a 14-bit value 0-16383 whose centre, meaning no bend, is 8192.",
+        "line": 123,
+        "snippet": "char m_lsb;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "One byte, no blow-up risk; the neutral centre position is lsb 0 with msb 64."
+      },
+      "preferred_value": 0
+    },
+    "MidiMessage.pitch_bend_event.m_msb": {
+      "type": "range_constraint",
+      "description": "Most significant seven bits of the 14-bit pitch bend value, sent second.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "MIDI 1.0: every data byte has bit 7 clear, so its range is 0-127. This is the constraint the template most comprehensively fails to enforce - it declares the field as a signed `char` and reads any byte at all. A data byte with bit 7 set is read by every real parser as a new status byte, which desynchronises the remainder of the track. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values.",
+        "line": 124,
+        "snippet": "char m_msb;"
+      },
+      "confidence": "high",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "One byte, no blow-up risk; 64 with an lsb of 0 is the neutral centre."
+      },
+      "preferred_value": 64
+    },
+    "MidiMessage.meta_event.m_type": {
+      "type": "enumerated_values",
+      "description": "The meta-event type byte following the 0xFF status; it names what the event carries and fixes the shape and often the exact length of the data that follows.",
+      "corruption_risk": "high",
+      "field_type": "enum <char> (anonymous)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        32,
+        33,
+        47,
+        81,
+        84,
+        88,
+        89,
+        127
+      ],
+      "value_names": [
+        "META_SEQUENCE_NUM",
+        "META_TEXT",
+        "META_COPYRIGHT",
+        "META_SEQUENCE_NAME",
+        "META_INSTRUMENT_NAME",
+        "META_LYRIC",
+        "META_MARKER",
+        "META_CUE_POINT",
+        "META_PROGRAM_NAME",
+        "META_DEVICE_NAME",
+        "META_MIDI_CHANNEL_PREFIX",
+        "META_MIDI_PORT",
+        "META_END_OF_TRACK",
+        "META_TEMPO",
+        "META_SMPTE_OFFSET",
+        "META_TIME_SIGNATURE",
+        "META_KEY_SIGNATURE",
+        "META_SEQUENCER_EVENT"
+      ],
+      "preferred_value": 47,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 151,
+        "snippet": "} m_type;"
+      },
+      "confidence": "high",
+      "notes": "Anonymous enum at lines 131-151, dispatched on by the if/else chain at lines 153-233. SMF 1.0 requires every meta-event type byte to be in 0x00-0x7F, so bit 7 must be clear; the specification also instructs readers to skip an unrecognised type using its length field, which is what the template's final else at line 230 does. META_END_OF_TRACK (0x2F) is preferred because it is mandatory in every track, so a generator must be able to emit it. TEMPLATE DEVIATION: the enum's base type is `char`, which is signed, so a type byte with bit 7 set would read negative and match no case. The track terminator is this format's one block terminator and it is a (type, length) PAIR rather than a single field: the exact bytes are FF 2F 00 - the 0xFF meta status, this type byte 0x2F, and a zero length - preceded by its delta time, so a minimal legal track is the four bytes 00 FF 2F 00. Because the terminator spans three fields it cannot be recorded as one fixed_value entry; the type is pinned here as the preferred_value, the length is pinned to 0 by a dependency, and the position is pinned by a last_element rule in the structure section."
+    },
+    "MidiMessage.meta_event.m_length": {
+      "type": "calculated_value",
+      "description": "Variable-length byte count of the meta-event data that follows; for most meta types the specification pins it to an exact value.",
+      "corruption_risk": "high",
+      "field_type": "DeltaTime",
+      "source": "both",
+      "algorithm": "variable-length quantity, big-endian septets: value = sum over the 1 to 4 bytes of (byte & 0x7F) shifted left by 7 for each byte that follows it; the result is the byte count of the meta-event data",
+      "covers": "the meta-event data bytes that follow it, to the end of the event; it excludes the 0xFF status byte, the m_type byte and the length bytes themselves",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "MidiMessage.meta_event.m_type",
+        "DeltaTime.t0",
+        "DeltaTime.t1",
+        "DeltaTime.t2",
+        "DeltaTime.t3"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 64,
+        "rationale": "The encodable maximum is 0x0FFFFFFF, i.e. 256 MB claimed by four bytes, and the template uses it directly as an array bound at lines 159-232 with no check. For the fifteen fixed-shape meta types the value is not free at all - it is 0, 1, 2, 3, 4 or 5 - and only the text-carrying types have any latitude. 0-64 bounds those."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 152,
+        "snippet": "DeltaTime m_length;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: 'FF <type> <length> <bytes>' where <length> is a variable-length quantity. Note the template reuses the DeltaTime struct here: the same variable-length encoding serves both as a time and as a length, so the byte-level constraints on DeltaTime.t0 through t3 apply identically."
+    },
+    "MidiMessage.meta_event.m_seqNum": {
+      "type": "range_constraint",
+      "description": "Sequence number of this track or of the whole file, used to identify a sequence to a Cue meta-event.",
+      "corruption_risk": "medium",
+      "field_type": "short",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "A sequence identifier; large values are meaningless and the field costs two bytes whatever it holds."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 00 02 ssss Sequence Number': the data is exactly two bytes holding a 16-bit sequence number, so the length field must be 2. The specification also requires the event to occur at the very beginning of a track, before any non-zero delta-time and before any transmittable event. The template reads a plain short with no check. TEMPLATE DEVIATION: declared `short`, which is signed, so values above 32767 read negative.",
+        "line": 155,
+        "snippet": "short m_seqNum;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_text": {
+      "type": "calculated_value",
+      "description": "Free-form text of a generic text meta-event (type 0x01); its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 48,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 159,
+        "snippet": "char m_text[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_copyright": {
+      "type": "calculated_value",
+      "description": "Copyright notice (type 0x02), which SMF requires to be the first event of the first track; its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 48,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 163,
+        "snippet": "char m_copyright[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_name": {
+      "type": "calculated_value",
+      "description": "Sequence name for format 0 and 1 track 0, or track name otherwise (type 0x03); the same field name is reused at line 171 for the instrument name (type 0x04); its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 48,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 167,
+        "snippet": "char m_name[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_lyric": {
+      "type": "calculated_value",
+      "description": "Lyric syllable to be sung at this point (type 0x05); its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 175,
+        "snippet": "char m_lyric[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_marker": {
+      "type": "calculated_value",
+      "description": "Marker naming a point in the sequence, such as a rehearsal letter (type 0x06); its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 48,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 179,
+        "snippet": "char m_marker[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_cuePoint": {
+      "type": "calculated_value",
+      "description": "Cue point describing an event in a film or stage production (type 0x07); its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 48,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 183,
+        "snippet": "char m_cuePoint[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_programName": {
+      "type": "calculated_value",
+      "description": "Name of the program or patch this track calls for (type 0x08); its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 48,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 187,
+        "snippet": "char m_programName[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_deviceName": {
+      "type": "calculated_value",
+      "description": "Name of the hardware device this track should be routed to (type 0x09); its byte count is the meta-event length field, which is the only thing that bounds it.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "the meta-event data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 48,
+        "rationale": "Text byte count. The length field can claim up to 256 MB; capping keeps text meta-events from dominating the file. The bytes themselves are free-form, but SMF 1.0 recommends printable ASCII and no terminating NUL - the length alone delimits the string."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 191,
+        "snippet": "char m_deviceName[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: text meta-events are 'FF <type> <len> <text>' with types 01 through 0F reserved for text, and the text is not NUL-terminated. A byte of 0xFF inside the text is harmless because the event is length-delimited, unlike the entropy streams of image formats."
+    },
+    "MidiMessage.meta_event.m_channelPrefix": {
+      "type": "range_constraint",
+      "description": "MIDI channel that subsequent meta-events and SysEx events in this track are associated with, until the next channel prefix or the next channel voice message.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 15,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 20 01 cc MIDI Channel Prefix': the data is exactly one byte and the value is a MIDI channel number, 0-15, so the length field must be 1. The template reads a plain signed char with no check.",
+        "line": 195,
+        "snippet": "char m_channelPrefix;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_port": {
+      "type": "range_constraint",
+      "description": "MIDI output port that subsequent events in this track should be sent to; a de-facto extension rather than a part of SMF 1.0 proper.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "generation_range": {
+        "min": 0,
+        "max": 3,
+        "rationale": "A port index; hardware rarely exposes more than a handful, and the field is one byte whatever it holds."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "The MIDI Port meta-event 'FF 21 01 pp' is a widely implemented extension (introduced by Cakewalk and adopted by most sequencers) carrying exactly one data byte, so the length field must be 1. Like every MIDI data byte its range is 0-127. The template reads a plain signed char with no check.",
+        "line": 199,
+        "snippet": "char m_port;"
+      },
+      "confidence": "medium"
+    },
+    "MidiMessage.meta_event.m_usecPerQuarterNote": {
+      "type": "range_constraint",
+      "description": "Tempo expressed as microseconds per quarter note; combined with the header's tick division it is what converts delta times into real seconds.",
+      "corruption_risk": "high",
+      "field_type": "uint : 24",
+      "source": "both",
+      "min": 1,
+      "max": 16777215,
+      "endianness": "big",
+      "generation_range": {
+        "min": 250000,
+        "max": 1500000,
+        "rationale": "The encodable range spans 1 microsecond per quarter note (60 million BPM) to 16.7 seconds (3.6 BPM). A value of 0 is a division by zero in the BPM computation the template itself sketches at line 207. 250000-1500000 microseconds is 40-240 BPM, the range real music occupies."
+      },
+      "preferred_value": 500000,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 206,
+        "snippet": "uint m_usecPerQuarterNote : 24;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0, 'FF 51 03 tttttt Set Tempo': the data is exactly three bytes holding a 24-bit microseconds-per-quarter-note value, so the length field must be 3. The default when no tempo event is present is 500000, i.e. 120 BPM. TEMPLATE DEVIATION: the field is declared as a 24-bit bitfield of a `uint`, which in 010 Editor occupies the storage of a full uint - four bytes - so the template compensates with FSeek(FTell() - 1) at line 208 to give back the fourth byte. On disk the field is three bytes and a generator must emit exactly three."
+    },
+    "MidiMessage.meta_event.m_hours": {
+      "type": "range_constraint",
+      "description": "Packed hour byte of the SMPTE start time: bits 4-0 are the hour 0-23 and bits 6-5 encode the frame rate, exactly as in MIDI Time Code.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 54 05 hr mn se fr ff SMPTE Offset': 'hr' is not a plain hour - it is the same packed byte MIDI Time Code uses, where bits 6-5 hold the frame rate (0 = 24 fps, 1 = 25 fps, 2 = 30 fps drop-frame, 3 = 30 fps) and bits 4-0 hold the hour 0-23. The template's field name hides this packing. The SMPTE Offset event is 'FF 54 05 hr mn se fr ff', so the length field must be 5. The template reads plain signed chars with no check.",
+        "line": 212,
+        "snippet": "char m_hours;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_mins": {
+      "type": "range_constraint",
+      "description": "Minutes component of the SMPTE start time.",
+      "corruption_risk": "low",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 59,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 54 05 hr mn se fr ff': the minutes byte is 0-59. The SMPTE Offset event is 'FF 54 05 hr mn se fr ff', so the length field must be 5. The template reads plain signed chars with no check.",
+        "line": 213,
+        "snippet": "char m_mins;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_secs": {
+      "type": "range_constraint",
+      "description": "Seconds component of the SMPTE start time.",
+      "corruption_risk": "low",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 59,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 54 05 hr mn se fr ff': the seconds byte is 0-59. The SMPTE Offset event is 'FF 54 05 hr mn se fr ff', so the length field must be 5. The template reads plain signed chars with no check.",
+        "line": 214,
+        "snippet": "char m_secs;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_fps": {
+      "type": "range_constraint",
+      "description": "Whole frames component of the SMPTE start time; despite the field name this is a frame COUNT, not a frame rate - the rate lives in the packed hour byte.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 29,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 54 05 hr mn se fr ff': 'fr' is the frame number within the second, bounded by the frame rate declared in the packed hour byte, so at most 23, 24 or 29. TEMPLATE DEVIATION: the field name m_fps suggests a frames-per-second rate, which it is not. The SMPTE Offset event is 'FF 54 05 hr mn se fr ff', so the length field must be 5. The template reads plain signed chars with no check.",
+        "line": 215,
+        "snippet": "char m_fps;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_fracFrames": {
+      "type": "range_constraint",
+      "description": "Fractional frames of the SMPTE start time, in hundredths of a frame.",
+      "corruption_risk": "low",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 99,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 54 05 hr mn se fr ff': 'ff' is fractional frames, in 100ths of a frame, even in SMPTE-based tracks which specify tick resolution differently. The SMPTE Offset event is 'FF 54 05 hr mn se fr ff', so the length field must be 5. The template reads plain signed chars with no check.",
+        "line": 216,
+        "snippet": "char m_fracFrames;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_numerator": {
+      "type": "range_constraint",
+      "description": "Numerator of the time signature, as notated.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 1,
+      "max": 255,
+      "generation_range": {
+        "min": 1,
+        "max": 16,
+        "rationale": "Real time signatures have small numerators; 255 beats to a bar is legal but meaningless, and the field is one byte whatever it holds."
+      },
+      "preferred_value": 4,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 58 04 nn dd cc bb Time Signature': the event is exactly four data bytes, so the length field must be 4. 'The time signature is expressed as four numbers. nn and dd represent the numerator and denominator of the time signature as it would be notated.' A numerator of 0 describes a bar with no beats. The template reads a plain signed char with no check.",
+        "line": 220,
+        "snippet": "char m_numerator;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_denominator": {
+      "type": "range_constraint",
+      "description": "Denominator of the time signature expressed as a negative power of two: the value d means a denominator of 2^d, so 2 means a quarter note and 3 an eighth.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "spec",
+      "min": 0,
+      "max": 7,
+      "preferred_value": 2,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 58 04 nn dd cc bb': 'The denominator is a negative power of two: 2 represents a quarter-note, 3 represents an eighth-note, etc.' The field is therefore an exponent, not the denominator itself; values above 7 describe note values shorter than a 128th note and no sequencer handles them. The template reads a plain signed char with no check.",
+        "line": 221,
+        "snippet": "char m_denominator;"
+      },
+      "confidence": "high",
+      "notes": "This is the field a generator is most likely to get wrong by writing the literal denominator (4) instead of its logarithm (2)."
+    },
+    "MidiMessage.meta_event.m_clocksPerClick": {
+      "type": "range_constraint",
+      "description": "Number of MIDI clocks in a metronome click; 24 clocks make one quarter note by definition.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 1,
+      "max": 255,
+      "generation_range": {
+        "min": 6,
+        "max": 96,
+        "rationale": "A metronome interval measured in 24-per-quarter-note MIDI clocks; 24 is the near-universal value and 6-96 spans a sixteenth note to a whole note."
+      },
+      "preferred_value": 24,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 58 04 nn dd cc bb': 'The cc parameter expresses the number of MIDI clocks in a metronome click.' There are 24 MIDI clocks per quarter note. The template reads a plain signed char with no check.",
+        "line": 222,
+        "snippet": "char m_clocksPerClick;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_32ndPer4th": {
+      "type": "range_constraint",
+      "description": "Number of notated 32nd notes in a MIDI quarter note; the value is 8 in every ordinary file.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": 1,
+      "max": 255,
+      "generation_range": {
+        "min": 8,
+        "max": 8,
+        "rationale": "SMF 1.0 notes that this is normally 8 and exists only for the rare case where the notated 32nd note does not equal 24 MIDI clocks; any other value silently reinterprets every notated duration in the file."
+      },
+      "preferred_value": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 58 04 nn dd cc bb': 'The bb parameter expresses the number of notated 32nd-notes in a MIDI quarter-note (24 MIDI clocks). This was added because there are already multiple programs which allow a user to specify that what MIDI thinks of as a quarter-note (24 clocks) is to be notated as, or related to in terms of, something else.' The template reads a plain signed char with no check.",
+        "line": 223,
+        "snippet": "char m_32ndPer4th;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_flatsSharps": {
+      "type": "range_constraint",
+      "description": "Key signature as a signed count of accidentals: negative for flats, positive for sharps, zero for the key of C.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "min": -7,
+      "max": 7,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 59 02 sf mi Key Signature': the event is exactly two data bytes, so the length field must be 2. 'sf = -7: 7 flats ... sf = 0: key of C ... sf = 7: 7 sharps'. This is the one field in the format where the template's signed `char` declaration is correct rather than a deviation. The template performs no range check.",
+        "line": 227,
+        "snippet": "char m_flatsSharps;"
+      },
+      "confidence": "high",
+      "notes": "Because the value is genuinely signed, it is written on disk as two's complement: -7 is the byte 0xF9 and -1 is 0xFF."
+    },
+    "MidiMessage.meta_event.m_majorMinor": {
+      "type": "enumerated_values",
+      "description": "Mode of the key signature: major or minor.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "major key",
+        "minor key"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "SMF 1.0, 'FF 59 02 sf mi Key Signature': 'mi = 0: major key, mi = 1: minor key'. No other value is defined. The template reads a plain signed char with no check.",
+        "line": 228,
+        "snippet": "char m_majorMinor;"
+      },
+      "confidence": "high"
+    },
+    "MidiMessage.meta_event.m_data": {
+      "type": "calculated_value",
+      "description": "Opaque data of a meta-event whose type the template has no branch for; its byte count is the meta-event length field.",
+      "corruption_risk": "medium",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.meta_event.m_length decoded variable-length value",
+      "covers": "every data byte of the meta-event after the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.meta_event.m_type"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 64,
+        "rationale": "Mirrors the m_length generation bound; this array is what a runaway length actually materialises as."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 232,
+        "snippet": "char m_data[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "Reached by the final else at line 230 for any type outside the eighteen the enum names - in particular META_SEQUENCER_EVENT (0x7F), which the enum declares but the dispatch chain has no branch for, so it lands here. SMF 1.0 explicitly requires readers to skip unrecognised meta-events using the length field, which is exactly what this branch does. For a Sequencer Specific event the data begins with a manufacturer ID: one byte, or the three bytes 0x00 followed by a 14-bit ID."
+    },
+    "MidiMessage.sysex_event.m_length": {
+      "type": "calculated_value",
+      "description": "Variable-length byte count of the System Exclusive data that follows the 0xF0 or 0xF7 status byte.",
+      "corruption_risk": "high",
+      "field_type": "DeltaTime",
+      "source": "both",
+      "algorithm": "variable-length quantity, big-endian septets: value = sum over the 1 to 4 bytes of (byte & 0x7F) shifted left by 7 for each byte that follows it; the result is the byte count of the SysEx data",
+      "covers": "the SysEx data bytes that follow it, to the end of the event; it excludes the status byte and the length bytes themselves",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "MidiMessage.m_status",
+        "DeltaTime.t0",
+        "DeltaTime.t1",
+        "DeltaTime.t2",
+        "DeltaTime.t3"
+      ],
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "The encodable maximum is 0x0FFFFFFF, i.e. 256 MB claimed by four bytes, used directly as an array bound at line 241 with no check. A normal F0 SysEx must carry at least the terminating 0xF7, so the minimum useful value is 1. 1-64 keeps SysEx events small."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 240,
+        "snippet": "DeltaTime m_length;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: 'F0 <length> <bytes to be transmitted after F0>' and 'F7 <length> <all bytes to be transmitted>'. The length is a variable-length quantity, and it exists precisely because a SysEx message in a file may be split across several events. Note that the length counts the terminating 0xF7 of an F0 message."
+    },
+    "MidiMessage.sysex_event.m_message": {
+      "type": "calculated_value",
+      "description": "The System Exclusive payload; for a normal F0 message every byte but the last must have bit 7 clear and the last must be the 0xF7 terminator.",
+      "corruption_risk": "high",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "algorithm": "byte count = MidiMessage.sysex_event.m_length decoded variable-length value",
+      "covers": "the SysEx data bytes following the length, to the end of the event",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiMessage.sysex_event.m_length",
+        "MidiMessage.m_status"
+      ],
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Mirrors the m_length generation bound."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 241,
+        "snippet": "char m_message[m_length.total];"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: an F0 SysEx event's data is the manufacturer ID, the message body and a terminating 0xF7 - so the first byte is a manufacturer ID (one byte, or 0x00 followed by two more), every body byte is a data byte 0-127, and the final byte is 0xF7. An F7 event, by contrast, is an escape whose bytes are transmitted verbatim with no terminator requirement, which is how a long SysEx is continued across events. The template treats both as an opaque char array. The template declares every MIDI data byte as `char`, which is SIGNED in 010 Editor, so any byte with bit 7 set reads as negative. That is why the meta-event test at line 127 is `lastStatus == -1` rather than `== 0xFF`. A generator must treat these fields as unsigned 8-bit values. Like the track terminator, the 0xF7 SysEx terminator is the final ELEMENT of a variable-length array rather than a field of its own, so it is recorded here and in a requires rule in the structure section rather than as a standalone fixed_value."
+    },
+    "MidiTrack.m_magic": {
+      "type": "fixed_value",
+      "description": "The four-character chunk type that opens every track chunk; every chunk after the header must carry it.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "MTrk",
+      "required_value_hex": "0x4D54726B",
+      "required_value_ascii": "MTrk",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 248,
+        "snippet": "char m_magic[4] <format = hex>;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: 'MTrk <length> <MTrk event>+' is the only chunk type defined besides MThd. The template performs no Assert and no comparison - it simply reads four bytes and carries on - but a reader that does not find 'MTrk' here has lost the file structure entirely. The specification also requires readers to skip a chunk of an unknown type using its length, which makes the four bytes plus the length a self-delimiting envelope."
+    },
+    "MidiTrack.m_seclen": {
+      "type": "calculated_value",
+      "description": "Byte count of this track's event stream; it is the sole bound on the message loop, so it must equal the exact total size of the events written.",
+      "corruption_risk": "high",
+      "field_type": "uint",
+      "source": "both",
+      "algorithm": "byte count",
+      "covers": "every byte of the track's event stream - each MidiMessage's delta time, status byte where present, and event data - from just after this length field to the end of the chunk; it excludes the four magic bytes and this length field itself",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "MidiMessage.m_dtime",
+        "MidiMessage.m_status",
+        "MidiMessage.meta_event.m_length",
+        "MidiMessage.sysex_event.m_length"
+      ],
+      "generation_range": {
+        "min": 4,
+        "max": 4096,
+        "rationale": "A 32-bit length that drives the template's `while (remaining)` loop at line 251. Two separate blow-ups follow from it. First, uniform generation claims up to 4 GB of track. Second, and worse, `remaining` is a `local uint` decremented by sizeof(message) at line 253, so if the events overshoot the declared length the subtraction wraps to a value near 2^32 and the loop runs essentially forever. The length must therefore be derived from the events actually written, never chosen independently. A minimal track is the 4-byte end-of-track event."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 249,
+        "snippet": "uint m_seclen;"
+      },
+      "confidence": "high",
+      "notes": "SMF 1.0: 'MTrk <length> <MTrk event>+' where the length is a 32-bit byte count of the track data. Because there is no terminator byte and the End of Track meta-event is inside the counted region, this field is the only thing that tells a reader where the next chunk begins."
+    },
+    "file.tracks": {
+      "type": "calculated_value",
+      "description": "The array of track chunks making up the file; its element count is the header's track count, so the two must agree exactly.",
+      "corruption_risk": "high",
+      "field_type": "MidiTrack[header.m_ntracks]",
+      "source": "both",
+      "algorithm": "element count = MidiHeader.m_ntracks",
+      "covers": "every MTrk chunk in the file, from the byte after the header chunk to the end of the file",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiHeader.m_ntracks",
+        "MidiHeader.m_format"
+      ],
+      "generation_range": {
+        "min": 1,
+        "max": 4,
+        "rationale": "Track count. Each element is a whole MTrk chunk with its own bounded event stream, so this multiplies file size directly; and because the template reads exactly m_ntracks chunks with no end-of-file guard, a count larger than the number of chunks written drives the parse past the end of the file."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 260,
+        "snippet": "MidiTrack tracks[header.m_ntracks] <optimize=false>;"
+      },
+      "confidence": "high",
+      "notes": "Declared with <optimize=false> because each track is variable-length. For format 0 the count must be exactly 1."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "MidiHeader.m_format",
+        "equals": 0
+      },
+      "then": {
+        "field": "MidiHeader.m_ntracks",
+        "type": "fixed_value",
+        "required_value": 1,
+        "required_value_hex": "0x0001"
+      },
+      "description": "A format 0 file is by definition a single multi-channel track, so it must declare exactly one track chunk.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_format",
+        "in": [
+          1,
+          2
+        ]
+      },
+      "then": {
+        "field": "MidiHeader.m_ntracks",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 65535,
+        "note": "formats 1 and 2 may carry any number of tracks, but a file with zero tracks carries no music"
+      },
+      "description": "Only the multi-track formats allow a track count other than 1.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_format",
+        "equals": 1
+      },
+      "then": {
+        "section": "the first MidiTrack",
+        "required": true,
+        "note": "in a format 1 file the first track is the tempo map: it carries the tempo, time signature, key signature and SMPTE offset meta-events for the whole sequence and no channel voice events"
+      },
+      "description": "Format 1 assigns a special role to track 0 that the remaining tracks must not duplicate.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_ntracks",
+        "min": 1
+      },
+      "then": {
+        "field": "file.tracks",
+        "type": "calculated_value",
+        "note": "element count = MidiHeader.m_ntracks; the number of MTrk chunks actually written must equal it exactly"
+      },
+      "description": "The declared track count and the number of track chunks present are two encodings of one number and must agree.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 260,
+        "snippet": "MidiTrack tracks[header.m_ntracks] <optimize=false>;"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_tickdiv",
+        "max": 32767
+      },
+      "then": {
+        "field": "MidiHeader.m_tickdiv",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 32767,
+        "note": "metrical mode: bit 15 clear means the whole remainder is ticks per quarter note; 0 is a division by zero for any player converting ticks to seconds"
+      },
+      "description": "With bit 15 clear the division field is a single 15-bit tick resolution and must be non-zero.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_tickdiv",
+        "min": 32768
+      },
+      "then": {
+        "field": "MidiHeader.m_tickdiv",
+        "type": "enumerated_values",
+        "valid_values": [
+          232,
+          231,
+          227,
+          226
+        ],
+        "value_names": [
+          "-24 (24 fps)",
+          "-25 (25 fps)",
+          "-29 (30 fps drop-frame)",
+          "-30 (30 fps)"
+        ],
+        "note": "timecode mode: the HIGH byte must be one of these four negative frame rates and the LOW byte must be ticks per frame, 1-255"
+      },
+      "description": "With bit 15 set the division field splits into two bytes whose legal values are far narrower than sixteen free bits.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.note_off_event",
+        "required": true,
+        "note": "exactly 2 data bytes follow the status byte: m_note then m_velocity, each 0-127"
+      },
+      "description": "A status byte whose high nibble is 0x80 selects this event shape and fixes how many data bytes follow.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 73,
+        "snippet": "if ((lastStatus & 0xf0) == 0x80)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.note_on_event",
+        "required": true,
+        "note": "exactly 2 data bytes follow the status byte: m_note then m_velocity, each 0-127"
+      },
+      "description": "A status byte whose high nibble is 0x90 selects this event shape and fixes how many data bytes follow.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 81,
+        "snippet": "else if ((lastStatus & 0xf0) == 0x90)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.note_pressure_event",
+        "required": true,
+        "note": "exactly 2 data bytes follow the status byte: m_note then m_pressure, each 0-127"
+      },
+      "description": "A status byte whose high nibble is 0xA0 selects this event shape and fixes how many data bytes follow.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 89,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xA0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182,
+          183,
+          184,
+          185,
+          186,
+          187,
+          188,
+          189,
+          190,
+          191
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.controller_event",
+        "required": true,
+        "note": "exactly 2 data bytes follow the status byte: m_controller then m_value, each 0-127"
+      },
+      "description": "A status byte whose high nibble is 0xB0 selects this event shape and fixes how many data bytes follow.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 97,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xB0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          206,
+          207
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.program_event",
+        "required": true,
+        "note": "exactly 1 data byte follows the status byte: m_program, each 0-127"
+      },
+      "description": "A status byte whose high nibble is 0xC0 selects this event shape and fixes how many data bytes follow.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 105,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xC0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          208,
+          209,
+          210,
+          211,
+          212,
+          213,
+          214,
+          215,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.channel_pressure_event",
+        "required": true,
+        "note": "exactly 1 data byte follows the status byte: m_pressure, each 0-127"
+      },
+      "description": "A status byte whose high nibble is 0xD0 selects this event shape and fixes how many data bytes follow.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 112,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xD0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          224,
+          225,
+          226,
+          227,
+          228,
+          229,
+          230,
+          231,
+          232,
+          233,
+          234,
+          235,
+          236,
+          237,
+          238,
+          239
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.pitch_bend_event",
+        "required": true,
+        "note": "exactly 2 data bytes follow the status byte: m_lsb then m_msb, each 0-127"
+      },
+      "description": "A status byte whose high nibble is 0xE0 selects this event shape and fixes how many data bytes follow.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 119,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xE0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "equals": 255
+      },
+      "then": {
+        "section": "MidiMessage.meta_event",
+        "required": true,
+        "note": "the byte 0xFF introduces a meta-event: a type byte, a variable-length length, then that many data bytes. The template tests this as `lastStatus == -1` because the field is a signed char, and it tests it BEFORE the 0xF0 mask test so meta events are separated from SysEx"
+      },
+      "description": "0xFF is a meta-event, not a System Exclusive message, even though it satisfies the 0xF0 mask test that follows.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 127,
+        "snippet": "else if (lastStatus == -1)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          240,
+          247
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.sysex_event",
+        "required": true,
+        "note": "a variable-length length followed by that many bytes; 0xF0 is a normal SysEx message and 0xF7 an escape or continuation packet"
+      },
+      "description": "The two System Exclusive status bytes are the only 0xFn values SMF permits in a file besides 0xFF.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 236,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xF0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          241,
+          242,
+          243,
+          244,
+          245,
+          246,
+          248,
+          249,
+          250,
+          251,
+          252,
+          253,
+          254
+        ]
+      },
+      "then": {
+        "section": "MidiMessage.sysex_event",
+        "forbidden": true,
+        "note": "these are MIDI System Common and System Real Time messages. They exist on the wire but SMF 1.0 does not permit them in a file, and the template routes every one of them to the sysex_event branch where it reads a length field that is not there"
+      },
+      "description": "The system messages other than SysEx and meta must never appear in a file: the template would misread the following bytes as a length and desynchronise the track.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 236,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xF0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "max": 127
+      },
+      "then": {
+        "section": "MidiMessage.m_status",
+        "forbidden": true,
+        "note": "a byte with bit 7 clear is not a status byte at all - it is the first data byte of a running-status message. The template reads it into m_status and then un-reads it with FSeek(FTell()-1) at line 70, reusing the previous status held in the local lastStatus"
+      },
+      "description": "Running status omits the status byte entirely, so this field is present in the parse but consumes no bytes of the file.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 70,
+        "snippet": "FSeek(FTell()-1);"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "max": 127
+      },
+      "then": {
+        "section": "a preceding channel voice event in the same track",
+        "required": true,
+        "note": "running status may only reuse a channel voice status (0x80-0xEF). SMF 1.0 requires the status to be reset at the start of every track and cancelled by any System Exclusive or meta event, so the first event of a track can never use running status"
+      },
+      "description": "A running-status byte is meaningless without an established status, which is why it cannot open a track or follow a SysEx or meta event.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "section": "MidiMessage.meta_event",
+        "present": true
+      },
+      "then": {
+        "section": "running status",
+        "forbidden": true,
+        "note": "SMF 1.0: 'Sysex events and meta events cancel any running status which was in effect. Running status does not apply to and may not be used for these messages.' TEMPLATE DEVIATION: the template never clears lastStatus, so after a meta event it would still reuse the stale channel status"
+      },
+      "description": "Meta and SysEx events cancel running status, so the next event must carry an explicit status byte.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 68,
+        "snippet": "lastStatus = m_status;"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.controller_event.m_controller",
+        "in": [
+          120,
+          121,
+          124,
+          125,
+          126,
+          127
+        ]
+      },
+      "then": {
+        "field": "MidiMessage.controller_event.m_value",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x00",
+        "note": "All Sound Off (120), Reset All Controllers (121), Omni Off (124), Omni On (125), Mono On (126) and Poly On (127) all require a value byte of 0, except that Mono On may instead carry a channel count 1-16"
+      },
+      "description": "Six of the eight Channel Mode messages pin their value byte to zero rather than leaving it free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.controller_event.m_controller",
+        "equals": 122
+      },
+      "then": {
+        "field": "MidiMessage.controller_event.m_value",
+        "type": "enumerated_values",
+        "valid_values": [
+          0,
+          127
+        ],
+        "value_names": [
+          "Local Control off",
+          "Local Control on"
+        ]
+      },
+      "description": "The Local Control channel mode message defines only the two values 0 and 127.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.controller_event.m_controller",
+        "equals": 126
+      },
+      "then": {
+        "field": "MidiMessage.controller_event.m_value",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 16,
+        "note": "Mono Mode On: the value is the number of channels to use, or 0 meaning the number of voices the receiver can allocate"
+      },
+      "description": "The Mono Mode On message uses its value byte as a channel count, which caps it at 16 rather than 127.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.note_on_event.m_velocity",
+        "equals": 0
+      },
+      "then": {
+        "section": "MidiMessage.note_on_event",
+        "note": "a Note On with velocity 0 is defined to be a Note Off for the same key; this is what lets a sequencer run a whole passage of note starts and stops under one 0x9n status byte"
+      },
+      "description": "Velocity 0 silently changes a Note On into a Note Off, so it is not a free value for a generator that intends to start a note.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 0
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 2,
+        "required_value_hex": "0x02",
+        "note": "encoded as a single-byte variable-length quantity 0x02"
+      },
+      "description": "The Sequence Number meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 32
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 1,
+        "required_value_hex": "0x01",
+        "note": "encoded as a single-byte variable-length quantity 0x01"
+      },
+      "description": "The MIDI Channel Prefix meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 33
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 1,
+        "required_value_hex": "0x01",
+        "note": "encoded as a single-byte variable-length quantity 0x01"
+      },
+      "description": "The MIDI Port meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 47
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x00",
+        "note": "encoded as a single-byte variable-length quantity 0x00 a zero length means no data bytes follow, so the whole event is the three bytes FF 2F 00 plus its delta time"
+      },
+      "description": "The End of Track meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 81
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 3,
+        "required_value_hex": "0x03",
+        "note": "encoded as a single-byte variable-length quantity 0x03 three bytes on disk, even though the template declares a 24-bit bitfield of a uint and compensates with FSeek(FTell() - 1) at line 208"
+      },
+      "description": "The Set Tempo meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 84
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 5,
+        "required_value_hex": "0x05",
+        "note": "encoded as a single-byte variable-length quantity 0x05"
+      },
+      "description": "The SMPTE Offset meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 88
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 4,
+        "required_value_hex": "0x04",
+        "note": "encoded as a single-byte variable-length quantity 0x04"
+      },
+      "description": "The Time Signature meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 89
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "fixed_value",
+        "required_value": 2,
+        "required_value_hex": "0x02",
+        "note": "encoded as a single-byte variable-length quantity 0x02"
+      },
+      "description": "The Key Signature meta-event has a fixed data size, so its length field is not free.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "in": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_length",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 268435455,
+        "generation_range": {
+          "min": 0,
+          "max": 48,
+          "rationale": "text byte count, capped so text meta-events do not dominate the file"
+        },
+        "note": "the text-carrying meta types are the only ones whose length is genuinely free; the text is not NUL-terminated and the length alone delimits it"
+      },
+      "description": "Only the nine text meta-event types leave the length field free; every other defined type pins it.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 127
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_data",
+        "type": "calculated_value",
+        "note": "Sequencer Specific: the data begins with a manufacturer ID, either one byte or the three bytes 0x00 followed by a 14-bit ID. The enum declares META_SEQUENCER_EVENT at line 150 but the dispatch chain has no branch for it, so it falls into the final else at line 230"
+      },
+      "description": "The Sequencer Specific meta-event is named by the enum but has no dispatch branch, so it is parsed as opaque data.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "line": 230,
+        "snippet": "else"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 0
+      },
+      "then": {
+        "section": "MidiMessage.meta_event",
+        "note": "SMF 1.0 requires the Sequence Number event to appear at the very start of a track, before any non-zero delta time and before any transmittable MIDI event"
+      },
+      "description": "The Sequence Number meta-event is position-constrained as well as length-constrained.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 2
+      },
+      "then": {
+        "section": "MidiMessage.meta_event",
+        "note": "SMF 1.0: the Copyright Notice 'should be placed as the first event in the first track chunk, at time 0'"
+      },
+      "description": "The copyright meta-event has a required position in the file.",
+      "source": "spec",
+      "confidence": "medium",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 84
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_hours",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 127,
+        "note": "bits 6-5 of the hour byte encode the frame rate (0 = 24, 1 = 25, 2 = 30 drop-frame, 3 = 30 fps) and bits 4-0 the hour 0-23; the m_fps byte is then bounded by that declared rate, so at most 23, 24 or 29"
+      },
+      "description": "The SMPTE offset's frame count is bounded by a frame rate packed into a different byte of the same event.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.meta_event.m_type",
+        "equals": 81
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_usecPerQuarterNote",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 16777215,
+        "note": "0 is a division by zero in the beats-per-minute computation the template itself sketches at line 207 as 60000000 / m_usecPerQuarterNote"
+      },
+      "description": "A tempo of zero microseconds per quarter note is arithmetically fatal to any player.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 207,
+        "snippet": "// local uint m_bpm = 60000000 / m_usecPerQuarterNote;"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_tickdiv",
+        "min": 32768
+      },
+      "then": {
+        "section": "MidiMessage.meta_event with m_type META_TEMPO",
+        "note": "in SMPTE timecode mode delta times are already absolute subdivisions of a second, so Set Tempo events are meaningless and SMF 1.0 advises against them"
+      },
+      "description": "The tempo meta-event only has meaning in metrical mode, where ticks are relative to a quarter note.",
+      "source": "spec",
+      "confidence": "medium",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "DeltaTime.t0",
+        "min": 128
+      },
+      "then": {
+        "section": "DeltaTime.t1",
+        "required": true,
+        "note": "the continuation bit of t0 being set promises a second byte"
+      },
+      "description": "A set continuation bit makes the next variable-length byte mandatory.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 39,
+        "snippet": "if (!(t0 & 0x80))"
+      }
+    },
+    {
+      "when": {
+        "field": "DeltaTime.t1",
+        "min": 128
+      },
+      "then": {
+        "section": "DeltaTime.t2",
+        "required": true,
+        "note": "the continuation bit of t1 being set promises a third byte"
+      },
+      "description": "A set continuation bit makes the next variable-length byte mandatory.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 45,
+        "snippet": "if (!(t1 & 0x80))"
+      }
+    },
+    {
+      "when": {
+        "field": "DeltaTime.t2",
+        "min": 128
+      },
+      "then": {
+        "section": "DeltaTime.t3",
+        "required": true,
+        "note": "the continuation bit of t2 being set promises a fourth byte, which must then be the last: its own continuation bit must be clear because a variable-length quantity is at most four bytes"
+      },
+      "description": "The fourth variable-length byte is the last one the format allows, so its continuation bit must be clear.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 51,
+        "snippet": "if (!(t2 & 0x80))"
+      }
+    },
+    {
+      "when": {
+        "field": "DeltaTime.t0",
+        "max": 127
+      },
+      "then": {
+        "section": "DeltaTime.t1",
+        "forbidden": true,
+        "note": "a clear continuation bit ends the quantity; emitting further bytes would make them the start of the next field"
+      },
+      "description": "A clear continuation bit ends the variable-length quantity immediately.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 39,
+        "snippet": "if (!(t0 & 0x80))"
+      }
+    },
+    {
+      "when": {
+        "field": "DeltaTime.t3",
+        "min": 128
+      },
+      "then": {
+        "section": "DeltaTime",
+        "forbidden": true,
+        "note": "TEMPLATE DEVIATION: the guard at line 57 breaks when t3's continuation bit is CLEAR, but if it is set the struct simply falls off its end and no fifth byte is read, so the template silently accepts an over-long quantity and mis-parses everything after it"
+      },
+      "description": "A fifth variable-length byte cannot exist, so a set continuation bit on the fourth is unrepresentable rather than merely invalid.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 57,
+        "snippet": "if (!(t3 & 0x80))"
+      }
+    },
+    {
+      "when": {
+        "field": "MidiTrack.m_seclen",
+        "min": 4
+      },
+      "then": {
+        "section": "MidiMessage",
+        "note": "the sum of the byte sizes of every MidiMessage in the track - delta time, status byte where present, and event data - must equal m_seclen exactly. The template decrements a local uint by sizeof(message) at line 253 and loops `while (remaining)`, so an overshoot wraps the counter towards 2^32 and the loop runs essentially forever"
+      },
+      "description": "The track length and the events it contains are two encodings of one number, and a mismatch is not merely invalid here - it hangs the parser.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 253,
+        "snippet": "remaining -= sizeof(message);"
+      }
+    },
+    {
+      "when": {
+        "section": "MidiTrack",
+        "present": true
+      },
+      "then": {
+        "field": "MidiMessage.meta_event.m_type",
+        "type": "fixed_value",
+        "required_value": 47,
+        "required_value_hex": "0x2F",
+        "note": "every track must end with an End of Track meta-event, and it must be the last event in the chunk. SMF 1.0: 'FF 2F 00 ... This event is not optional. It is included so that an exact ending point may be specified for the track, so that it has an exact length'"
+      },
+      "description": "Every track chunk is required to end with the End of Track meta-event, inside the counted region.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_seclen",
+        "equals": 6
+      },
+      "then": {
+        "section": "MidiHeader",
+        "note": "exactly six bytes of header data follow the length: m_format, m_ntracks and m_tickdiv, two bytes each. SMF 1.0 permits a longer header for future expansion and requires readers to skip the excess, but the template reads the three fields by shape and ignores the length entirely"
+      },
+      "description": "The header length and the three header fields must agree, and the template will not notice if they do not.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 23,
+        "snippet": "uint m_seclen;"
+      }
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "MidiHeader",
+      "detail": "the four bytes 'MThd' must occupy file offsets 0-3, followed by the 32-bit length 6 and the six header bytes; nothing may precede them",
+      "description": "Every Standard MIDI File begins with the MThd header chunk, which is what identifies the file at all.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one, never repeated",
+      "generation_note": "emit as a fixed 14-byte head element - 'MThd', the constant length 6, then format, track count and division - with no randomisation of the magic and no evil-bit substitution",
+      "evidence": {
+        "line": 259,
+        "snippet": "MidiHeader header;"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "MidiTrack",
+      "detail": "at least one MTrk chunk must follow the header; a file with no track chunk carries no music",
+      "description": "The track chunk is the only place events live, so a file without one is empty.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "1 to 4 tracks per file",
+      "generation_note": "emit at least one MTrk after the header and set MidiHeader.m_ntracks from the number actually written"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "file.tracks",
+      "detail": "exactly MidiHeader.m_ntracks track chunks, no more and no fewer; the template reads precisely that many with no end-of-file guard",
+      "description": "The header's track count is the only thing that tells a reader how many chunks to expect.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "1 to 4 tracks, each event stream capped at 4 KB, holding generated files under roughly 16 KB. The count multiplies file size directly and a count larger than the chunks written drives the parse off the end of the file.",
+      "generation_note": "generate the tracks first as a bounded array, then set m_ntracks from the array length - never choose the two independently",
+      "evidence": {
+        "line": 260,
+        "snippet": "MidiTrack tracks[header.m_ntracks] <optimize=false>;"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "MidiHeader then file.tracks",
+      "detail": "the header chunk comes first and every track chunk follows it, back to back with no gaps and no padding between chunks",
+      "description": "MIDI chunks are located purely by position and length, so any gap desynchronises everything after it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one header, 1 to 4 tracks",
+      "generation_note": "emit the header as a fixed head element, then the track array, and write nothing between chunks",
+      "evidence": {
+        "line": 259,
+        "snippet": "MidiHeader header;"
+      }
+    },
+    {
+      "rule": "contiguous",
+      "subject": "MidiTrack.m_magic, MidiTrack.m_seclen, the event stream",
+      "detail": "a track chunk is the four bytes 'MTrk', a 32-bit length, and then exactly that many bytes of events, with nothing interleaved",
+      "description": "The chunk envelope is what makes the file self-delimiting; the event stream has no terminator of its own beyond the counted End of Track event.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one envelope per track, at most 4 tracks",
+      "generation_note": "generate the event stream first, measure it, then write the magic and the measured length - the length can never be chosen before the events exist",
+      "evidence": {
+        "line": 249,
+        "snippet": "uint m_seclen;"
+      }
+    },
+    {
+      "rule": "last_element",
+      "subject": "MidiMessage.meta_event with m_type META_END_OF_TRACK",
+      "detail": "the final event of every track chunk must be the End of Track meta-event, encoded as the three bytes FF 2F 00 preceded by its delta time, and it must lie inside the region m_seclen counts",
+      "description": "SMF 1.0 states the End of Track event is not optional; it is what gives a track an exact ending point.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly one per track, always last",
+      "generation_note": "emit as a fixed tail element of every track's bounded event array; a minimal legal track is the four bytes 00 FF 2F 00",
+      "evidence": {
+        "line": 201,
+        "snippet": "else if (m_type == META_END_OF_TRACK)"
+      }
+    },
+    {
+      "rule": "cardinality",
+      "subject": "MidiMessage within a track",
+      "detail": "the event loop is `while (remaining)`, an unbounded walk driven purely by the track length field with no event-count limit of any kind",
+      "description": "The body of a track is an unbounded repetition of events, which a generator must bound explicitly.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "8 to 64 events per track, with meta and SysEx payloads capped at 64 bytes and delta times at 1920 ticks, holding each track's event stream under about 4 KB. This loop is the format's principal size lever, and it is also its principal hang risk: `remaining` is a local uint decremented by sizeof(message), so an overshoot wraps towards 2^32.",
+      "generation_note": "replace the while loop with a bounded array of event elements followed by a fixed End of Track event, then set m_seclen from the measured total",
+      "evidence": {
+        "line": 251,
+        "snippet": "while (remaining) {"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "MidiMessage.m_dtime",
+      "detail": "every event in every track, without exception, is preceded by a variable-length delta time - including the End of Track event",
+      "description": "The delta time is not optional or omissible the way a running-status byte is; it is always present.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one per event, 1 to 4 bytes each",
+      "generation_note": "always emit the delta time first, even when it is zero, which encodes as the single byte 0x00",
+      "evidence": {
+        "line": 65,
+        "snippet": "DeltaTime m_dtime;"
+      }
+    },
+    {
+      "rule": "cardinality",
+      "subject": "DeltaTime",
+      "detail": "a variable-length quantity is 1 to 4 bytes: every byte but the last has bit 7 set, and the last has bit 7 clear",
+      "description": "The variable-length encoding is self-delimiting through its continuation bits and is capped at four bytes, giving a maximum of 0x0FFFFFFF.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "1 to 2 bytes, i.e. values 0-16383. Longer quantities encode delta times and lengths so large that the file becomes either enormous or musically meaningless, and the 4-byte form is the one the template's own missing fifth-byte guard mishandles.",
+      "generation_note": "generate the numeric value first, bounded, then encode it canonically with no redundant leading zero groups - a multi-byte quantity must never begin with the byte 0x80",
+      "evidence": {
+        "line": 37,
+        "snippet": "char t0;"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "MidiMessage.m_status on the first event of a track",
+      "detail": "the first event of a track must carry an explicit status byte, because running status has nothing to inherit from",
+      "description": "SMF 1.0 requires running status to be reset at the start of every track, so an opening running-status byte is undefined.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one explicit status byte at minimum per track",
+      "generation_note": "always emit an explicit status byte on the first event; the template's local lastStatus starts at 0 and is never reset between tracks, so an opening running-status message would match no dispatch branch, consume no data bytes and spin the event loop",
+      "evidence": {
+        "line": 61,
+        "snippet": "local char lastStatus = 0;"
+      }
+    },
+    {
+      "rule": "forbidden",
+      "subject": "running status after a meta or SysEx event",
+      "detail": "a System Exclusive or meta event cancels running status, so the next event must carry an explicit status byte",
+      "description": "SMF 1.0: 'Sysex events and meta events cancel any running status which was in effect.'",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "not applicable - this is an exclusion, not a repeating element",
+      "generation_note": "emit an explicit status byte on any event that follows a meta or SysEx event; the template never clears lastStatus, so it would silently reuse a stale channel status"
+    },
+    {
+      "rule": "ordering",
+      "subject": "MidiMessage.meta_event with m_type META_SEQUENCE_NUM",
+      "detail": "if present, the Sequence Number event must be the very first event of a track, before any non-zero delta time and before any transmittable MIDI event",
+      "condition": "only when a Sequence Number event is emitted at all",
+      "description": "SMF 1.0 pins this meta-event to the start of a track so a Cue event can identify the sequence.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 per track",
+      "generation_note": "if emitted, place it as the first element of the track's event array with a delta time of 0"
+    },
+    {
+      "rule": "ordering",
+      "subject": "MidiMessage.meta_event with m_type META_COPYRIGHT",
+      "detail": "if present, the Copyright Notice should be the first event of the first track, at time 0",
+      "condition": "only when a Copyright Notice event is emitted at all",
+      "description": "SMF 1.0 gives the copyright event a required position so it can be found without scanning the whole file.",
+      "corruption_risk": "low",
+      "source": "spec",
+      "generation_bound": "0 or 1 per file",
+      "generation_note": "if emitted, place it at the head of track 0's event array"
+    },
+    {
+      "rule": "ordering",
+      "subject": "tempo-map meta-events in a format 1 file",
+      "detail": "Set Tempo, Time Signature, Key Signature and SMPTE Offset must all live in the first track, which carries no channel voice events",
+      "condition": "only when MidiHeader.m_format is 1",
+      "description": "Format 1 defines track 0 as a tempo map shared by every other track.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 of each per file, all in track 0",
+      "generation_note": "when generating format 1, route every timing meta-event into the first track element and every channel voice event into the others"
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "metrical and timecode division modes",
+      "detail": "bit 15 of MidiHeader.m_tickdiv selects one interpretation of the field or the other; there is no mixed mode, and the choice changes what every delta time in the file means",
+      "description": "The division field is a tagged union of two entirely different encodings.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly one mode per file",
+      "generation_note": "pick metrical mode (bit 15 clear, 24-960 ticks per quarter note) unless deliberately exercising the SMPTE path, and derive the delta-time generation bound from the resolution chosen"
+    },
+    {
+      "rule": "requires",
+      "subject": "MidiMessage.sysex_event with status 0xF0",
+      "detail": "requires the final byte of m_message to be the 0xF7 terminator, and the length field counts that terminator",
+      "description": "A normal SysEx message is self-terminating; without the 0xF7 a receiver waits forever for the rest of the message.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "1 to 64 payload bytes per event",
+      "generation_note": "generate the manufacturer ID and body as data bytes 0-127, append 0xF7, then set the length from the measured total"
+    },
+    {
+      "rule": "forbidden",
+      "subject": "MIDI System Common and System Real Time status bytes",
+      "detail": "the bytes 0xF1-0xF6 and 0xF8-0xFE may not appear as an event status in a Standard MIDI File",
+      "description": "These messages exist only on the wire; SMF defines no file encoding for them, and this template would read a length field that is not there.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "not applicable - this is an exclusion, not a repeating element",
+      "generation_note": "restrict generated status bytes to 0x80-0xEF, 0xF0, 0xF7 and 0xFF; the template routes every excluded value to sysex_event, which is its most destructive desynchronisation path",
+      "evidence": {
+        "line": 236,
+        "snippet": "else if ((lastStatus & 0xf0) == 0xF0)"
+      }
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any bytes after the last track chunk",
+      "detail": "the file ends with the last MTrk chunk's final counted byte; SMF defines nothing after it",
+      "description": "The template reads exactly m_ntracks chunks and stops, so trailing bytes are simply outside the format.",
+      "corruption_risk": "low",
+      "source": "both",
+      "generation_bound": "0 trailing bytes",
+      "generation_note": "stop writing immediately after the last track's End of Track event"
+    },
+    {
+      "rule": "ordering",
+      "subject": "the chunk envelope",
+      "detail": "every chunk in the file is a four-character type followed by a 32-bit big-endian byte count and then exactly that many bytes; readers must skip a chunk of an unknown type using its length",
+      "description": "The four-byte type plus length envelope is the invariant that makes the whole file self-delimiting and forward-compatible.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one envelope per chunk, at most 5 chunks",
+      "generation_note": "generate each chunk's payload first, then write its type and measured length; BigEndian() is set at line 18 and never changed, so every multi-byte field in the file is big-endian",
+      "evidence": {
+        "line": 18,
+        "snippet": "BigEndian();"
+      }
+    }
+  ],
+  "template_deviations": [
+    {
+      "subject": "every data byte declared as `char`",
+      "line": 66,
+      "issue": "The template declares m_status, every channel voice data byte, every meta-event scalar and the SysEx payload as `char`, which is SIGNED in 010 Editor. Any byte with bit 7 set therefore reads as negative, which is why the meta-event test at line 127 is `lastStatus == -1` rather than a comparison against 0xFF.",
+      "impact": "A generator that respects the declared signed type would emit only half the byte range for the status byte and would treat the 0-127 data-byte constraint as -128..127. Every one of these fields is unsigned in the MIDI specification, and for the data bytes the true range is 0-127, not 0-255.",
+      "action": "Treat all of them as unsigned 8-bit; constrain every channel voice data byte to 0-127 and the status byte to 0x80-0xFF."
+    },
+    {
+      "subject": "MidiHeader.m_ntracks and MidiHeader.m_tickdiv",
+      "line": 30,
+      "issue": "Both are declared `short`, which is signed, where SMF 1.0 defines them as 16-bit unsigned. For m_tickdiv this is worse than cosmetic: every timecode-mode value has bit 15 set and so reads as negative.",
+      "impact": "A track count above 32767 becomes a negative array bound, and the entire SMPTE division mode is misrepresented.",
+      "action": "Treat both as unsigned 16-bit; decode m_tickdiv by testing bit 15 rather than the sign."
+    },
+    {
+      "subject": "neither magic number is ever checked",
+      "line": 22,
+      "issue": "Neither MidiHeader.m_magic nor MidiTrack.m_magic is compared against anything - no Assert, no if, no Warning. The template simply reads four bytes and continues.",
+      "impact": "The template will happily parse a file that is not a MIDI file at all, and its laxity here says nothing about validity. These are the two most important fixed values in the format.",
+      "action": "Treat 'MThd' and 'MTrk' as hard fixed values that never receive an evil value."
+    },
+    {
+      "subject": "MidiHeader.m_seclen is read and ignored",
+      "line": 23,
+      "issue": "The header length is read into a field and then never used: the template reads m_format, m_ntracks and m_tickdiv by shape rather than skipping m_seclen bytes.",
+      "impact": "A wrong header length is invisible to this template and fatal to a conforming reader, which would be left positioned in the wrong place for the first MTrk chunk.",
+      "action": "Emit 6 as an invariant."
+    },
+    {
+      "subject": "MidiTrack event loop counter underflow",
+      "line": 253,
+      "issue": "`local uint remaining = m_seclen;` at line 250 is decremented by `sizeof(message)` at line 253 inside `while (remaining)`. There is no check that the subtraction stays non-negative, and remaining is unsigned.",
+      "impact": "If the events overshoot the declared track length by even one byte the counter wraps to a value near 2^32 and the loop runs essentially forever. This is not a mis-parse, it is a hang - the single most dangerous property of this template for a generator that chooses m_seclen independently of the events.",
+      "action": "Always derive m_seclen from the events actually written; never draw it at random."
+    },
+    {
+      "subject": "DeltaTime accepts an over-long variable-length quantity",
+      "line": 57,
+      "issue": "The guard `if (!(t3 & 0x80)) break;` breaks when the fourth byte's continuation bit is CLEAR. When it is SET the struct falls off its end and no fifth byte is read.",
+      "impact": "A five-byte variable-length quantity is silently truncated to four, and everything after it in the track is mis-parsed. The specification caps the quantity at four bytes, so t3's continuation bit must always be clear.",
+      "action": "Always emit t3 with bit 7 clear; better still, keep generated quantities to one or two bytes."
+    },
+    {
+      "subject": "lastStatus is never reset between tracks",
+      "line": 61,
+      "issue": "`local char lastStatus = 0;` is declared once at file scope and updated at line 68, but never cleared at the start of a track nor after a meta or SysEx event. SMF 1.0 requires running status to be reset at the start of every track and cancelled by every SysEx and meta event.",
+      "impact": "The template will happily decode a running-status message at the start of track 2 using a status left over from track 1. Worse, if the first event of track 1 uses running status, lastStatus is still 0, no dispatch branch matches, no data bytes are consumed, and the event loop spins on a zero-size message.",
+      "action": "Always emit an explicit status byte on the first event of every track and on the first event after any meta or SysEx event."
+    },
+    {
+      "subject": "META_TEMPO 24-bit bitfield",
+      "line": 206,
+      "issue": "`uint m_usecPerQuarterNote : 24;` is a 24-bit bitfield of a uint, which in 010 Editor occupies the storage of a full uint - four bytes - so the template compensates with `FSeek(FTell() - 1);` at line 208 to give the fourth byte back.",
+      "impact": "A generator reading the declared type literally would emit four bytes where the format has three, shifting every subsequent event in the track by one byte.",
+      "action": "Emit exactly three big-endian bytes for the tempo value."
+    },
+    {
+      "subject": "META_SEQUENCER_EVENT has no dispatch branch",
+      "line": 150,
+      "issue": "The enum declares META_SEQUENCER_EVENT = 0x7f at line 150 but the if/else chain at lines 153-233 has no branch for it, so it falls into the final else and is read as opaque m_data.",
+      "impact": "None for generation - the length-delimited fallback is exactly what SMF 1.0 requires of a reader that does not recognise a meta type. Recorded so the gap reads as a deliberate fallback rather than an oversight.",
+      "action": "Generate it as a length-delimited opaque payload beginning with a manufacturer ID."
+    },
+    {
+      "subject": "System Common and System Real Time statuses fall into sysex_event",
+      "line": 236,
+      "issue": "The test `(lastStatus & 0xf0) == 0xF0` at line 236 catches 0xF0 through 0xFE (0xFF having been taken by the meta branch at line 127), so 0xF1-0xF6 and 0xF8-0xFE all reach the SysEx branch and have a variable-length length read for them.",
+      "impact": "These messages carry no length field, so the template consumes following event bytes as a length and then as a payload, desynchronising the rest of the track.",
+      "action": "Never emit a status byte outside 0x80-0xEF, 0xF0, 0xF7 and 0xFF."
+    },
+    {
+      "subject": "MidiMessage.meta_event.m_name declared twice",
+      "line": 167,
+      "issue": "The same field name is used for the Sequence/Track Name meta-event at line 167 and for the Instrument Name meta-event at line 171, in mutually exclusive branches of the same if/else chain.",
+      "impact": "Only one of the two can exist in any given parse, so a single constraints entry covers both; recorded so the duplicate key is not read as a collision.",
+      "action": "Treat as one field whose meaning depends on m_type."
+    },
+    {
+      "subject": "MidiMessage.meta_event.m_fps is a frame count, not a frame rate",
+      "line": 215,
+      "issue": "The field name suggests frames per second, but SMF 1.0's SMPTE Offset event places the frame NUMBER within the second here; the frame RATE is packed into bits 6-5 of the hour byte at line 212.",
+      "impact": "A generator following the name would write 24, 25 or 30 as a rate where the format expects a frame index bounded by that rate.",
+      "action": "Emit a frame index 0-29 here and encode the rate in the hour byte."
+    },
+    {
+      "subject": "no bounds check anywhere on a variable-length length",
+      "line": 241,
+      "issue": "m_length.total is used directly as an array size at lines 159, 163, 167, 171, 175, 179, 183, 187, 191, 232 and 241, with no check against the remaining track length or the file size.",
+      "impact": "A four-byte variable-length quantity can claim 256 MB from four bytes of input, and nothing stops the array from running past the end of the chunk or the file.",
+      "action": "Bound every generated length to the payload actually written and keep it inside the enclosing track length."
+    },
+    {
+      "subject": "no Assert, no Warning and no Exit anywhere in the file",
+      "line": 18,
+      "issue": "The template contains not a single validation guard. Every constraint recorded here with source 'spec' is one the parser does not check at all, and even the two magic numbers pass unexamined.",
+      "impact": "The set of files this template accepts is very much larger than the set of valid MIDI files, so its behaviour is no guide to validity.",
+      "action": "Take every 'spec'-sourced constraint in this file as binding despite the template's silence."
+    }
+  ]
+}

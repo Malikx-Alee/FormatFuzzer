@@ -1,0 +1,3239 @@
+{
+  "meta": {
+    "format": "wav",
+    "source_template": "templates_originals/wav-orig.bt",
+    "model": "claude-opus-5",
+    "spec_reference": "Multimedia Programming Interface and Data Specifications 1.0 (IBM Corporation and Microsoft Corporation, August 1991) - the RIFF container and the WAVE form, including the fmt, data, fact, cue, LIST/INFO, LIST/adtl and LIST/wavl chunks; Microsoft WAVEFORMATEX and WAVEFORMATEXTENSIBLE (Windows SDK, mmreg.h) for the format tag registry and the 40-byte extensible format chunk; the RIFF WAVE sampler chunk definition as published in the MIDI Manufacturers Association DLS specifications for the smpl chunk; IMA/DVI ADPCM Recommended Practices for Enhancing Digital Audio Compatibility (IMA, 1992) for the wSamplesPerBlock relationship. The template itself cites https://en.wikipedia.org/wiki/WAV at line 17.",
+    "schema_extensions": [
+      {
+        "name": "present_when",
+        "where": "the six padding entries - FORMATCHUNK.padding, DATACHUNK.padding, LISTSUBCHUNK.padding, LISTCHUNK.padding, UNKNOWNCHUNK.padding and SMPLCHUNK.padding",
+        "why": "These bytes are typed fixed_value because they are padding pinned to zero, which the checklist requires, but their defining property is CONDITIONAL PRESENCE rather than value: the byte exists if and only if the enclosing chunk's size is odd. A generator that emits it unconditionally, or never, misaligns every chunk that follows. There is no schema key for conditional presence on a constraints entry, and burying it in a description string would put a structural rule in prose."
+      },
+      {
+        "name": "fixed_result / fixed_result_hex",
+        "where": "the FORMATCHUNK.wcbsize, CUEPOINT.dwChunkStart, CUEPOINT.dwBlockStart and SMPLCHUNK.Sampler_Data entries",
+        "why": "Each of these is genuinely a derived quantity - a byte count or an offset - that nonetheless has exactly one correct value in the files this template can produce: 2 for the ADPCM extension, 0 for both cue offsets in a file with no wavl playlist, and 0 for the sampler data the template never reads. fixed_result records the constant so the rewrite step can emit it directly, while algorithm/covers/includes_self still document what the field measures."
+      },
+      {
+        "name": "lookahead sub-keys: comparison, switch_line, case_line, tested_at_line",
+        "where": "the six chunk-identifier entries and the LISTCHUNK.subchunk entry",
+        "why": "The top-level dispatch peeks four bytes with ReadBytes at line 535 and switches on them at line 538, so the peek site and the six comparison sites are different lines - switch_line and case_line record both, which a single call_site_line cannot. Separately, the LIST loop's ReadUInt peek at line 166 is not compared against literals at all: it is a bounds test at line 167 deciding whether the next subchunk fits. That call site has no mined value set, so `values` is empty and `comparison` is bounds_test - without which a value-mining pass would either invent literals or skip the call entirely."
+      },
+      {
+        "name": "lookahead function value \"ReadUInt\"",
+        "where": "the LISTCHUNK.subchunk entry",
+        "why": "The schema enumerates ReadUByte, ReadUShort, ReadByte and ReadBytes. This template also uses ReadUInt, at line 166 inside the LIST loop and at line 566 for the unknown-chunk diagnostic. Dropping the entry would lose the one lookahead in the file that bounds a repeating section."
+      },
+      {
+        "name": "excluded_values",
+        "where": "the UNKNOWNCHUNK.chunkID entry",
+        "why": "This field is defined by exclusion: any printable four-character identifier EXCEPT the six the top-level dispatch already claims. A pattern_constraint expresses the character class but cannot express the hole, and emitting one of the six here would produce a chunk the template's own grammar re-parses with a different, often fixed-shape layout."
+      },
+      {
+        "name": "byte_layout",
+        "where": "the CUECHUNK.points and SMPLCHUNK.loops entries",
+        "why": "The 24-byte stride of a cue record and of a loop record is nowhere stated in the .bt - it is implicit in a struct definition elsewhere - and the rewrite step needs it to convert between an element count and the enclosing chunk size."
+      },
+      {
+        "name": "template_deviations",
+        "where": "new fifth top-level section",
+        "why": "This template validates only the RIFF/WAVE signature and the presence of a format chunk, and it disagrees with the specification in fourteen concrete places: a length field whose bytes are never read, an ignored container size, signed declarations for every unsigned 32-bit field, two chunk structs missing their padding branch, a fact chunk read by shape rather than by length, three legal sample depths with no typed layout, an undecoded extensible format extension, and a subchunk loop with no progress guarantee. A generator that imitated the parser's laxity would emit files this template accepts and no audio tool does, so these must be visible as data rather than buried in prose."
+      }
+    ],
+    "structure_note": "A RIFF container with NO terminator: the 12-byte 'RIFF' + size + 'WAVE' header, then a flat stream of chunks each consisting of a four-character identifier, a 32-bit little-endian size, that many data bytes and a pad byte when the size is odd - of which 'fmt ' and 'data' are mandatory and 'fmt ' must come first, the stream ending when the container size is exhausted."
+  },
+  "constraints": {
+    "WAVRIFFHEADER.groupID": {
+      "type": "fixed_value",
+      "description": "The RIFF container signature opening the file; the template aborts outright on anything else.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "RIFF",
+      "required_value_hex": "0x52494646",
+      "required_value_ascii": "RIFF",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 523,
+        "snippet": "if( header.groupID != \"RIFF\" || header.riffType != \"WAVE\" )"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 29 and checked by the guard at lines 523-527, which calls Warning and returns -1. The template's own header records the file signature at line 10 as `52 49 46 46 [+4] 57 41 56 45`, i.e. 'RIFF' then any four bytes then 'WAVE'. RIFF also defines the big-endian container 'RIFX', which this template rejects. This is one of the two most important fixed values in the format and must never receive an evil value."
+    },
+    "WAVRIFFHEADER.hsize": {
+      "type": "calculated_value",
+      "description": "Size of the RIFF container's payload: everything in the file after the eight bytes of this header's identifier and size field.",
+      "corruption_risk": "high",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count = total file size minus 8",
+      "covers": "the four riffType bytes plus every chunk in the file, including each chunk's identifier, size field, data and pad byte; it excludes the groupID field and this size field itself",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "WAVRIFFHEADER.riffType",
+        "FORMATCHUNK.chunkSize",
+        "DATACHUNK.chunkSize"
+      ],
+      "generation_range": {
+        "min": 36,
+        "max": 262144,
+        "rationale": "The floor of 36 is the smallest self-consistent WAVE: 4 for 'WAVE' plus a 24-byte PCM fmt chunk plus an 8-byte empty data chunk. A signed 32-bit field can claim 2 GB, and although this template never uses it for anything, every real reader trusts it to bound the chunk walk. Capping at 256 KB keeps generated audio files cheap."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 30,
+        "snippet": "long   hsize;"
+      },
+      "confidence": "high",
+      "notes": "TEMPLATE DEVIATION: the field is read into the struct and then NEVER used - the top-level loop at line 532 walks chunks with `while( !FEof() )` rather than honouring this size, so a wrong value is invisible here and desynchronises a conforming reader. Declared `long`, which is signed, where RIFF specifies an unsigned 32-bit value."
+    },
+    "WAVRIFFHEADER.riffType": {
+      "type": "fixed_value",
+      "description": "The RIFF form type identifying this container as a WAVE file; checked together with the RIFF signature.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "WAVE",
+      "required_value_hex": "0x57415645",
+      "required_value_ascii": "WAVE",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 523,
+        "snippet": "if( header.groupID != \"RIFF\" || header.riffType != \"WAVE\" )"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 31 and checked by the same guard at lines 523-527. RIFF containers use this field to distinguish WAVE from AVI, RMID and the other RIFF form types, so the pair 'RIFF' plus 'WAVE' is what actually identifies a .wav file. Together with groupID this is the format's complete signature."
+    },
+    "FORMATCHUNK.chunkID": {
+      "type": "fixed_value",
+      "description": "The four-character chunk identifier that marks this as the format chunk; the top-level dispatch selects this struct only when the peeked tag equals it.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "fmt ",
+      "required_value_hex": "0x666D7420",
+      "required_value_ascii": "fmt ",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fmt "
+        ],
+        "comparison": "equals",
+        "switch_line": 538,
+        "case_line": 540,
+        "note": "The top-level chunk dispatch reads the four tag bytes by lookahead at line 535 and switches on them at line 538; the six recognised literals are at lines 540, 544, 548, 552, 556 and 560, and anything else falls to the default at line 564. Because the peek does not advance the file position, the same four bytes are then consumed as this struct's chunkID."
+      },
+      "evidence": {
+        "line": 540,
+        "snippet": "case \"fmt \":"
+      },
+      "confidence": "high",
+      "notes": "RIFF chunk identifiers are exactly four bytes of printable ASCII, space-padded when the name is shorter - which is why 'fmt ' and 'cue ' carry a trailing space that is part of the identifier and must be emitted. This is the chunk that declares the sample format for the whole file, so the trailing space is load-bearing: 'fmt' with a NUL or any other fourth byte falls to the UNKNOWNCHUNK branch and the file is then rejected at line 70 for having no valid format chunk."
+    },
+    "FORMATCHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "high",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count = 16 for a plain PCM format chunk, 18 when a two-byte cbSize extension field is present, 20 for the DVI IMA ADPCM layout this template reads, and 40 for WAVE_FORMAT_EXTENSIBLE",
+      "covers": "the format fields following the size: wFormatTag, wChannels, dwSamplesPerSec, dwAvgBytesPerSec, wBlockAlign, wBitsPerSample and any extension bytes; it excludes the 'fmt ' identifier, this size field and any pad byte",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "generation_range": {
+        "min": 16,
+        "max": 40,
+        "rationale": "Unlike the data chunk this size is not free: the specification defines exactly four layouts, of 16, 18, 20 and 40 bytes. The template reads 16 bytes unconditionally, 4 more when wFormatTag is 17, and dumps any remainder into unknown[] at line 56 - so a size below 16 makes that subtraction negative while a size above 40 is not a layout any decoder knows."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 37,
+        "snippet": "long           chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound. 16 is the value for the plain PCM chunk a generator should prefer."
+    },
+    "FORMATCHUNK.wFormatTag": {
+      "type": "enumerated_values",
+      "description": "Audio format code declaring how the sample data is encoded; it decides whether the sample bytes are raw PCM or a compressed stream, and whether extension fields follow.",
+      "corruption_risk": "high",
+      "field_type": "short",
+      "source": "both",
+      "valid_values": [
+        1,
+        2,
+        3,
+        6,
+        7,
+        17,
+        20,
+        49,
+        64,
+        80,
+        85,
+        65534
+      ],
+      "value_names": [
+        "WAVE_FORMAT_PCM - uncompressed linear PCM",
+        "WAVE_FORMAT_ADPCM - Microsoft ADPCM",
+        "WAVE_FORMAT_IEEE_FLOAT - 32- or 64-bit floating-point PCM",
+        "WAVE_FORMAT_ALAW - CCITT G.711 A-law",
+        "WAVE_FORMAT_MULAW - CCITT G.711 mu-law",
+        "WAVE_FORMAT_DVI_ADPCM - IMA/DVI ADPCM",
+        "WAVE_FORMAT_G723_ADPCM",
+        "WAVE_FORMAT_GSM610",
+        "WAVE_FORMAT_G721_ADPCM",
+        "WAVE_FORMAT_MPEG",
+        "WAVE_FORMAT_MPEGLAYER3",
+        "WAVE_FORMAT_EXTENSIBLE - the real format is named by a GUID in the 40-byte extension"
+      ],
+      "preferred_value": 1,
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 45,
+        "snippet": "if (wFormatTag == 17) //DVI IMA ADPCM"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 39 and tested at line 45, which is the template's only branch on it: `if (wFormatTag == 17) //DVI IMA ADPCM` adds the two extension fields. WAVE_FORMAT_PCM (1) is strongly preferred for generation - it is the only tag for which the sample bytes need no valid compressed stream, and it is the one every decoder implements. TEMPLATE DEVIATION: declared as a SIGNED `short`, so WAVE_FORMAT_EXTENSIBLE (0xFFFE) reads as -2; and the template reads none of the 22 extension bytes that tag requires."
+    },
+    "FORMATCHUNK.wChannels": {
+      "type": "range_constraint",
+      "description": "Number of interleaved audio channels; it is the element count of every SAMPLES frame and a factor of the block alignment.",
+      "corruption_risk": "high",
+      "field_type": "unsigned short",
+      "source": "both",
+      "min": 1,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 1,
+        "max": 2,
+        "rationale": "Used directly as an array bound at lines 103, 105 and 107 with no check. A 16-bit channel count of 65535 makes each sample frame 128 KB at 16 bits per sample, and the frame array is then sized by chunkSize divided by wBlockAlign - so an inconsistent pair produces an enormous nested structure. 1 (mono) and 2 (stereo) are what real files use, and mono additionally reaches the template's three fast-path branches at lines 83, 88 and 93."
+      },
+      "preferred_value": 1,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 103,
+        "snippet": "uchar channels[ format.wChannels ];"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 40 and compared against 1 at lines 83, 88 and 93 to select the flat-array fast paths. The specification requires at least one channel; zero channels makes wBlockAlign zero, which the data chunk guard at line 78 explicitly tests for because it would be a division by zero at line 108."
+    },
+    "FORMATCHUNK.dwSamplesPerSec": {
+      "type": "range_constraint",
+      "description": "Sampling rate in sample frames per second; it must be non-zero and is one of the two factors of the average byte rate.",
+      "corruption_risk": "medium",
+      "field_type": "unsigned long",
+      "source": "spec",
+      "min": 1,
+      "max": 4294967295,
+      "endianness": "little",
+      "generation_range": {
+        "min": 8000,
+        "max": 48000,
+        "rationale": "Real rates are 8000, 11025, 22050, 44100 and 48000. A 32-bit value near 4 billion makes dwAvgBytesPerSec - which must equal this times wBlockAlign - overflow its own 32-bit field, so the two cannot both be consistent at extreme values. It costs no file bytes but a player computing a duration from it will produce nonsense."
+      },
+      "preferred_value": 44100,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE format chunk: 'dwSamplesPerSec - Sample rate, in samples per second (hertz).' A rate of zero describes audio that never advances and is a division by zero in any duration computation. The template reads a plain unsigned long and performs no check.",
+        "line": 41,
+        "snippet": "unsigned long  dwSamplesPerSec;"
+      },
+      "confidence": "high"
+    },
+    "FORMATCHUNK.dwAvgBytesPerSec": {
+      "type": "calculated_value",
+      "description": "Average data rate in bytes per second; for uncompressed PCM it is exactly the sampling rate times the block alignment, and a player uses it to size its buffers.",
+      "corruption_risk": "medium",
+      "field_type": "unsigned long",
+      "source": "spec",
+      "algorithm": "dwSamplesPerSec * wBlockAlign for uncompressed formats; for a compressed format it is the encoder's average output rate",
+      "covers": "nothing itself; it is a derived rate describing the data chunk's payload",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.dwSamplesPerSec",
+        "FORMATCHUNK.wBlockAlign",
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "generation_range": {
+        "min": 8000,
+        "max": 384000,
+        "rationale": "Must equal dwSamplesPerSec * wBlockAlign for PCM, so it is not a free value at all - the ceiling here is 48000 * 8, i.e. 48 kHz stereo 32-bit. Choosing it independently of the rate and the block alignment is the most common way a generated fmt chunk becomes internally inconsistent."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE format chunk: 'dwAvgBytesPerSec - Average data rate. Playback software can estimate the buffer size using this value.' For WAVE_FORMAT_PCM it must equal dwSamplesPerSec times wBlockAlign. The template reads a plain unsigned long and performs no check.",
+        "line": 42,
+        "snippet": "unsigned long  dwAvgBytesPerSec;"
+      },
+      "confidence": "high"
+    },
+    "FORMATCHUNK.wBlockAlign": {
+      "type": "calculated_value",
+      "description": "Size in bytes of one complete sample frame across all channels; it is the divisor the data chunk uses to count frames, so a zero or inconsistent value breaks the whole sample parse.",
+      "corruption_risk": "high",
+      "field_type": "unsigned short",
+      "source": "both",
+      "algorithm": "wChannels * wBitsPerSample / 8 for uncompressed formats; for a compressed format it is the encoder's block size",
+      "covers": "nothing itself; it is the stride of one sample frame in the data chunk payload",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample",
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "generation_range": {
+        "min": 1,
+        "max": 8,
+        "rationale": "Must equal wChannels * wBitsPerSample / 8 for PCM, giving 1 for 8-bit mono through 8 for 32-bit stereo. It is used as a divisor at lines 78 and 108, which is exactly why the guard at line 78 tests it against zero: a zero block alignment would be a division by zero. An inconsistent non-zero value silently changes the frame count."
+      },
+      "preferred_value": 2,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 78,
+        "snippet": "|| format.wBlockAlign == 0 || (chunkSize % (int)format.wBlockAlign != 0) )"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 43 and used three times in the data chunk: tested against 0 and used as a modulus at line 78, and used as the frame-count divisor at line 108. RIFF WAVE: 'wBlockAlign - The block alignment (in bytes) of the data ... Playback software needs to process a multiple of wBlockAlign bytes of data at a time.' The data chunk's size must be an exact multiple of it, which the template checks at line 78 and falls back to an opaque byte array when it fails."
+    },
+    "FORMATCHUNK.wBitsPerSample": {
+      "type": "enumerated_values",
+      "description": "Bits in each individual sample of one channel; the template supports only 8, 16 and 32 and routes everything else to an opaque byte array.",
+      "corruption_risk": "high",
+      "field_type": "unsigned short",
+      "source": "both",
+      "valid_values": [
+        4,
+        8,
+        16,
+        24,
+        32,
+        64
+      ],
+      "value_names": [
+        "4 - ADPCM compressed nibbles",
+        "8 - unsigned 8-bit PCM",
+        "16 - signed 16-bit PCM",
+        "24 - signed 24-bit PCM",
+        "32 - signed 32-bit PCM or 32-bit IEEE float",
+        "64 - 64-bit IEEE float"
+      ],
+      "preferred_value": 16,
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 77,
+        "snippet": "if( ((format.wBitsPerSample != 8) && (format.wBitsPerSample != 16) && (format.wBitsPerSample != 32))"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 44 and compared against 8, 16 and 32 five separate times: at line 77 to decide whether the samples are parseable at all, at lines 83, 88 and 93 for the mono fast paths, and at lines 102, 104 and 106 for the general interleaved case. TEMPLATE DEVIATION: 24-bit PCM is a perfectly legal and widely used depth that has no branch here, so it falls into the opaque waveformData array at line 81. RIFF WAVE requires this field to be a multiple of 8 for PCM."
+    },
+    "FORMATCHUNK.wcbsize": {
+      "type": "calculated_value",
+      "description": "Size in bytes of the format extension that follows; the template reads it only for DVI IMA ADPCM, where the extension is a single two-byte field.",
+      "corruption_risk": "high",
+      "field_type": "unsigned short",
+      "source": "both",
+      "algorithm": "byte count of the format-specific extension bytes following this field",
+      "covers": "the extension bytes after this field - for DVI IMA ADPCM just the two-byte wSamplesPerBlock; it excludes this field itself and the 16 bytes of common format fields before it",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "fixed_result": 2,
+      "fixed_result_hex": "0x0002",
+      "generation_range": {
+        "min": 2,
+        "max": 2,
+        "rationale": "For WAVE_FORMAT_DVI_ADPCM the extension is exactly the two-byte wSamplesPerBlock, so the only self-consistent value is 2. The template reads the two extension bytes unconditionally whatever this says, and dumps any remaining declared bytes into unknown[] at line 56, so a wrong value is invisible here and mis-sizes the chunk for a real decoder."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 47,
+        "snippet": "unsigned short wcbsize;"
+      },
+      "confidence": "high",
+      "notes": "Present only when wFormatTag is 17 (guard at line 45). This is the standard RIFF WAVE cbSize field, which every non-PCM format chunk carries; the template reads it only in the ADPCM branch, so for any other compressed tag the extension bytes land in unknown[] instead."
+    },
+    "FORMATCHUNK.wSamplesPerBlock": {
+      "type": "calculated_value",
+      "description": "Number of decoded sample frames each DVI IMA ADPCM block expands to; it is fixed by the block size and channel count rather than being free.",
+      "corruption_risk": "medium",
+      "field_type": "unsigned short",
+      "source": "both",
+      "algorithm": "((wBlockAlign - 4 * wChannels) * 8) / (wBitsPerSample * wChannels) + 1 - the ADPCM block carries a 4-byte per-channel preamble whose sample is counted, then packed nibbles",
+      "covers": "nothing itself; it describes how many sample frames one wBlockAlign-byte block of the data chunk decodes to",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wBlockAlign",
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample"
+      ],
+      "generation_range": {
+        "min": 1,
+        "max": 4096,
+        "rationale": "Derived from the block alignment, so it is not free. IMA ADPCM blocks are conventionally 256, 512 or 1024 bytes, decoding to roughly twice that many mono samples. A value that disagrees with wBlockAlign makes every decoder produce the wrong number of samples."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 48,
+        "snippet": "unsigned short wSamplesPerBlock;"
+      },
+      "confidence": "high",
+      "notes": "Present only when wFormatTag is 17 (guard at line 45), which is the template's contribution: it establishes WHEN the field exists. The value formula itself is from the IMA/DVI ADPCM Recommended Practices - each block opens with a four-byte per-channel preamble whose sample is counted, then packed nibbles - and the template performs no check on it. The 1.2 history entry at line 12 records that this branch was added to 'correct parsing of DVI ADPCM'."
+    },
+    "FORMATCHUNK.unknown": {
+      "type": "calculated_value",
+      "description": "Any declared format-chunk bytes the template did not consume; its length is whatever the chunk size claims beyond what was actually read.",
+      "corruption_risk": "medium",
+      "field_type": "uchar[chunkSize - (FTell() - pos)]",
+      "source": "template",
+      "algorithm": "byte count = FORMATCHUNK.chunkSize - (bytes consumed since the local pos captured at line 38, i.e. since just after the chunkSize field)",
+      "covers": "the trailing format-chunk bytes after the fields the template understands, to the end of the chunk data",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "FORMATCHUNK.chunkSize",
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 24,
+        "rationale": "For a plain PCM chunk this is 0; for WAVE_FORMAT_EXTENSIBLE it is the 22 extension bytes the template never decodes - a two-byte cbSize, a two-byte valid-bits union, a four-byte channel mask and a sixteen-byte sub-format GUID. Emitted only when chunkSize exceeds what was read (guard at line 55), and the subtraction goes negative if chunkSize is smaller."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 56,
+        "snippet": "uchar unknown[ chunkSize - (FTell() - pos) ];"
+      },
+      "confidence": "high",
+      "notes": "This is where a WAVE_FORMAT_EXTENSIBLE format chunk's entire extension ends up, including the sub-format GUID that names the real codec."
+    },
+    "FORMATCHUNK.padding": {
+      "type": "fixed_value",
+      "description": "Pad byte inserted after this chunk when its declared size is odd, so that the next chunk begins on an even boundary.",
+      "corruption_risk": "high",
+      "field_type": "uchar",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "present_when": "(FORMATCHUNK.chunkSize & 1) is non-zero",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 60,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "RIFF requires every chunk to occupy an even number of bytes, so a chunk whose declared size is odd is followed by a single pad byte that is NOT counted in chunkSize. The specification says the pad byte should be zero. Omitting it leaves every subsequent chunk misaligned by one byte, which is why the corruption risk is high even though the byte's value is ignored. TEMPLATE DEVIATION: this is the one padding branch in the file with no `FTell() < FileSize()` guard, so on a truncated file it reads past the end."
+    },
+    "DATACHUNK.chunkID": {
+      "type": "fixed_value",
+      "description": "The four-character chunk identifier that marks this as the wave data chunk; the top-level dispatch selects this struct only when the peeked tag equals it.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "data",
+      "required_value_hex": "0x64617461",
+      "required_value_ascii": "data",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "data"
+        ],
+        "comparison": "equals",
+        "switch_line": 538,
+        "case_line": 544,
+        "note": "The top-level chunk dispatch reads the four tag bytes by lookahead at line 535 and switches on them at line 538; the six recognised literals are at lines 540, 544, 548, 552, 556 and 560, and anything else falls to the default at line 564. Because the peek does not advance the file position, the same four bytes are then consumed as this struct's chunkID."
+      },
+      "evidence": {
+        "line": 544,
+        "snippet": "case \"data\":"
+      },
+      "confidence": "high",
+      "notes": "RIFF chunk identifiers are exactly four bytes of printable ASCII, space-padded when the name is shorter - which is why 'fmt ' and 'cue ' carry a trailing space that is part of the identifier and must be emitted. This chunk holds the actual audio samples and is mandatory in every WAVE file."
+    },
+    "DATACHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "high",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count of the sample data = number of sample frames * FORMATCHUNK.wBlockAlign; it must be an exact multiple of wBlockAlign",
+      "covers": "the sample bytes following the size field, to the end of the chunk; it excludes the 'data' identifier, this size field and any pad byte",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wBlockAlign",
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 131072,
+        "rationale": "This is the format's principal size lever: it is used directly as an array bound at lines 81 and 86 and as a divisor-numerator at lines 91, 96 and 108, with no upper check. A signed 32-bit value claims up to 2 GB of audio from four header bytes. 128 KB is roughly 1.5 seconds of 44.1 kHz stereo 16-bit audio and keeps generated files cheap while still producing a plausible sample stream."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 67,
+        "snippet": "long           chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound. It must be an exact multiple of wBlockAlign; the guard at line 78 tests exactly that and falls back to an opaque byte array when it fails."
+    },
+    "DATACHUNK.waveformData": {
+      "type": "calculated_value",
+      "description": "The sample bytes read as an opaque array, used whenever the declared format is one the template cannot lay out as typed samples.",
+      "corruption_risk": "high",
+      "field_type": "unsigned char[chunkSize]",
+      "source": "template",
+      "algorithm": "byte count = DATACHUNK.chunkSize",
+      "covers": "every byte of the data chunk payload",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "DATACHUNK.chunkSize",
+        "FORMATCHUNK.wBitsPerSample",
+        "FORMATCHUNK.wBlockAlign"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 131072,
+        "rationale": "Mirrors the chunkSize generation bound; this array is what a runaway size actually materialises as."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 81,
+        "snippet": "unsigned char  waveformData[chunkSize];"
+      },
+      "confidence": "high",
+      "notes": "Reached by the guard at lines 77-78 whenever wBitsPerSample is not 8, 16 or 32, or wBlockAlign is 0, or chunkSize is not an exact multiple of wBlockAlign. For a compressed wFormatTag the bytes are a real codec stream - an IMA ADPCM block sequence, an MPEG elementary stream - and random bytes will not decode, though nothing rejects the file for it."
+    },
+    "DATACHUNK.samples": {
+      "type": "calculated_value",
+      "description": "The sample data laid out as typed samples; the element count and element type both follow from the format chunk, and the template has four different shapes for it.",
+      "corruption_risk": "high",
+      "field_type": "uchar[chunkSize] / short[chunkSize/2] / int[chunkSize/4] / SAMPLES[chunkSize / wBlockAlign]",
+      "source": "both",
+      "algorithm": "element count = DATACHUNK.chunkSize for mono 8-bit, chunkSize/2 for mono 16-bit, chunkSize/4 for mono 32-bit, and chunkSize / FORMATCHUNK.wBlockAlign for every other channel count, where each element is one interleaved sample frame",
+      "covers": "every byte of the data chunk payload",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "DATACHUNK.chunkSize",
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample",
+        "FORMATCHUNK.wBlockAlign"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 65536,
+        "rationale": "Element count. Bounded together with chunkSize: 64 K frames of 16-bit stereo is 256 KB. The count must never be chosen independently of chunkSize and wBlockAlign, because a real decoder recomputes it from those two fields."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 108,
+        "snippet": "} samples[ chunkSize / (int)format.wBlockAlign ];"
+      },
+      "confidence": "high",
+      "notes": "Declared four times under the same name in mutually exclusive branches: lines 86, 91 and 96 are mono fast paths and line 108 is the general interleaved case. The individual sample VALUES are genuinely free audio data and deliberately have no constraints entries. Note the sign convention the specification imposes: 8-bit PCM samples are UNSIGNED with 128 as silence, while 16-bit and larger PCM samples are SIGNED two's complement with 0 as silence - and the template's `uchar` at line 86 and `short` at line 91 match that correctly."
+    },
+    "DATACHUNK.padding": {
+      "type": "fixed_value",
+      "description": "Pad byte inserted after this chunk when its declared size is odd, so that the next chunk begins on an even boundary.",
+      "corruption_risk": "high",
+      "field_type": "uchar",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "present_when": "(DATACHUNK.chunkSize & 1) is non-zero",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 113,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "RIFF requires every chunk to occupy an even number of bytes, so a chunk whose declared size is odd is followed by a single pad byte that is NOT counted in chunkSize. The specification says the pad byte should be zero. Omitting it leaves every subsequent chunk misaligned by one byte, which is why the corruption risk is high even though the byte's value is ignored. Guarded additionally by `FTell() < FileSize()` at line 112, so it is skipped at end of file."
+    },
+    "SAMPLES.channels": {
+      "type": "calculated_value",
+      "description": "One interleaved sample frame: exactly one sample per channel, laid out consecutively, with the element type following the bit depth.",
+      "corruption_risk": "high",
+      "field_type": "uchar[wChannels] / short[wChannels] / int[wChannels]",
+      "source": "both",
+      "algorithm": "element count = FORMATCHUNK.wChannels; byte count = wChannels * wBitsPerSample / 8, which must equal FORMATCHUNK.wBlockAlign",
+      "covers": "one sample frame of the data chunk payload",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample",
+        "FORMATCHUNK.wBlockAlign"
+      ],
+      "generation_range": {
+        "min": 1,
+        "max": 2,
+        "rationale": "Mirrors the wChannels generation bound; this array is emitted once per sample frame, so its size multiplies with the frame count."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 103,
+        "snippet": "uchar channels[ format.wChannels ];"
+      },
+      "confidence": "high",
+      "notes": "Declared three times under the same name at lines 103, 105 and 107 in mutually exclusive bit-depth branches. TEMPLATE DEVIATION: if wBitsPerSample is none of 8, 16 or 32 the struct emits NO field at all and every frame is zero bytes wide, which would spin the enclosing array - but the guard at line 77 makes that branch unreachable in practice. The byte size of this struct must equal wBlockAlign exactly, or the frame count computed at line 108 disagrees with the bytes present."
+    },
+    "FACTCHUNK.chunkID": {
+      "type": "fixed_value",
+      "description": "The four-character chunk identifier that marks this as the fact chunk; the top-level dispatch selects this struct only when the peeked tag equals it.",
+      "corruption_risk": "medium",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "fact",
+      "required_value_hex": "0x66616374",
+      "required_value_ascii": "fact",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fact"
+        ],
+        "comparison": "equals",
+        "switch_line": 538,
+        "case_line": 548,
+        "note": "The top-level chunk dispatch reads the four tag bytes by lookahead at line 535 and switches on them at line 538; the six recognised literals are at lines 540, 544, 548, 552, 556 and 560, and anything else falls to the default at line 564. Because the peek does not advance the file position, the same four bytes are then consumed as this struct's chunkID."
+      },
+      "evidence": {
+        "line": 548,
+        "snippet": "case \"fact\":"
+      },
+      "confidence": "high",
+      "notes": "RIFF chunk identifiers are exactly four bytes of printable ASCII, space-padded when the name is shorter - which is why 'fmt ' and 'cue ' carry a trailing space that is part of the identifier and must be emitted. The fact chunk is required for every non-PCM format and states the decoded length, which a player cannot otherwise compute from a compressed data chunk."
+    },
+    "FACTCHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count = 4 for the standard fact chunk, which carries only the uncompressed sample count",
+      "covers": "the uncompressedSize field that follows; it excludes the 'fact' identifier and this size field",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [],
+      "generation_range": {
+        "min": 4,
+        "max": 4,
+        "rationale": "The specification defines the fact chunk as a single 32-bit value, so the only conforming size is 4. TEMPLATE DEVIATION: the template reads exactly one unsigned long whatever this field says and never skips to the declared end, so any other size desynchronises the chunk walk immediately - and unlike every other chunk here, FACTCHUNK has no padding branch at all, so an odd size leaves the parse permanently misaligned."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 120,
+        "snippet": "long           chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound."
+    },
+    "FACTCHUNK.uncompressedSize": {
+      "type": "calculated_value",
+      "description": "Number of sample frames the data chunk decodes to; for a compressed format this is the only way a player can know the true duration.",
+      "corruption_risk": "medium",
+      "field_type": "unsigned long",
+      "source": "spec",
+      "algorithm": "sample frame count = DATACHUNK.chunkSize / FORMATCHUNK.wBlockAlign for uncompressed PCM; for a compressed format it is the decoder's output frame count",
+      "covers": "nothing itself; it describes the decoded length of the data chunk payload",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "DATACHUNK.chunkSize",
+        "FORMATCHUNK.wBlockAlign",
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 65536,
+        "rationale": "Must agree with the data chunk's frame count; bounded together with DATACHUNK.chunkSize so the two stay consistent."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE fact chunk: 'dwSampleLength - Number of samples (per channel).' The chunk is required for all compressed formats and for WAVE_FORMAT_EXTENSIBLE, and its value must equal the number of sample frames the data chunk decodes to. The template reads a plain unsigned long and performs no check.",
+        "line": 121,
+        "snippet": "unsigned long  uncompressedSize;"
+      },
+      "confidence": "high"
+    },
+    "CUEPOINT.dwIdentifier": {
+      "type": "range_constraint",
+      "description": "Unique identifier for this cue point; other chunks - notably smpl loops and adtl labels - refer back to it by this number.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "little",
+      "generation_range": {
+        "min": 1,
+        "max": 16,
+        "rationale": "An identifier, not a magnitude. It must be unique among the cue points in the file and is the target of SMPLLOOPS.Cue_Point and of adtl labl/note/ltxt subchunks, so small sequential values are what real encoders write and what keeps the cross-references satisfiable."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE cue chunk: 'dwIdentifier - Specifies the cue point name. Each <cue-point> record must have a unique dwIdentifier field.' The template reads a plain signed long and performs no check. TEMPLATE DEVIATION: declared `long`, which is signed, where the specification defines an unsigned 32-bit value.",
+        "line": 126,
+        "snippet": "long    dwIdentifier;"
+      },
+      "confidence": "high"
+    },
+    "CUEPOINT.dwPosition": {
+      "type": "calculated_value",
+      "description": "Sample-frame offset of this cue point within the play order defined by the wavl playlist, or within the data chunk when there is no playlist.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "spec",
+      "algorithm": "sample frame offset within the play order; when no playlist chunk is present it equals dwSampleOffset",
+      "covers": "nothing itself; it locates a point in the decoded sample stream",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "DATACHUNK.chunkSize",
+        "FORMATCHUNK.wBlockAlign",
+        "CUEPOINT.dwSampleOffset"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 65536,
+        "rationale": "Must lie inside the sample stream, whose frame count is DATACHUNK.chunkSize divided by wBlockAlign; bounded together with the data chunk so cue points stay in range."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE cue chunk: 'dwPosition - Specifies the sample position of the cue point ... the sample offset relative to the beginning of the play order as defined in the wavl chunk.' The template reads a plain signed long and performs no check.",
+        "line": 127,
+        "snippet": "long    dwPosition;"
+      },
+      "confidence": "high"
+    },
+    "CUEPOINT.fccChunk": {
+      "type": "enumerated_values",
+      "description": "Four-character identifier of the chunk this cue point refers into; only the two data-bearing chunk types can be named.",
+      "corruption_risk": "medium",
+      "field_type": "char[4]",
+      "source": "spec",
+      "valid_values": [
+        "data",
+        "slnt"
+      ],
+      "value_names": [
+        "the data chunk holding the sample stream",
+        "a slnt silence chunk inside a wavl playlist"
+      ],
+      "preferred_value": "data",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE cue chunk: 'fccChunk - Specifies the four-character code that identifies the chunk containing the cue point ... This field is either data or slnt.' The template reads a plain char[4] and performs no check.",
+        "line": 128,
+        "snippet": "char    fccChunk[4];"
+      },
+      "confidence": "high",
+      "notes": "Unlike a chunk identifier this field is a cross-reference, so its value must name a chunk that actually exists in the file."
+    },
+    "CUEPOINT.dwChunkStart": {
+      "type": "calculated_value",
+      "description": "Byte offset of the start of the chunk this cue point refers into, measured from the start of the wavl playlist; it is zero when there is no playlist.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "spec",
+      "algorithm": "byte offset from the start of the wavl LIST chunk's data to the start of the referenced data or slnt chunk; 0 when the file has no wavl chunk",
+      "covers": "nothing itself; it locates the chunk that contains the cue point",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "CUEPOINT.fccChunk",
+        "LISTCHUNK.chunkType"
+      ],
+      "fixed_result": 0,
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "The specification states this is zero when the file contains no wavl playlist chunk, which is the overwhelmingly common case and the only one this template can produce - it has no slnt or wavl handling at all. Any non-zero value would point into a structure that does not exist."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE cue chunk: 'dwChunkStart - Specifies the byte offset of the start of the chunk containing the cue point ... This is a zero value if the file does not contain a wavl chunk.' The template reads a plain signed long and performs no check.",
+        "line": 129,
+        "snippet": "long    dwChunkStart;"
+      },
+      "confidence": "high"
+    },
+    "CUEPOINT.dwBlockStart": {
+      "type": "calculated_value",
+      "description": "Byte offset from the start of the referenced chunk's data to the start of the compression block containing this cue point; zero for uncompressed audio.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "spec",
+      "algorithm": "byte offset from the start of the referenced chunk's data section to the first byte of the block containing the cue point; 0 for uncompressed PCM, where every sample frame is independently addressable",
+      "covers": "nothing itself; it locates the block that contains the cue point",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wFormatTag",
+        "FORMATCHUNK.wBlockAlign",
+        "DATACHUNK.chunkSize"
+      ],
+      "fixed_result": 0,
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "For WAVE_FORMAT_PCM there are no compression blocks to seek to, so the specification's value is 0. A non-zero value only makes sense for a block-compressed format, which this template cannot lay out anyway."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE cue chunk: 'dwBlockStart - Specifies the byte offset of the start of the block containing the position. This value is used with compression formats ... For uncompressed formats this is zero.' The template reads a plain signed long and performs no check.",
+        "line": 130,
+        "snippet": "long    dwBlockStart;"
+      },
+      "confidence": "high"
+    },
+    "CUEPOINT.dwSampleOffset": {
+      "type": "calculated_value",
+      "description": "Sample-frame offset of the cue point measured from the start of the block named by dwBlockStart; for uncompressed audio it is simply the frame index in the data chunk.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "spec",
+      "algorithm": "sample frame offset relative to dwBlockStart; for uncompressed PCM, where dwBlockStart is 0, it is the frame index within the data chunk",
+      "covers": "nothing itself; it locates the cue point within its block",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "CUEPOINT.dwBlockStart",
+        "DATACHUNK.chunkSize",
+        "FORMATCHUNK.wBlockAlign"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 65536,
+        "rationale": "Must lie inside the sample stream, whose frame count is DATACHUNK.chunkSize divided by wBlockAlign; bounded together with the data chunk."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE cue chunk: 'dwSampleOffset - Specifies the sample offset of the cue point relative to the start of the block.' For uncompressed data this equals dwPosition. The template reads a plain signed long and performs no check.",
+        "line": 131,
+        "snippet": "long    dwSampleOffset;"
+      },
+      "confidence": "high"
+    },
+    "CUECHUNK.chunkID": {
+      "type": "fixed_value",
+      "description": "The four-character chunk identifier that marks this as the cue point chunk; the top-level dispatch selects this struct only when the peeked tag equals it.",
+      "corruption_risk": "medium",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "cue ",
+      "required_value_hex": "0x63756520",
+      "required_value_ascii": "cue ",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "cue "
+        ],
+        "comparison": "equals",
+        "switch_line": 538,
+        "case_line": 552,
+        "note": "The top-level chunk dispatch reads the four tag bytes by lookahead at line 535 and switches on them at line 538; the six recognised literals are at lines 540, 544, 548, 552, 556 and 560, and anything else falls to the default at line 564. Because the peek does not advance the file position, the same four bytes are then consumed as this struct's chunkID."
+      },
+      "evidence": {
+        "line": 552,
+        "snippet": "case \"cue \":"
+      },
+      "confidence": "high",
+      "notes": "RIFF chunk identifiers are exactly four bytes of printable ASCII, space-padded when the name is shorter - which is why 'fmt ' and 'cue ' carry a trailing space that is part of the identifier and must be emitted. Like 'fmt ' this identifier carries a trailing space that is part of the four-byte code."
+    },
+    "CUECHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count = 4 + 24 * dwCuePoints, i.e. the four-byte cue count plus one 24-byte CUEPOINT record per cue",
+      "covers": "the dwCuePoints count and the CUEPOINT records that follow; it excludes the 'cue ' identifier and this size field",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "CUECHUNK.dwCuePoints"
+      ],
+      "generation_range": {
+        "min": 4,
+        "max": 388,
+        "rationale": "Fully determined by the cue count: 4 with no cues, 388 with the 16 the generation bound allows. The template dumps any excess into unknown[] at line 143 and the subtraction goes negative if the size is smaller than what was read."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 136,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound. TEMPLATE DEVIATION: CUECHUNK has no padding branch, so an odd size leaves the chunk walk misaligned - though a conforming cue chunk size is always a multiple of 4 and therefore even."
+    },
+    "CUECHUNK.dwCuePoints": {
+      "type": "calculated_value",
+      "description": "Number of CUEPOINT records that follow; it is the array bound for the cue list and must match the record count exactly.",
+      "corruption_risk": "high",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "element count",
+      "covers": "the CUEPOINT points[] array that follows it; it excludes this count field and the chunk header",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "CUECHUNK.chunkSize"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "Used directly as an array bound at line 139 with no check. Each record is 24 bytes, so a signed 32-bit count claims up to 48 GB of cue points from four bytes - the single cheapest route from this template to an enormous parse. It must also satisfy chunkSize = 4 + 24 * dwCuePoints, so it is not independent of the chunk size."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 138,
+        "snippet": "long      dwCuePoints;"
+      },
+      "confidence": "high",
+      "notes": "TEMPLATE DEVIATION: declared `long`, which is signed, so a value above 2^31-1 reads negative and becomes a negative array bound."
+    },
+    "CUECHUNK.points": {
+      "type": "calculated_value",
+      "description": "The cue point list; its element count is dwCuePoints and each element is a fixed 24 bytes.",
+      "corruption_risk": "high",
+      "field_type": "CUEPOINT[dwCuePoints]",
+      "source": "template",
+      "algorithm": "element count = CUECHUNK.dwCuePoints; byte count = 24 * dwCuePoints",
+      "covers": "the cue records between dwCuePoints and the end of the chunk data",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "CUECHUNK.dwCuePoints"
+      ],
+      "byte_layout": "24 bytes per record: dwIdentifier, dwPosition, fccChunk[4], dwChunkStart, dwBlockStart, dwSampleOffset - four bytes each",
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "Mirrors the dwCuePoints generation bound; 16 records is 384 bytes."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 139,
+        "snippet": "CUEPOINT  points[dwCuePoints];"
+      },
+      "confidence": "high",
+      "notes": "Every record's dwIdentifier must be unique within the list, and the records are conventionally written in ascending dwPosition order."
+    },
+    "CUECHUNK.unknown": {
+      "type": "calculated_value",
+      "description": "Any declared cue-chunk bytes beyond the records the template consumed; its length is whatever the chunk size claims beyond what was read.",
+      "corruption_risk": "medium",
+      "field_type": "uchar[chunkSize - (FTell() - pos)]",
+      "source": "template",
+      "algorithm": "byte count = CUECHUNK.chunkSize - (bytes consumed since the local pos captured at line 137, i.e. since just after the chunkSize field)",
+      "covers": "the trailing cue-chunk bytes after the cue records, to the end of the chunk data",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "CUECHUNK.chunkSize",
+        "CUECHUNK.dwCuePoints"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "A conforming cue chunk is exactly 4 + 24 * dwCuePoints bytes, so this array should always be empty; it exists only to absorb an inconsistent chunk size."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 143,
+        "snippet": "uchar unknown[ chunkSize - (FTell() - pos) ];"
+      },
+      "confidence": "high",
+      "notes": "Emitted only when chunkSize exceeds what was read (guard at line 142); the subtraction goes negative if chunkSize is smaller."
+    },
+    "LISTSUBCHUNK.chunkID": {
+      "type": "enumerated_values",
+      "description": "Four-character identifier of a subchunk inside a LIST; which identifiers are legal depends on the LIST's own form type.",
+      "corruption_risk": "medium",
+      "field_type": "char[4]",
+      "source": "spec",
+      "valid_values": [
+        "IARL",
+        "IART",
+        "ICMS",
+        "ICMT",
+        "ICOP",
+        "ICRD",
+        "ICRP",
+        "IDIM",
+        "IDPI",
+        "IENG",
+        "IGNR",
+        "IKEY",
+        "ILGT",
+        "IMED",
+        "INAM",
+        "IPLT",
+        "IPRD",
+        "ISBJ",
+        "ISFT",
+        "ISHP",
+        "ISRC",
+        "ISRF",
+        "ITCH",
+        "labl",
+        "note",
+        "ltxt",
+        "data",
+        "slnt"
+      ],
+      "value_names": [
+        "Archival Location",
+        "Artist",
+        "Commissioned",
+        "Comments",
+        "Copyright",
+        "Creation Date",
+        "Cropped",
+        "Dimensions",
+        "Dots Per Inch",
+        "Engineer",
+        "Genre",
+        "Keywords",
+        "Lightness",
+        "Medium",
+        "Name",
+        "Palette Setting",
+        "Product",
+        "Subject",
+        "Software",
+        "Sharpness",
+        "Source",
+        "Source Form",
+        "Technician",
+        "Label (adtl)",
+        "Note (adtl)",
+        "Labelled Text (adtl)",
+        "Data segment (wavl playlist)",
+        "Silence segment (wavl playlist)"
+      ],
+      "preferred_value": "INAM",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF Multimedia Programming Interface and Data Specifications 1.0: an INFO list carries the IARL through ITCH string subchunks; an adtl (associated data list) carries labl, note and ltxt records keyed by cue point identifier; a wavl playlist carries data and slnt segments. The template reads a plain char[4] and never compares it against anything.",
+        "line": 148,
+        "snippet": "char      chunkID[4];"
+      },
+      "confidence": "high",
+      "notes": "The set is not fixed by the format - RIFF is deliberately extensible and a reader must skip an unrecognised subchunk using its size - but these are the identifiers real files use, and which subset is legal follows from LISTCHUNK.chunkType. All four bytes must be printable ASCII."
+    },
+    "LISTSUBCHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count of this subchunk's payload",
+      "covers": "the listData bytes that follow; it excludes the subchunk identifier, this size field and any pad byte",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [],
+      "generation_range": {
+        "min": 0,
+        "max": 256,
+        "rationale": "Used directly as an array bound at line 150 with no check, and separately peeked at line 166 by the enclosing LIST's loop to decide whether the subchunk fits. A signed 32-bit value claims up to 2 GB. INFO strings are short, so 256 bytes is generous; the value must also keep FTell() - pos + size inside the enclosing LIST's own chunkSize, or the template takes the unknown[] branch at line 170 instead."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 149,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound. Peeked by the enclosing LISTCHUNK before the subchunk is instantiated, which is the template's one true lookahead beyond the tag read."
+    },
+    "LISTSUBCHUNK.listData": {
+      "type": "calculated_value",
+      "description": "The subchunk payload; for an INFO subchunk it is a NUL-terminated ASCII string, and its byte count is the subchunk size.",
+      "corruption_risk": "medium",
+      "field_type": "char[chunkSize]",
+      "source": "both",
+      "algorithm": "byte count = LISTSUBCHUNK.chunkSize",
+      "covers": "every byte of the subchunk payload after the size field",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "LISTSUBCHUNK.chunkSize",
+        "LISTSUBCHUNK.chunkID"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 256,
+        "rationale": "Mirrors the chunkSize generation bound; INFO strings are short in every real file."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 150,
+        "snippet": "char      listData[chunkSize];"
+      },
+      "confidence": "high",
+      "notes": "For every INFO subchunk the payload is a NUL-terminated ZSTR, so the final byte must be 0 and the terminator is counted in the size. For an adtl labl or note subchunk the payload is a four-byte cue point identifier followed by a NUL-terminated string, and for ltxt it is a 20-byte header followed by the text. The template treats all of them as an opaque char array."
+    },
+    "LISTSUBCHUNK.padding": {
+      "type": "fixed_value",
+      "description": "Pad byte inserted after this chunk when its declared size is odd, so that the next chunk begins on an even boundary.",
+      "corruption_risk": "high",
+      "field_type": "uchar",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "present_when": "(LISTSUBCHUNK.chunkSize & 1) is non-zero",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 154,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "RIFF requires every chunk to occupy an even number of bytes, so a chunk whose declared size is odd is followed by a single pad byte that is NOT counted in chunkSize. The specification says the pad byte should be zero. Omitting it leaves every subsequent chunk misaligned by one byte, which is why the corruption risk is high even though the byte's value is ignored. Guarded additionally by `FTell() < FileSize()` at line 153."
+    },
+    "LISTCHUNK.chunkID": {
+      "type": "fixed_value",
+      "description": "The four-character chunk identifier that marks this as a LIST container chunk; the top-level dispatch selects this struct only when the peeked tag equals it.",
+      "corruption_risk": "medium",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "LIST",
+      "required_value_hex": "0x4C495354",
+      "required_value_ascii": "LIST",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "LIST"
+        ],
+        "comparison": "equals",
+        "switch_line": 538,
+        "case_line": 560,
+        "note": "The top-level chunk dispatch reads the four tag bytes by lookahead at line 535 and switches on them at line 538; the six recognised literals are at lines 540, 544, 548, 552, 556 and 560, and anything else falls to the default at line 564. Because the peek does not advance the file position, the same four bytes are then consumed as this struct's chunkID."
+      },
+      "evidence": {
+        "line": 560,
+        "snippet": "case \"LIST\":"
+      },
+      "confidence": "high",
+      "notes": "RIFF chunk identifiers are exactly four bytes of printable ASCII, space-padded when the name is shorter - which is why 'fmt ' and 'cue ' carry a trailing space that is part of the identifier and must be emitted. LIST is the only RIFF chunk type that nests: its payload is a four-character form type followed by a sequence of subchunks."
+    },
+    "LISTCHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "high",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count = 4 for the chunkType plus the total size of every subchunk including each subchunk's own 8-byte header and pad byte",
+      "covers": "the chunkType field and all the subchunks that follow it; it excludes the 'LIST' identifier, this size field and any pad byte of the LIST itself",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "LISTCHUNK.chunkType",
+        "LISTSUBCHUNK.chunkSize"
+      ],
+      "generation_range": {
+        "min": 4,
+        "max": 4096,
+        "rationale": "This size is the sole bound on the subchunk loop at line 165 - `while( FTell() - pos < chunkSize )` - so it is what decides how many subchunks are parsed. A signed 32-bit value claims up to 2 GB. Worse, if the size does not decompose exactly into whole subchunks the loop's final iteration takes the unknown[] branch at line 170, and if a subchunk's own size is zero the loop makes no progress at all and spins."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 159,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound."
+    },
+    "LISTCHUNK.chunkType": {
+      "type": "enumerated_values",
+      "description": "The LIST form type, naming what kind of subchunks the list contains; it is the only field that gives the subchunk identifiers meaning.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "spec",
+      "valid_values": [
+        "INFO",
+        "adtl",
+        "wavl"
+      ],
+      "value_names": [
+        "INFO - archival metadata strings such as IART, INAM and ISFT",
+        "adtl - associated data list: labl, note and ltxt records keyed by cue point identifier",
+        "wavl - wave playlist: an ordered sequence of data and slnt segments"
+      ],
+      "preferred_value": "INFO",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF Multimedia Programming Interface and Data Specifications 1.0: a LIST chunk's data begins with a four-character list type. For WAVE files the defined types are INFO for metadata, adtl for the associated data list that annotates cue points, and wavl for the wave playlist. The template reads a plain char[4] and never compares it against anything.",
+        "line": 161,
+        "snippet": "char      chunkType[4];"
+      },
+      "confidence": "high",
+      "notes": "INFO is preferred: its subchunks are plain NUL-terminated strings with no cross-references, whereas adtl subchunks must name cue point identifiers that exist and wavl segments replace the data chunk's play order entirely."
+    },
+    "LISTCHUNK.subchunk": {
+      "type": "calculated_value",
+      "description": "One subchunk of the list; the loop emits as many as the LIST's declared size accommodates, deciding each time by peeking the next subchunk's size.",
+      "corruption_risk": "high",
+      "field_type": "LISTSUBCHUNK",
+      "source": "template",
+      "algorithm": "repeated while FTell() - pos is less than LISTCHUNK.chunkSize; each iteration peeks the next subchunk's 32-bit size at FTell()+4 and emits a LISTSUBCHUNK only if FTell() - pos + size stays within chunkSize, otherwise it emits the unknown[] remainder instead",
+      "covers": "one subchunk - its 4-byte identifier, 4-byte size, payload and pad byte - inside the LIST's data section",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "LISTCHUNK.chunkSize",
+        "LISTSUBCHUNK.chunkSize"
+      ],
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 166,
+        "values": [],
+        "preferred": [],
+        "comparison": "bounds_test",
+        "tested_at_line": 167,
+        "note": "The peek reads the NEXT subchunk's 32-bit size field, four bytes ahead of the current position, and the test at line 167 decides whether that subchunk fits inside the enclosing LIST. It is not compared against literals, so there is no mined value set - the constraint is the arithmetic bound, which is why `values` is empty and `comparison` is bounds_test rather than equals. This is the same ReadUInt idiom used at line 566 for an unknown top-level chunk."
+      },
+      "generation_range": {
+        "min": 0,
+        "max": 8,
+        "rationale": "Subchunk count. The loop is bounded only by the LIST's declared size, so an inflated size with small subchunks produces hundreds of them. Worse, a subchunk whose own chunkSize is 0 advances the position by only 8 bytes per iteration and one whose size makes FTell() not advance at all spins the loop - so the count must be bounded explicitly and every subchunk given a non-zero size."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 168,
+        "snippet": "LISTSUBCHUNK subchunk;"
+      },
+      "confidence": "high"
+    },
+    "LISTCHUNK.unknown": {
+      "type": "calculated_value",
+      "description": "The remainder of a LIST whose next subchunk would not fit inside the declared list size; it absorbs the inconsistency rather than reporting it.",
+      "corruption_risk": "medium",
+      "field_type": "uchar[chunkSize - (FTell() - pos)]",
+      "source": "template",
+      "algorithm": "byte count = LISTCHUNK.chunkSize - (bytes consumed since the local pos captured at line 160, i.e. since just after the chunkSize field)",
+      "covers": "the trailing LIST bytes from the current position to the declared end of the list",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "LISTCHUNK.chunkSize",
+        "LISTSUBCHUNK.chunkSize"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "A conforming LIST decomposes exactly into whole subchunks, so this array should always be empty; it exists only to absorb a size that does not."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 170,
+        "snippet": "uchar unknown[ chunkSize - (FTell() - pos) ];"
+      },
+      "confidence": "high",
+      "notes": "Reached by the else at line 169 when the peeked subchunk size would overrun the list. Note this branch does not break the loop, so if it consumes zero bytes the loop spins."
+    },
+    "LISTCHUNK.padding": {
+      "type": "fixed_value",
+      "description": "Pad byte inserted after this chunk when its declared size is odd, so that the next chunk begins on an even boundary.",
+      "corruption_risk": "high",
+      "field_type": "uchar",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "present_when": "(LISTCHUNK.chunkSize & 1) is non-zero",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 175,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "RIFF requires every chunk to occupy an even number of bytes, so a chunk whose declared size is odd is followed by a single pad byte that is NOT counted in chunkSize. The specification says the pad byte should be zero. Omitting it leaves every subsequent chunk misaligned by one byte, which is why the corruption risk is high even though the byte's value is ignored. Guarded additionally by `FTell() < FileSize()` at line 174."
+    },
+    "UNKNOWNCHUNK.chunkID": {
+      "type": "pattern_constraint",
+      "description": "Four-character identifier of a chunk type the template has no branch for; it must still be printable ASCII and must not be one of the six the dispatch already claims.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "pattern": "^[\\x20-\\x7E]{4}$ - exactly four printable ASCII characters, space-padded when the name is shorter - and NOT one of 'fmt ', 'data', 'fact', 'cue ', 'smpl' or 'LIST', since the dispatch at lines 538-563 would route those to a different struct",
+      "excluded_values": [
+        "fmt ",
+        "data",
+        "fact",
+        "cue ",
+        "smpl",
+        "LIST"
+      ],
+      "preferred_value": [
+        "bext",
+        "junk",
+        "JUNK",
+        "PAD ",
+        "id3 ",
+        "iXML",
+        "_PMX",
+        "minf",
+        "elm1",
+        "ovwf",
+        "regn",
+        "umid",
+        "DISP",
+        "afsp"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 570,
+        "snippet": "UNKNOWNCHUNK unknown;"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 180 and reached by the default arm at line 564. RIFF is deliberately extensible: a reader must skip an unrecognised chunk using its size field, which is exactly what this struct does. But the exclusion matters for generation - emitting one of the six handled identifiers here produces a chunk the template's own dispatch would re-parse with a completely different, often fixed-shape layout, so the file would not round-trip through its own grammar."
+    },
+    "UNKNOWNCHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count of the unrecognised chunk's payload",
+      "covers": "the unknownData bytes that follow; it excludes the chunk identifier, this size field and any pad byte",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [],
+      "generation_range": {
+        "min": 0,
+        "max": 1024,
+        "rationale": "Used directly as an array bound at line 182 with no check, and peeked at line 566 purely to print a diagnostic. A signed 32-bit value claims up to 2 GB. Keeping unknown chunks small leaves room for the structural chunks that matter."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 181,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound."
+    },
+    "UNKNOWNCHUNK.unknownData": {
+      "type": "calculated_value",
+      "description": "Opaque payload of an unrecognised chunk, read purely by length.",
+      "corruption_risk": "medium",
+      "field_type": "uchar[chunkSize]",
+      "source": "template",
+      "algorithm": "byte count = UNKNOWNCHUNK.chunkSize",
+      "covers": "every byte of the unrecognised chunk's payload after the size field",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "UNKNOWNCHUNK.chunkSize"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 1024,
+        "rationale": "Mirrors the chunkSize generation bound."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 182,
+        "snippet": "uchar     unknownData[chunkSize];"
+      },
+      "confidence": "high",
+      "notes": "The bytes are genuinely free-form: RIFF requires only that an unrecognised chunk be skippable by its size."
+    },
+    "UNKNOWNCHUNK.padding": {
+      "type": "fixed_value",
+      "description": "Pad byte inserted after this chunk when its declared size is odd, so that the next chunk begins on an even boundary.",
+      "corruption_risk": "high",
+      "field_type": "uchar",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "present_when": "(UNKNOWNCHUNK.chunkSize & 1) is non-zero",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 186,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "RIFF requires every chunk to occupy an even number of bytes, so a chunk whose declared size is odd is followed by a single pad byte that is NOT counted in chunkSize. The specification says the pad byte should be zero. Omitting it leaves every subsequent chunk misaligned by one byte, which is why the corruption risk is high even though the byte's value is ignored. Guarded additionally by `FTell() < FileSize()` at line 185."
+    },
+    "SMPLLOOPS.Cue_Point": {
+      "type": "range_constraint",
+      "description": "Identifier of the cue point this loop is anchored to; it must name a dwIdentifier that actually exists in the cue chunk.",
+      "corruption_risk": "medium",
+      "field_type": "SMPLLOOPS_Cue_ID (typedef long)",
+      "source": "both",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "A cross-reference, not a magnitude: it must match a CUEPOINT.dwIdentifier present in the file, so it is bounded by the cue point generation range. A loop naming a cue point that does not exist is a dangling reference no sampler can resolve."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 482,
+        "snippet": "SMPLLOOPS_Cue_ID     Cue_Point;"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 193-202. RIFF WAVE smpl chunk: 'dwIdentifier - The cue point ID corresponding to one of the defined cue points in the cue-point list.' TEMPLATE DEVIATION: every smpl field is typedef'd from a SIGNED `long` where the specification defines unsigned 32-bit values, and the display functions at lines 199, 219, 233 and so on all print them with %u, silently contradicting the declared type."
+    },
+    "SMPLLOOPS.Type": {
+      "type": "enumerated_values",
+      "description": "Loop direction; the template's own display switch enumerates the four defined types and treats everything else as unknown.",
+      "corruption_risk": "medium",
+      "field_type": "SMPLLOOPS_Type (typedef long)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "Loop: Forward",
+        "Loop: Ping Pong (alternating)",
+        "Loop: Reverse",
+        "reserved for future standard types"
+      ],
+      "preferred_value": 0,
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 454,
+        "snippet": "switch( loop )"
+      },
+      "confidence": "high",
+      "notes": "The typedef is at line 447 and the value set comes from the switch at lines 454-474, whose cases are 0, 1, 2 and 3 with a default of 'Loop: <unknown>'. The specification reserves 4 through 31 for future standard types and 32 upward for manufacturer-specific ones, but only 0, 1 and 2 have defined behaviour. This template has NO typedef enum anywhere, so this display switch is one of only three places a value set can be mined from the file at all."
+    },
+    "SMPLLOOPS.Start": {
+      "type": "calculated_value",
+      "description": "Sample-frame offset at which the loop begins, measured from the start of the sample data.",
+      "corruption_risk": "medium",
+      "field_type": "SMPLLOOPS_Start (typedef long)",
+      "source": "both",
+      "algorithm": "sample frame offset from the start of the data chunk's sample stream",
+      "covers": "nothing itself; it locates the first frame of the loop within the decoded sample stream",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "DATACHUNK.chunkSize",
+        "FORMATCHUNK.wBlockAlign"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 65536,
+        "rationale": "Must lie inside the sample stream, whose frame count is DATACHUNK.chunkSize divided by wBlockAlign; bounded together with the data chunk so loop points stay in range."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 484,
+        "snippet": "SMPLLOOPS_Start      Start;"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 227-236. The function's text says 'Loop Start at %u byte offset', but the specification defines the field in sample frames, not bytes - a mislabelling in the template's display only."
+    },
+    "SMPLLOOPS.End": {
+      "type": "calculated_value",
+      "description": "Sample-frame offset of the last frame played in the loop; it must be at or after Start and inside the sample stream.",
+      "corruption_risk": "medium",
+      "field_type": "SMPLLOOPS_End (typedef long)",
+      "source": "both",
+      "algorithm": "sample frame offset from the start of the data chunk's sample stream; must be greater than or equal to SMPLLOOPS.Start",
+      "covers": "nothing itself; it locates the last frame of the loop within the decoded sample stream",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "SMPLLOOPS.Start",
+        "DATACHUNK.chunkSize",
+        "FORMATCHUNK.wBlockAlign"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 65536,
+        "rationale": "Bounded together with Start and with the data chunk's frame count; an End below Start describes a loop of negative length."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 485,
+        "snippet": "SMPLLOOPS_End        End;"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 239-248. RIFF WAVE smpl chunk: 'dwEnd - The end point of the loop. The value is the last sample that will be played.'"
+    },
+    "SMPLLOOPS.Fraction": {
+      "type": "range_constraint",
+      "description": "Fractional part of a sample frame at which the loop starts, expressed as a 32-bit fixed-point fraction of one frame.",
+      "corruption_risk": "low",
+      "field_type": "SMPLLOOPS_Fraction (typedef long)",
+      "source": "spec",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "The specification defines this as a fraction of a sample frame in units of 1/2^32, so 0 means the loop starts exactly on a frame boundary - which is what every real sampler writes and the only value that needs no sub-sample interpolation."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE smpl chunk: 'dwFraction - A value between 0 and UINT_MAX that specifies the fraction of a sample at which to loop. This allows a loop to be fine tuned at a resolution greater than one sample. The value 0x80000000 means 1/2 of a sample length.' The template reads a plain signed long and performs no check.",
+        "line": 486,
+        "snippet": "SMPLLOOPS_Fraction   Fraction;"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 251-260."
+    },
+    "SMPLLOOPS.Play_Count": {
+      "type": "range_constraint",
+      "description": "Number of times the loop plays; zero is a sentinel meaning loop forever, which the template's own display function calls out.",
+      "corruption_risk": "low",
+      "field_type": "SMPLLOOPS_Play_Count (typedef long)",
+      "source": "both",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "A repeat count that costs no file bytes but makes a sampler loop that many times; the sentinel 0 means infinite sustain, which is what real instrument files use. Values near 2^32 would make a player loop for effectively forever without adding coverage."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 213,
+        "snippet": "if (pc==0)"
+      },
+      "confidence": "high",
+      "notes": "The typedef is at line 206 and the display function at lines 208-223 branches on `if (pc==0)` to print ' Infinite Sustain Loop', which is the template's own documentation of the sentinel. RIFF WAVE smpl chunk: 'dwPlayCount - The number of times to play the loop. A value of 0 specifies an infinite sustain loop.'"
+    },
+    "SMPLCHUNK.chunkID": {
+      "type": "fixed_value",
+      "description": "The four-character chunk identifier that marks this as the sampler chunk; the top-level dispatch selects this struct only when the peeked tag equals it.",
+      "corruption_risk": "medium",
+      "field_type": "char[4]",
+      "source": "both",
+      "required_value": "smpl",
+      "required_value_hex": "0x736D706C",
+      "required_value_ascii": "smpl",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "smpl"
+        ],
+        "comparison": "equals",
+        "switch_line": 538,
+        "case_line": 556,
+        "note": "The top-level chunk dispatch reads the four tag bytes by lookahead at line 535 and switches on them at line 538; the six recognised literals are at lines 540, 544, 548, 552, 556 and 560, and anything else falls to the default at line 564. Because the peek does not advance the file position, the same four bytes are then consumed as this struct's chunkID."
+      },
+      "evidence": {
+        "line": 556,
+        "snippet": "case \"smpl\":"
+      },
+      "confidence": "high",
+      "notes": "RIFF chunk identifiers are exactly four bytes of printable ASCII, space-padded when the name is shorter - which is why 'fmt ' and 'cue ' carry a trailing space that is part of the identifier and must be emitted. The smpl chunk carries MIDI sampler metadata - unity note, pitch fraction, SMPTE sync and loop points - for instrument sample files."
+    },
+    "SMPLCHUNK.chunkSize": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data, excluding the four identifier bytes and this size field itself and excluding any trailing pad byte.",
+      "corruption_risk": "medium",
+      "field_type": "long",
+      "source": "both",
+      "algorithm": "byte count = 36 + 24 * Num_Sample_Loops + Sampler_Data, i.e. the nine fixed 4-byte fields, one 24-byte SMPLLOOPS record per loop, and the trailing sampler-specific bytes",
+      "covers": "the nine fixed sampler fields, the loop records and the sampler-specific data; it excludes the 'smpl' identifier and this size field",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "SMPLCHUNK.Num_Sample_Loops",
+        "SMPLCHUNK.Sampler_Data"
+      ],
+      "generation_range": {
+        "min": 36,
+        "max": 420,
+        "rationale": "Fully determined by the loop count and the sampler data length: 36 with no loops and no extra data, 420 with the 16 loops the generation bound allows. TEMPLATE DEVIATION: the template never uses this field to bound anything - it reads the nine fields and the loop array by shape - so a wrong value is invisible here and mis-sizes the chunk for a real reader."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 495,
+        "snippet": "long                     chunkSize;"
+      },
+      "confidence": "high",
+      "notes": "RIFF (Microsoft Multimedia Programming Interface and Data Specifications 1.0): every chunk is a four-character identifier, a 32-bit little-endian size, and that many data bytes, followed by a pad byte if the size is odd. The size counts neither the identifier nor itself nor the pad byte. TEMPLATE DEVIATION: declared as a SIGNED `long`, so a size above 2^31-1 reads negative and becomes a negative array bound."
+    },
+    "SMPLCHUNK.Manufacturer": {
+      "type": "enumerated_values",
+      "description": "MIDI System Exclusive manufacturer ID of the sampler this file targets; zero means no particular manufacturer.",
+      "corruption_risk": "low",
+      "field_type": "SMPL_Manufacturer (typedef long)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        27,
+        32,
+        33,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        47,
+        54,
+        62,
+        64,
+        65,
+        66,
+        67,
+        68,
+        70,
+        71,
+        72,
+        75,
+        76,
+        78,
+        80,
+        81,
+        82,
+        84,
+        85,
+        86,
+        87
+      ],
+      "value_names": [
+        "Unknown",
+        "Sequential Circuits",
+        "Big Briar",
+        "Octave / Plateau",
+        "Moog",
+        "Passport Designs",
+        "Lexicon",
+        "Kurzweil",
+        "Fender",
+        "Gulbransen",
+        "Delta Labs",
+        "Sound Comp.",
+        "General Electro",
+        "Techmar",
+        "Matthews Research",
+        "Oberheim",
+        "PAIA",
+        "Simmons",
+        "DigiDesign",
+        "Fairlight",
+        "JL Cooper",
+        "Lowery",
+        "Lin",
+        "Emu",
+        "Peavey",
+        "Bon Tempi",
+        "S.I.E.L.",
+        "SyntheAxe",
+        "Hohner",
+        "Crumar",
+        "Solton",
+        "Jellinghaus Ms",
+        "CTS",
+        "PPG",
+        "Elka",
+        "Cheetah",
+        "Waldorf",
+        "Kawai",
+        "Roland",
+        "Korg",
+        "Yamaha",
+        "Casio",
+        "Kamiya Studio",
+        "Akai",
+        "Victor",
+        "Fujitsu",
+        "Sony",
+        "Teac",
+        "Matsushita",
+        "Fostex",
+        "Zoom",
+        "Matsushita",
+        "Suzuki",
+        "Fuji Sound",
+        "Acoustic Technical Laboratory"
+      ],
+      "preferred_value": 0,
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 381,
+        "snippet": "switch( manufacture )"
+      },
+      "confidence": "high",
+      "notes": "The typedef is at line 373 and the value set comes from the 56-case switch at lines 381-439, which is the largest mined value set in this template. RIFF WAVE smpl chunk: 'dwManufacturer - The MIDI Manufacturer's Association manufacturer code ... If no particular manufacturer is to be specified, a value of 0 should be used.' The full MMA registry is far larger than these 56 entries and uses a three-byte extended form for IDs beginning 0x00, but this is the set the template names."
+    },
+    "SMPLCHUNK.Product": {
+      "type": "range_constraint",
+      "description": "MIDI model ID of the target sampler, defined by whichever manufacturer the preceding field names.",
+      "corruption_risk": "low",
+      "field_type": "SMPL_Product (typedef long)",
+      "source": "both",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 255,
+        "rationale": "A model code within one manufacturer's namespace, so small values are what real files carry; 0 is the conventional 'unspecified'. The field costs four bytes whatever it holds."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 497,
+        "snippet": "SMPL_Product             Product; // Product code (Manufacture)"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 324-333, and the field's own inline comment at line 497 reads '// Product code (Manufacture)'. RIFF WAVE smpl chunk: 'dwProduct - The MIDI model ID defined by the manufacturer ... A value of 0 means no model ID is specified.'"
+    },
+    "SMPLCHUNK.Sample_Period": {
+      "type": "calculated_value",
+      "description": "Duration of one sample frame in nanoseconds; the template's own comment states it is normally the reciprocal of the format chunk's sampling rate.",
+      "corruption_risk": "medium",
+      "field_type": "SMPL_Sample_Period (typedef long)",
+      "source": "both",
+      "algorithm": "1000000000 / FORMATCHUNK.dwSamplesPerSec, in nanoseconds per sample frame",
+      "covers": "nothing itself; it restates the format chunk's sampling rate as a period",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.dwSamplesPerSec"
+      ],
+      "generation_range": {
+        "min": 20833,
+        "max": 125000,
+        "rationale": "Derived from the sampling rate, so it is not free: 22675 ns at 44100 Hz, 20833 at 48000, 125000 at 8000. A value that disagrees with dwSamplesPerSec makes a sampler resample the audio at the wrong pitch, and 0 is a division by zero in any frequency computation."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 342,
+        "snippet": "// The sample period specifies the duration of time that passes during the playback of one sample in nanoseconds (normally equal to 1 / Samplers Per Second, where Samples Per Second is the value found in the format chunk)."
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 336-346, and the comment at line 342 spells the relationship out: 'The sample period specifies the duration of time that passes during the playback of one sample in nanoseconds (normally equal to 1 / Samplers Per Second, where Samples Per Second is the value found in the format chunk).' That comment is the template's only statement of a cross-chunk dependency."
+    },
+    "SMPLCHUNK.MIDI_Unity_Note": {
+      "type": "range_constraint",
+      "description": "MIDI note number at which the sample plays back at its original pitch; it is a MIDI key number, so the range is 0-127.",
+      "corruption_risk": "medium",
+      "field_type": "SMPL_MIDI_Unity_Note (typedef long)",
+      "source": "spec",
+      "min": 0,
+      "max": 127,
+      "endianness": "little",
+      "generation_range": {
+        "min": 36,
+        "max": 96,
+        "rationale": "The full 0-127 MIDI range is legal, but 36-96 is the five-octave span an instrument actually sounds; 60 is middle C and is the conventional default for a sampled instrument."
+      },
+      "preferred_value": 60,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE smpl chunk: 'dwMIDIUnityNote - The MIDI note number that corresponds to the unshifted pitch of the sample. Valid values range from 0 to 127.' The typedef and its display function are at lines 312-321; the template reads a plain signed long and performs no check.",
+        "line": 499,
+        "snippet": "SMPL_MIDI_Unity_Note     MIDI_Unity_Note;"
+      },
+      "confidence": "high"
+    },
+    "SMPLCHUNK.MIDI_Pitch_Fraction": {
+      "type": "range_constraint",
+      "description": "Fraction of a semitone above the unity note at which the sample actually plays, as a 32-bit fixed-point value.",
+      "corruption_risk": "low",
+      "field_type": "SMPL_MIDI_Pitch_Fraction (typedef long)",
+      "source": "spec",
+      "min": 0,
+      "max": 4294967295,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "The specification defines this as a fraction of a semitone in units of 1/2^32, so 0 means the sample is exactly in tune at the unity note - the value real sample libraries write and the only one that needs no pitch shifting."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "RIFF WAVE smpl chunk: 'dwMIDIPitchFraction - The fraction of a semitone up from the specified MIDI unity note field. A value of 0x80000000 means 1/2 semitone (50 cents) and a value of 0x00000000 means no fine tuning between semitones.' The typedef and its display function are at lines 300-309; the template reads a plain signed long and performs no check.",
+        "line": 500,
+        "snippet": "SMPL_MIDI_Pitch_Fraction MIDI_Pitch_Fraction;"
+      },
+      "confidence": "high"
+    },
+    "SMPLCHUNK.SMPTE": {
+      "type": "enumerated_values",
+      "description": "SMPTE frame rate used to interpret the SMPTE offset; the template's own display switch enumerates the five defined values.",
+      "corruption_risk": "medium",
+      "field_type": "SMPL_SMPTE (typedef long)",
+      "source": "both",
+      "valid_values": [
+        0,
+        24,
+        25,
+        29,
+        30
+      ],
+      "value_names": [
+        "No SMPTE offset",
+        "24 frames per second",
+        "25 frames per second",
+        "30 frames per second with frame dropping (30 drop)",
+        "30 frames per second"
+      ],
+      "preferred_value": 0,
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 357,
+        "snippet": "switch( smptef )"
+      },
+      "confidence": "high",
+      "notes": "The typedef is at line 349 and the value set comes from the switch at lines 357-365, whose cases are 0, 24, 25, 29 and 30 with a default of 'unknown'. Note the encoding oddity the specification shares with MIDI: 29 denotes 30 fps drop-frame, not 29 fps. 0 is preferred because it declares that no SMPTE synchronisation applies, which makes SMPTE_Offset a don't-care."
+    },
+    "SMPLCHUNK.SMPTE_Offset": {
+      "type": "bitmask_constraint",
+      "description": "SMPTE time offset at which the sample should start, packed as four bytes: hours, minutes, seconds and frames.",
+      "corruption_risk": "low",
+      "field_type": "SMPL_SMPTE_Offset (typedef long)",
+      "source": "both",
+      "valid_bits": "bits 31-24 are the hours, 0-23; bits 23-16 the minutes, 0-59; bits 15-8 the seconds, 0-59; and bits 7-0 the frames, bounded by the rate declared in SMPLCHUNK.SMPTE - so at most 23, 24 or 29",
+      "valid_values": [
+        0
+      ],
+      "value_names": [
+        "no offset - 00:00:00:00"
+      ],
+      "preferred_value": 0,
+      "endianness": "little",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 502,
+        "snippet": "SMPL_SMPTE_Offset        SMPTE_Offset;"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 288-297, which print it as a bare %u and hide the packing entirely. RIFF WAVE smpl chunk: 'dwSMPTEOffset - The SMPTE time offset to be used ... A value of 0x00000000 means no offset. ... hours:minutes:seconds:frames, one byte each.' valid_values records the single value that is unconditionally safe; any other value must satisfy the four per-byte ranges in valid_bits."
+    },
+    "SMPLCHUNK.Num_Sample_Loops": {
+      "type": "calculated_value",
+      "description": "Number of SMPLLOOPS records that follow; it is the array bound for the loop list and must match the record count exactly.",
+      "corruption_risk": "high",
+      "field_type": "SMPL_SL (typedef long)",
+      "source": "both",
+      "algorithm": "element count",
+      "covers": "the SMPLLOOPS loops[] array that follows; it excludes the nine fixed sampler fields before it and the sampler-specific data after it",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "SMPLCHUNK.chunkSize"
+      ],
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "Used directly as an array bound at line 505 with no check. Each record is 24 bytes, so a signed 32-bit count claims up to 48 GB of loop records from four bytes - the same blow-up as CUECHUNK.dwCuePoints. It must also satisfy chunkSize = 36 + 24 * Num_Sample_Loops + Sampler_Data, so it is not independent of the chunk size."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 503,
+        "snippet": "SMPL_SL                  Num_Sample_Loops;"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 263-272, which label it 'Number of Samples Loops (Sustain Loops)'. TEMPLATE DEVIATION: declared from a SIGNED `long`, so a value above 2^31-1 reads negative and becomes a negative array bound."
+    },
+    "SMPLCHUNK.Sampler_Data": {
+      "type": "calculated_value",
+      "description": "Byte count of manufacturer-specific sampler data following the loop records; the template declares the field but never reads the bytes it counts.",
+      "corruption_risk": "high",
+      "field_type": "SMPL_SD (typedef long)",
+      "source": "both",
+      "algorithm": "byte count of the sampler-specific data block that follows the loop records",
+      "covers": "the trailing sampler-specific bytes after the SMPLLOOPS array, to the end of the smpl chunk data",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "SMPLCHUNK.chunkSize",
+        "SMPLCHUNK.Num_Sample_Loops"
+      ],
+      "fixed_result": 0,
+      "fixed_result_hex": "0x00000000",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "TEMPLATE DEVIATION: this is a length field whose bytes the template NEVER reads - after the loops[] array at line 505 it goes straight to the padding check at line 508. Any non-zero value therefore leaves that many bytes unconsumed and desynchronises the entire chunk walk from this point on. 0 is the only self-consistent value, and it is also what real files write."
+      },
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 504,
+        "snippet": "SMPL_SD                  Sampler_Data;"
+      },
+      "confidence": "high",
+      "notes": "The typedef and its display function are at lines 275-284, which label it 'Sample Data (number of bytes)'. RIFF WAVE smpl chunk: 'cbSamplerData - The number of bytes of optional sampler specific data that follows ... usually 0.' This is the one unread length field in the template and by far its most dangerous omission."
+    },
+    "SMPLCHUNK.loops": {
+      "type": "calculated_value",
+      "description": "The sample loop list; its element count is Num_Sample_Loops and each element is a fixed 24 bytes.",
+      "corruption_risk": "high",
+      "field_type": "SMPLLOOPS[Num_Sample_Loops]",
+      "source": "template",
+      "algorithm": "element count = SMPLCHUNK.Num_Sample_Loops; byte count = 24 * Num_Sample_Loops",
+      "covers": "the loop records between the nine fixed sampler fields and the sampler-specific data",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "SMPLCHUNK.Num_Sample_Loops"
+      ],
+      "byte_layout": "24 bytes per record: Cue_Point, Type, Start, End, Fraction, Play_Count - four bytes each",
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "Mirrors the Num_Sample_Loops generation bound; 16 records is 384 bytes."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 505,
+        "snippet": "SMPLLOOPS                loops[Num_Sample_Loops];"
+      },
+      "confidence": "high",
+      "notes": "Each record's Cue_Point must name a cue point identifier that exists, and each record's Start and End must lie inside the sample stream."
+    },
+    "SMPLCHUNK.padding": {
+      "type": "fixed_value",
+      "description": "Pad byte inserted after this chunk when its declared size is odd, so that the next chunk begins on an even boundary.",
+      "corruption_risk": "high",
+      "field_type": "uchar",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "present_when": "(SMPLCHUNK.chunkSize & 1) is non-zero",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 509,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "RIFF requires every chunk to occupy an even number of bytes, so a chunk whose declared size is odd is followed by a single pad byte that is NOT counted in chunkSize. The specification says the pad byte should be zero. Omitting it leaves every subsequent chunk misaligned by one byte, which is why the corruption risk is high even though the byte's value is ignored. Guarded additionally by `FTell() < FileSize()` at line 508."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 1
+      },
+      "then": {
+        "field": "FORMATCHUNK.chunkSize",
+        "type": "fixed_value",
+        "required_value": 16,
+        "required_value_hex": "0x00000010",
+        "note": "a plain PCM format chunk has no cbSize extension field at all"
+      },
+      "description": "WAVE_FORMAT_PCM is the only tag whose format chunk carries no extension, which fixes its size at 16.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "FORMATCHUNK.chunkSize",
+        "type": "fixed_value",
+        "required_value": 20,
+        "required_value_hex": "0x00000014",
+        "note": "16 common bytes plus the two-byte wcbsize and the two-byte wSamplesPerBlock the template reads at lines 47-48"
+      },
+      "description": "The DVI IMA ADPCM layout this template understands is exactly 20 bytes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 45,
+        "snippet": "if (wFormatTag == 17) //DVI IMA ADPCM"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 65534
+      },
+      "then": {
+        "field": "FORMATCHUNK.chunkSize",
+        "type": "fixed_value",
+        "required_value": 40,
+        "required_value_hex": "0x00000028",
+        "note": "WAVE_FORMAT_EXTENSIBLE adds a 22-byte extension: cbSize, a valid-bits union, a channel mask and a 16-byte sub-format GUID. The template reads none of it - the whole extension lands in FORMATCHUNK.unknown at line 56"
+      },
+      "description": "The extensible format chunk is 40 bytes and this template decodes none of its extension.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 56,
+        "snippet": "uchar unknown[ chunkSize - (FTell() - pos) ];"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "min": 2
+      },
+      "then": {
+        "section": "FORMATCHUNK.wcbsize",
+        "required": true,
+        "note": "every non-PCM format chunk carries a cbSize field, but the template reads it only when wFormatTag is 17 (guard at line 45); for any other compressed tag it lands in FORMATCHUNK.unknown instead"
+      },
+      "description": "Only WAVE_FORMAT_PCM may omit the cbSize extension field, and this template reads it for just one of the compressed tags.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 45,
+        "snippet": "if (wFormatTag == 17) //DVI IMA ADPCM"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 1
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "type": "enumerated_values",
+        "valid_values": [
+          8,
+          16,
+          24,
+          32
+        ],
+        "note": "for PCM the bit depth must be a multiple of 8"
+      },
+      "description": "Linear PCM stores whole bytes per sample, so its bit depth is a multiple of 8.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 3
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "type": "enumerated_values",
+        "valid_values": [
+          32,
+          64
+        ],
+        "note": "IEEE floating-point samples are single or double precision; the template has no branch for 64 so a double-precision file lands in waveformData"
+      },
+      "description": "The IEEE float format is defined only for 32- and 64-bit samples.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "in": [
+          6,
+          7
+        ]
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "type": "fixed_value",
+        "required_value": 8,
+        "required_value_hex": "0x0008"
+      },
+      "description": "The G.711 A-law and mu-law companding formats are defined only for 8-bit samples.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "type": "fixed_value",
+        "required_value": 4,
+        "required_value_hex": "0x0004",
+        "note": "DVI IMA ADPCM packs one 4-bit nibble per sample; the template's guard at line 77 therefore always sends an ADPCM data chunk to the opaque waveformData array"
+      },
+      "description": "IMA ADPCM encodes each sample as a 4-bit nibble, which is exactly the depth the data chunk's guard rejects.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 1
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBlockAlign",
+        "type": "calculated_value",
+        "note": "wBlockAlign must equal wChannels * wBitsPerSample / 8, and dwAvgBytesPerSec must equal dwSamplesPerSec * wBlockAlign"
+      },
+      "description": "For PCM the block alignment and the average byte rate are both pure functions of the other three format fields.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wChannels",
+        "min": 1
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBlockAlign",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 65535,
+        "note": "must be non-zero: the data chunk uses it as a modulus at line 78 and as a divisor at line 108, and the guard at line 78 tests for zero precisely because it would be a division by zero"
+      },
+      "description": "A zero block alignment is not merely invalid, it is a division by zero in the sample-frame count.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 78,
+        "snippet": "|| format.wBlockAlign == 0 || (chunkSize % (int)format.wBlockAlign != 0) )"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.dwSamplesPerSec",
+        "min": 1
+      },
+      "then": {
+        "field": "FORMATCHUNK.dwAvgBytesPerSec",
+        "type": "calculated_value",
+        "note": "for uncompressed formats dwAvgBytesPerSec must equal dwSamplesPerSec * wBlockAlign exactly"
+      },
+      "description": "The average byte rate restates the sampling rate and the frame size, so all three must agree.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "FORMATCHUNK.wSamplesPerBlock",
+        "type": "calculated_value",
+        "note": "must equal ((wBlockAlign - 4 * wChannels) * 8) / (wBitsPerSample * wChannels) + 1, since each ADPCM block opens with a four-byte per-channel preamble whose sample is counted"
+      },
+      "description": "The ADPCM samples-per-block value is fixed by the block size and channel count and cannot be chosen freely.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "FORMATCHUNK.wcbsize",
+        "type": "fixed_value",
+        "required_value": 2,
+        "required_value_hex": "0x0002",
+        "note": "the DVI IMA ADPCM extension is exactly the two-byte wSamplesPerBlock"
+      },
+      "description": "The cbSize field must state the true length of the extension that follows it.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 47,
+        "snippet": "unsigned short wcbsize;"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "in": [
+          8,
+          16,
+          32
+        ],
+        "condition": "and wBlockAlign is non-zero and DATACHUNK.chunkSize is an exact multiple of wBlockAlign"
+      },
+      "then": {
+        "section": "DATACHUNK.samples",
+        "required": true,
+        "note": "the guard at lines 77-78 must ALL pass for the typed sample layout to be used; failing any one of the three sends the whole payload to DATACHUNK.waveformData at line 81"
+      },
+      "description": "The data chunk's typed layout is gated on a three-part condition, any part of which falling back to an opaque byte array.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 77,
+        "snippet": "if( ((format.wBitsPerSample != 8) && (format.wBitsPerSample != 16) && (format.wBitsPerSample != 32))"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "in": [
+          4,
+          24,
+          64
+        ]
+      },
+      "then": {
+        "section": "DATACHUNK.waveformData",
+        "required": true,
+        "note": "the template has no typed branch for 4-, 24- or 64-bit samples, so they all land in the opaque array - 24-bit PCM in particular is a legal and widely used depth"
+      },
+      "description": "Three legal PCM depths have no typed layout in this template and fall through to the opaque byte array.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 77,
+        "snippet": "if( ((format.wBitsPerSample != 8) && (format.wBitsPerSample != 16) && (format.wBitsPerSample != 32))"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wChannels",
+        "equals": 1,
+        "condition": "and wBitsPerSample is 8"
+      },
+      "then": {
+        "section": "DATACHUNK.samples",
+        "note": "flat uchar array of chunkSize elements, one unsigned byte per sample with 128 as silence"
+      },
+      "description": "Mono 8-bit audio takes the template's simplest fast path and stores unsigned samples.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 83,
+        "snippet": "else if( (format.wChannels == 1) && (format.wBitsPerSample == 8) )"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wChannels",
+        "equals": 1,
+        "condition": "and wBitsPerSample is 16"
+      },
+      "then": {
+        "section": "DATACHUNK.samples",
+        "note": "flat short array of chunkSize/2 elements, signed two's complement with 0 as silence; chunkSize must be even"
+      },
+      "description": "Mono 16-bit audio takes a flat signed-short fast path whose element count halves the chunk size.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 88,
+        "snippet": "else if( (format.wChannels == 1) && (format.wBitsPerSample == 16) )"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wChannels",
+        "equals": 1,
+        "condition": "and wBitsPerSample is 32"
+      },
+      "then": {
+        "section": "DATACHUNK.samples",
+        "note": "flat int array of chunkSize/4 elements; chunkSize must be a multiple of 4"
+      },
+      "description": "Mono 32-bit audio takes a flat signed-int fast path whose element count quarters the chunk size.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 93,
+        "snippet": "else if( (format.wChannels == 1) && (format.wBitsPerSample == 32) )"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wChannels",
+        "min": 2
+      },
+      "then": {
+        "section": "SAMPLES",
+        "required": true,
+        "note": "the general interleaved case at lines 101-108: one SAMPLES struct per frame, each holding wChannels samples, with the frame count being chunkSize divided by wBlockAlign"
+      },
+      "description": "Any channel count above one uses the nested interleaved layout rather than a flat array.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 108,
+        "snippet": "} samples[ chunkSize / (int)format.wBlockAlign ];"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "equals": 8
+      },
+      "then": {
+        "section": "SAMPLES.channels",
+        "note": "uchar elements - 8-bit PCM samples are UNSIGNED with 128 as silence, unlike every wider depth"
+      },
+      "description": "Eight-bit WAVE samples are unsigned while all wider depths are signed two's complement, and the template's types match.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "line": 102,
+        "snippet": "if( format.wBitsPerSample == 8 )"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "in": [
+          16,
+          32
+        ]
+      },
+      "then": {
+        "section": "SAMPLES.channels",
+        "note": "short or int elements - samples of 16 bits and wider are SIGNED two's complement with 0 as silence"
+      },
+      "description": "Sample sign convention changes at the 8-bit boundary, which is the format's most-missed detail.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "line": 104,
+        "snippet": "else if( format.wBitsPerSample == 16 )"
+      }
+    },
+    {
+      "when": {
+        "field": "DATACHUNK.chunkSize",
+        "min": 1
+      },
+      "then": {
+        "field": "DATACHUNK.chunkSize",
+        "type": "calculated_value",
+        "note": "must be an exact multiple of FORMATCHUNK.wBlockAlign; the modulus test at line 78 checks precisely this and falls back to the opaque array when it fails"
+      },
+      "description": "The data chunk must contain a whole number of sample frames.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 78,
+        "snippet": "|| format.wBlockAlign == 0 || (chunkSize % (int)format.wBlockAlign != 0) )"
+      }
+    },
+    {
+      "when": {
+        "section": "DATACHUNK",
+        "present": true
+      },
+      "then": {
+        "section": "FORMATCHUNK",
+        "required": true,
+        "note": "the guard at lines 70-74 calls Warning and returns -1 when the local haveValidFormat is still false, so a data chunk before the format chunk stops the template outright"
+      },
+      "description": "The format chunk must precede the data chunk, because the data chunk's entire layout is read from it.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 70,
+        "snippet": "if( !haveValidFormat )"
+      }
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "min": 2
+      },
+      "then": {
+        "section": "FACTCHUNK",
+        "required": true,
+        "note": "the specification requires a fact chunk for every format other than WAVE_FORMAT_PCM, since a player cannot otherwise compute the decoded length"
+      },
+      "description": "Every compressed format must declare its decoded length in a fact chunk.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 65534
+      },
+      "then": {
+        "section": "FACTCHUNK",
+        "required": true,
+        "note": "WAVE_FORMAT_EXTENSIBLE requires a fact chunk even when its sub-format GUID names plain PCM"
+      },
+      "description": "The extensible format always requires a fact chunk regardless of the sub-format it names.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "section": "FACTCHUNK",
+        "present": true
+      },
+      "then": {
+        "field": "FACTCHUNK.uncompressedSize",
+        "type": "calculated_value",
+        "note": "must equal DATACHUNK.chunkSize / FORMATCHUNK.wBlockAlign for uncompressed data, or the decoder's output frame count for a compressed one"
+      },
+      "description": "The fact chunk's frame count must agree with the data chunk it describes.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "section": "SMPLLOOPS",
+        "present": true
+      },
+      "then": {
+        "section": "CUECHUNK",
+        "required": true,
+        "note": "every SMPLLOOPS.Cue_Point must name a CUEPOINT.dwIdentifier that exists, so a smpl chunk with loops implies a cue chunk defining them"
+      },
+      "description": "Sample loops are anchored to cue points by identifier, so the cue chunk they reference must be present.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "CUEPOINT.fccChunk",
+        "equals": "data"
+      },
+      "then": {
+        "section": "DATACHUNK",
+        "required": true,
+        "note": "a cue point naming the data chunk is a dangling reference unless that chunk exists, and its dwSampleOffset must lie inside the sample stream"
+      },
+      "description": "A cue point's chunk reference must resolve to a chunk that is actually in the file.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "CUEPOINT.fccChunk",
+        "equals": "slnt"
+      },
+      "then": {
+        "field": "LISTCHUNK.chunkType",
+        "type": "fixed_value",
+        "required_value": "wavl",
+        "required_value_hex": "0x7761766C",
+        "note": "slnt segments exist only inside a wavl playlist LIST, which this template has no special handling for"
+      },
+      "description": "A cue point naming a silence segment requires a wave playlist to contain it.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "CUECHUNK.dwCuePoints",
+        "min": 1
+      },
+      "then": {
+        "field": "CUECHUNK.chunkSize",
+        "type": "calculated_value",
+        "note": "chunkSize must equal 4 + 24 * dwCuePoints exactly"
+      },
+      "description": "The cue chunk's size is a pure function of its cue count.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "SMPLCHUNK.Num_Sample_Loops",
+        "min": 0
+      },
+      "then": {
+        "field": "SMPLCHUNK.chunkSize",
+        "type": "calculated_value",
+        "note": "chunkSize must equal 36 + 24 * Num_Sample_Loops + Sampler_Data exactly"
+      },
+      "description": "The sampler chunk's size is a pure function of its loop count and its trailing data length.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "SMPLCHUNK.Sampler_Data",
+        "min": 1
+      },
+      "then": {
+        "section": "SMPLCHUNK",
+        "forbidden": true,
+        "note": "TEMPLATE DEVIATION: the template never reads the bytes this field counts - after the loops[] array at line 505 it goes straight to the padding check at line 508 - so any non-zero value leaves that many bytes unconsumed and desynchronises the chunk walk from there on"
+      },
+      "description": "A non-zero sampler-data length is unparseable by this template even though the format permits it.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 504,
+        "snippet": "SMPL_SD                  Sampler_Data;"
+      }
+    },
+    {
+      "when": {
+        "field": "SMPLCHUNK.SMPTE",
+        "equals": 0
+      },
+      "then": {
+        "field": "SMPLCHUNK.SMPTE_Offset",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x00000000",
+        "note": "with no SMPTE format declared there is no frame rate to interpret the offset against"
+      },
+      "description": "A SMPTE offset is meaningless without a SMPTE frame rate to interpret it.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "SMPLCHUNK.SMPTE",
+        "in": [
+          24,
+          25,
+          29,
+          30
+        ]
+      },
+      "then": {
+        "field": "SMPLCHUNK.SMPTE_Offset",
+        "type": "bitmask_constraint",
+        "valid_bits": "bits 31-24 hours 0-23, bits 23-16 minutes 0-59, bits 15-8 seconds 0-59, bits 7-0 frames bounded by the declared rate",
+        "valid_values": [
+          0
+        ],
+        "note": "the frames byte must be strictly less than the frame rate SMPLCHUNK.SMPTE declares, so at most 23, 24 or 29"
+      },
+      "description": "The frames byte of the SMPTE offset is bounded by the frame rate declared in a different field of the same chunk.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "SMPLCHUNK.Sample_Period",
+        "min": 1
+      },
+      "then": {
+        "field": "FORMATCHUNK.dwSamplesPerSec",
+        "type": "calculated_value",
+        "note": "Sample_Period must equal 1000000000 / dwSamplesPerSec; the template's own comment at line 342 states the relationship"
+      },
+      "description": "The sampler chunk restates the format chunk's sampling rate as a nanosecond period, and the two must agree.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "line": 342,
+        "snippet": "// The sample period specifies the duration of time that passes during the playback of one sample in nanoseconds (normally equal to 1 / Samplers Per Second, where Samples Per Second is the value found in the format chunk)."
+      }
+    },
+    {
+      "when": {
+        "field": "SMPLLOOPS.Start",
+        "min": 0
+      },
+      "then": {
+        "field": "SMPLLOOPS.End",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 4294967295,
+        "note": "End must be greater than or equal to Start, and both must be less than DATACHUNK.chunkSize / FORMATCHUNK.wBlockAlign"
+      },
+      "description": "A loop's end point cannot precede its start, and both must lie inside the sample stream.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "SMPLLOOPS.Play_Count",
+        "equals": 0
+      },
+      "then": {
+        "section": "SMPLLOOPS",
+        "note": "a play count of 0 is the infinite-sustain sentinel, which the template's own display function calls out at lines 213-216"
+      },
+      "description": "Zero is a sentinel rather than a count, so it does not mean the loop is never played.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "low",
+      "evidence": {
+        "line": 213,
+        "snippet": "if (pc==0)"
+      }
+    },
+    {
+      "when": {
+        "field": "LISTCHUNK.chunkType",
+        "equals": "INFO"
+      },
+      "then": {
+        "field": "LISTSUBCHUNK.chunkID",
+        "type": "enumerated_values",
+        "valid_values": [
+          "IARL",
+          "IART",
+          "ICMS",
+          "ICMT",
+          "ICOP",
+          "ICRD",
+          "ICRP",
+          "IDIM",
+          "IDPI",
+          "IENG",
+          "IGNR",
+          "IKEY",
+          "ILGT",
+          "IMED",
+          "INAM",
+          "IPLT",
+          "IPRD",
+          "ISBJ",
+          "ISFT",
+          "ISHP",
+          "ISRC",
+          "ISRF",
+          "ITCH"
+        ],
+        "note": "and each subchunk's listData is a NUL-terminated ASCII string whose terminator is counted in the subchunk size"
+      },
+      "description": "An INFO list's subchunk identifiers come from the registered metadata set and its payloads are NUL-terminated strings.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "LISTCHUNK.chunkType",
+        "equals": "adtl"
+      },
+      "then": {
+        "field": "LISTSUBCHUNK.chunkID",
+        "type": "enumerated_values",
+        "valid_values": [
+          "labl",
+          "note",
+          "ltxt"
+        ],
+        "value_names": [
+          "label attached to a cue point",
+          "comment note attached to a cue point",
+          "labelled text region"
+        ],
+        "note": "each payload begins with a four-byte cue point identifier that must match a CUEPOINT.dwIdentifier in the file"
+      },
+      "description": "An associated-data list annotates cue points, so its subchunks carry cross-references that must resolve.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "LISTCHUNK.chunkType",
+        "equals": "wavl"
+      },
+      "then": {
+        "field": "LISTSUBCHUNK.chunkID",
+        "type": "enumerated_values",
+        "valid_values": [
+          "data",
+          "slnt"
+        ],
+        "value_names": [
+          "a segment of sample data",
+          "a segment of silence, whose payload is a 4-byte frame count"
+        ],
+        "note": "a wavl playlist replaces the top-level data chunk's play order entirely; this template has no special handling for it"
+      },
+      "description": "A wave playlist's subchunks are data and silence segments rather than metadata.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "LISTCHUNK.chunkSize",
+        "min": 4
+      },
+      "then": {
+        "field": "LISTSUBCHUNK.chunkSize",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 2147483647,
+        "note": "the peeked size at line 166 must satisfy FTell() - pos + size <= LISTCHUNK.chunkSize or the template abandons the subchunk loop and emits LISTCHUNK.unknown instead"
+      },
+      "description": "Every subchunk must fit inside its enclosing LIST, and the template peeks each one's size to check before parsing it.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 167,
+        "snippet": "if  (FTell() - pos + size<= chunkSize)"
+      }
+    },
+    {
+      "when": {
+        "field": "LISTSUBCHUNK.chunkSize",
+        "equals": 0
+      },
+      "then": {
+        "section": "LISTSUBCHUNK",
+        "forbidden": true,
+        "note": "TEMPLATE DEVIATION: a zero-size subchunk advances the position by only its 8-byte header, and the while loop at line 165 has no other progress guarantee, so a sequence of them makes the loop spin"
+      },
+      "description": "A zero-length subchunk is a progress hazard in the LIST loop even though RIFF permits an empty chunk.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 165,
+        "snippet": "while( FTell() - pos < chunkSize ) {"
+      }
+    },
+    {
+      "when": {
+        "field": "DATACHUNK.chunkSize",
+        "min": 1,
+        "condition": "and the size is odd"
+      },
+      "then": {
+        "section": "DATACHUNK.padding",
+        "required": true,
+        "note": "RIFF requires every chunk to occupy an even number of bytes; the pad byte is NOT counted in chunkSize, and the same rule applies to FORMATCHUNK, LISTSUBCHUNK, LISTCHUNK, UNKNOWNCHUNK and SMPLCHUNK"
+      },
+      "description": "An odd chunk size requires a trailing pad byte, and omitting it misaligns every subsequent chunk.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 112,
+        "snippet": "if( (chunkSize & 1) && (FTell() < FileSize()) )"
+      }
+    },
+    {
+      "when": {
+        "field": "FACTCHUNK.chunkSize",
+        "min": 1
+      },
+      "then": {
+        "section": "FACTCHUNK.padding",
+        "forbidden": true,
+        "note": "TEMPLATE DEVIATION: FACTCHUNK and CUECHUNK are the only chunk structs in this template with no padding branch at all, so an odd size in either leaves the chunk walk permanently misaligned. Both have conforming sizes that are multiples of 4, so the branch is unreachable in a valid file"
+      },
+      "description": "Two chunk structs lack the padding handling the other six have, which is safe only because their conforming sizes are always even.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "line": 120,
+        "snippet": "long           chunkSize;"
+      }
+    },
+    {
+      "when": {
+        "section": "WAVRIFFHEADER",
+        "present": true
+      },
+      "then": {
+        "field": "WAVRIFFHEADER.hsize",
+        "type": "calculated_value",
+        "note": "must equal the total file size minus 8; TEMPLATE DEVIATION: the top-level loop at line 532 walks chunks with `while( !FEof() )` and never consults this field, so a wrong value is invisible here"
+      },
+      "description": "The RIFF container size bounds the chunk stream for every conforming reader, though not for this template.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 532,
+        "snippet": "while( !FEof() )"
+      }
+    },
+    {
+      "when": {
+        "field": "WAVRIFFHEADER.groupID",
+        "equals": "RIFF"
+      },
+      "then": {
+        "section": "every chunk",
+        "note": "all multi-byte fields are little-endian, set once by LittleEndian() at line 518; the big-endian container signature 'RIFX' would reverse this but the guard at line 523 rejects it"
+      },
+      "description": "The container signature selects the byte order for the whole file, and this template accepts only the little-endian form.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 518,
+        "snippet": "LittleEndian();"
+      }
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "WAVRIFFHEADER",
+      "detail": "the 12-byte RIFF header occupies file offsets 0-11: 'RIFF' at 0-3, the container size at 4-7, and 'WAVE' at 8-11; nothing may precede it",
+      "description": "Every WAVE file begins with the RIFF container header, and the template aborts if either signature is wrong.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one, never repeated",
+      "generation_note": "emit as a fixed 12-byte head element; both four-character signatures take no randomisation and no evil-bit substitution, and the size is back-patched from the measured file length minus 8",
+      "evidence": {
+        "line": 520,
+        "snippet": "WAVRIFFHEADER header;"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "FORMATCHUNK",
+      "detail": "a 'fmt ' chunk must appear, and it must appear before the 'data' chunk",
+      "description": "The format chunk declares the sample layout that the data chunk is parsed with; the template tracks this with the local haveValidFormat and refuses to continue without it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly 1 per file",
+      "generation_note": "emit the format chunk as a fixed element immediately after the RIFF header, before any other chunk",
+      "evidence": {
+        "line": 70,
+        "snippet": "if( !haveValidFormat )"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "DATACHUNK",
+      "detail": "a 'data' chunk must appear; a WAVE file with no data chunk carries no audio",
+      "description": "The data chunk is the only place samples live, so a file without one is empty.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly 1 per file, payload capped at 128 KB",
+      "generation_note": "emit exactly one data chunk after the format chunk and set its size from the samples actually written"
+    },
+    {
+      "rule": "ordering",
+      "subject": "FORMATCHUNK before DATACHUNK",
+      "detail": "the format chunk must precede the data chunk in file order; the reverse order stops this template outright",
+      "description": "The data chunk reads wBitsPerSample, wChannels and wBlockAlign out of the format chunk, so it cannot be parsed first.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one of each",
+      "generation_note": "emit the format chunk first; the guard at lines 70-74 calls Warning and returns -1 if a data chunk is reached with haveValidFormat still false",
+      "evidence": {
+        "line": 72,
+        "snippet": "Warning( \"File contains no valid WAVE format chunk.\" );"
+      }
+    },
+    {
+      "rule": "cardinality",
+      "subject": "FORMATCHUNK",
+      "detail": "exactly 1 per file",
+      "description": "A WAVE file describes one sample format, so a second format chunk would contradict the first.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly 1",
+      "generation_note": "model as a fixed head element, never as a member of the repeated chunk array"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "DATACHUNK",
+      "detail": "exactly 1 per file; a file that needs several segments uses a wavl playlist LIST instead",
+      "description": "The data chunk is the single sample stream; multiple data chunks belong inside a wavl list, not at top level.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly 1",
+      "generation_note": "model as a fixed element after the format chunk, never as a member of the repeated chunk array"
+    },
+    {
+      "rule": "required",
+      "subject": "FACTCHUNK",
+      "detail": "a 'fact' chunk is mandatory for every format other than WAVE_FORMAT_PCM, and for WAVE_FORMAT_EXTENSIBLE",
+      "condition": "only when FORMATCHUNK.wFormatTag is not 1",
+      "description": "Only for uncompressed PCM can a player derive the decoded frame count from the data chunk's size alone.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 per file",
+      "generation_note": "gate the fact chunk on the wFormatTag chosen for the format chunk, and set uncompressedSize from the frame count actually written"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "the top-level chunk loop",
+      "detail": "the parse is `while( !FEof() )`, an unbounded walk over chunks bounded only by the end of the file - the template never consults WAVRIFFHEADER.hsize",
+      "description": "The body of the file is an unbounded repetition of chunks, which a generator must bound explicitly.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "4 to 10 chunks per file, with the data payload capped at 128 KB and every other chunk payload at 1 KB, holding generated files under about 140 KB. The two size levers are this loop and DATACHUNK.chunkSize.",
+      "generation_note": "replace the while loop with: fixed RIFF header, fixed format chunk, an optional fact chunk, a bounded array of metadata chunks, then the data chunk; and back-patch hsize from the measured total",
+      "evidence": {
+        "line": 532,
+        "snippet": "while( !FEof() )"
+      }
+    },
+    {
+      "rule": "cardinality",
+      "subject": "CUECHUNK",
+      "detail": "at most 1 per file",
+      "description": "The cue list is a single table of named points into the sample stream.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 per file, at most 16 cue points",
+      "generation_note": "emit as an optional single element; each cue point costs 24 bytes and its dwIdentifier must be unique within the list"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "SMPLCHUNK",
+      "detail": "at most 1 per file",
+      "description": "A file describes one sampler configuration, so a second smpl chunk would contradict the first.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 per file, at most 16 loops",
+      "generation_note": "emit as an optional single element; each loop costs 24 bytes and must reference a cue point that exists"
+    },
+    {
+      "rule": "requires",
+      "subject": "SMPLCHUNK with loops",
+      "detail": "requires a CUECHUNK defining every dwIdentifier that a SMPLLOOPS.Cue_Point names",
+      "condition": "only when SMPLCHUNK.Num_Sample_Loops is greater than 0",
+      "description": "Sample loops are anchored to cue points by identifier, so a loop with no matching cue point is a dangling reference.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "at most 16 loops, each naming one of at most 16 cue points",
+      "generation_note": "generate the cue chunk first, then draw every loop's Cue_Point from the identifiers actually written"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "LISTCHUNK",
+      "detail": "any number of LIST chunks may appear, each with its own form type",
+      "description": "RIFF places no limit on LIST chunks, and a file commonly carries both an INFO list and an adtl list.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 to 2 LIST chunks per file, each capped at 4 KB",
+      "generation_note": "emit as members of the bounded metadata-chunk array between the format chunk and the data chunk"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "LISTSUBCHUNK",
+      "detail": "the subchunk loop at line 165 runs while FTell() - pos is less than the LIST's declared size, with no count field and no upper limit",
+      "description": "A LIST's contents are an unbounded repetition bounded only by the LIST's own size field.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "0 to 8 subchunks per LIST, each payload capped at 256 bytes. Two hazards make an explicit bound necessary: an inflated LIST size with small subchunks produces hundreds of them, and a subchunk whose own chunkSize is 0 advances the position by only 8 bytes per iteration - the loop has no other progress guarantee.",
+      "generation_note": "generate the subchunks first as a bounded array, sum their sizes including headers and pad bytes, then set the LIST's chunkSize to 4 plus that sum",
+      "evidence": {
+        "line": 165,
+        "snippet": "while( FTell() - pos < chunkSize ) {"
+      }
+    },
+    {
+      "rule": "contiguous",
+      "subject": "LISTCHUNK.chunkType then the subchunks",
+      "detail": "a LIST's data begins with its four-character form type and every subchunk follows it back to back, each padded to an even length",
+      "description": "The form type is not a chunk of its own; it is the first four bytes of the LIST's data section, and the subchunks are located purely by position.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one form type per LIST, at most 8 subchunks",
+      "generation_note": "emit the form type first, then the subchunk array; nothing may come between them",
+      "evidence": {
+        "line": 161,
+        "snippet": "char      chunkType[4];"
+      }
+    },
+    {
+      "rule": "contiguous",
+      "subject": "every chunk: identifier, size, data, pad byte",
+      "detail": "each chunk is a four-character identifier, a 32-bit little-endian size, exactly that many data bytes, and a single pad byte when the size is odd - with nothing between chunks",
+      "description": "The chunk envelope is what makes the RIFF stream self-delimiting; a gap or a missing pad byte desynchronises everything after it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one envelope per chunk, at most 10 chunks",
+      "generation_note": "generate each chunk's payload first, then write its identifier and measured size, then the pad byte if the size is odd - the size can never be chosen before the payload exists",
+      "evidence": {
+        "line": 535,
+        "snippet": "ReadBytes( tag, FTell(), 4 );"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "the four-character chunk identifier",
+      "detail": "at every chunk boundary the next four bytes must be a printable-ASCII chunk identifier; the template peeks them at line 535 and dispatches on the six it knows, sending everything else to UNKNOWNCHUNK",
+      "description": "The chunk stream is self-describing through these identifiers, and an unrecognised one must still be skippable by its size.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one identifier per chunk, at most 10 chunks",
+      "generation_note": "make the chunk element a tagged union over the six known identifiers plus an unknown case; never emit a random four bytes at a chunk boundary, and never give an UNKNOWNCHUNK one of the six handled identifiers",
+      "evidence": {
+        "line": 538,
+        "snippet": "switch( tag )"
+      }
+    },
+    {
+      "rule": "last_element",
+      "subject": "none",
+      "detail": "RIFF defines NO terminator, sentinel or trailer of any kind - the chunk stream simply ends when WAVRIFFHEADER.hsize is exhausted, and this template ends it at end of file instead",
+      "description": "Unlike PNG or GIF there is nothing to emit at the end; the file's extent is defined entirely by the container size field.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "not applicable - there is no tail element to repeat",
+      "generation_note": "do not emit any trailing marker; the last byte written is the last byte of the final chunk's data or its pad byte",
+      "evidence": {
+        "line": 532,
+        "snippet": "while( !FEof() )"
+      }
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any bytes after the last chunk",
+      "detail": "WAVRIFFHEADER.hsize is defined as the total file size minus 8, so trailing bytes outside the last chunk contradict it",
+      "description": "The container size is the file's only statement of its own extent, and trailing bytes make it wrong.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 trailing bytes",
+      "generation_note": "stop writing after the final chunk's pad byte and back-patch hsize from the measured total"
+    },
+    {
+      "rule": "ordering",
+      "subject": "endianness of every multi-byte field",
+      "detail": "LittleEndian() is set at line 518 and never changed, so every size, count and sample in the file is little-endian",
+      "description": "The 'RIFF' signature selects little-endian; the big-endian RIFX container would use the same layout with the opposite byte order, and this template rejects it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "not applicable - this is a global encoding rule",
+      "generation_note": "write every multi-byte field little-endian; note that the four-character identifiers are char arrays, not integers, so they are written in reading order and never byte-swapped",
+      "evidence": {
+        "line": 518,
+        "snippet": "LittleEndian();"
+      }
+    }
+  ],
+  "template_deviations": [
+    {
+      "subject": "SMPLCHUNK.Sampler_Data counts bytes the template never reads",
+      "line": 504,
+      "issue": "The field is declared and displayed as 'Sample Data (number of bytes)', but after the loops[] array at line 505 the struct goes straight to the padding check at line 508. The bytes it counts are never consumed.",
+      "impact": "Any non-zero value leaves that many bytes unread, so the next chunk identifier is read from the middle of the smpl chunk and the entire chunk walk desynchronises from that point on. This is the template's single most dangerous omission.",
+      "action": "Emit 0, which is also what real files write; a generator that wants sampler data must also emit the bytes."
+    },
+    {
+      "subject": "WAVRIFFHEADER.hsize is read and ignored",
+      "line": 532,
+      "issue": "The container size is read into a field and never used: the top-level loop at line 532 walks chunks with `while( !FEof() )` rather than stopping at the declared end of the RIFF payload.",
+      "impact": "A wrong hsize is invisible to this template and desynchronises every conforming reader, which trusts it to bound the chunk stream.",
+      "action": "Back-patch it from the measured file size minus 8."
+    },
+    {
+      "subject": "every chunkSize declared as a signed long",
+      "line": 37,
+      "issue": "All eight chunk structs declare `long chunkSize`, which is SIGNED in 010 Editor, where RIFF specifies an unsigned 32-bit value. The same applies to WAVRIFFHEADER.hsize, CUECHUNK.dwCuePoints, all six CUEPOINT fields and every SMPL typedef, whose own display functions print them with %u.",
+      "impact": "A size above 2^31-1 reads negative and becomes a negative array bound; and a generator respecting the declared signed type would emit only half the legal range.",
+      "action": "Treat every one of them as unsigned 32-bit."
+    },
+    {
+      "subject": "FACTCHUNK and CUECHUNK have no padding branch",
+      "line": 120,
+      "issue": "Six of the eight chunk structs end with an odd-size padding check; FACTCHUNK (lines 117-122) and CUECHUNK (lines 134-144) do not.",
+      "impact": "An odd size in either leaves the chunk walk permanently misaligned. It is safe only because a conforming fact chunk is 4 bytes and a conforming cue chunk is 4 + 24n, both always even.",
+      "action": "Keep both sizes at their conforming values so the missing branch is never needed."
+    },
+    {
+      "subject": "FACTCHUNK reads one field regardless of its declared size",
+      "line": 121,
+      "issue": "The struct reads exactly one unsigned long whatever chunkSize says, and never seeks to the declared end of the chunk.",
+      "impact": "Any fact chunk size other than 4 desynchronises the chunk walk immediately.",
+      "action": "Emit chunkSize as exactly 4."
+    },
+    {
+      "subject": "24-bit PCM has no typed sample layout",
+      "line": 77,
+      "issue": "The guard at lines 77-78 admits only wBitsPerSample of 8, 16 or 32, so 24-bit PCM - a legal and widely used depth - falls into the opaque waveformData array at line 81, as do 4-bit ADPCM and 64-bit float.",
+      "impact": "Three legal sample depths are silently unparsed. The file is still structurally consumed, but the samples are not laid out.",
+      "action": "Prefer 8, 16 or 32 bits per sample so the typed layout is reached."
+    },
+    {
+      "subject": "WAVE_FORMAT_EXTENSIBLE extension is never decoded",
+      "line": 56,
+      "issue": "wFormatTag 0xFFFE requires a 22-byte extension - cbSize, a valid-bits union, a channel mask and a 16-byte sub-format GUID. The template reads cbSize only for wFormatTag 17, so the entire extension lands in FORMATCHUNK.unknown.",
+      "impact": "The sub-format GUID that names the real codec is never examined, and the template cannot distinguish extensible PCM from extensible anything else.",
+      "action": "Prefer wFormatTag 1; if generating 0xFFFE, emit chunkSize 40 and treat the 22 extension bytes as opaque."
+    },
+    {
+      "subject": "the LIST subchunk loop has no progress guarantee",
+      "line": 165,
+      "issue": "`while( FTell() - pos < chunkSize )` relies entirely on each iteration advancing the file position. A subchunk with chunkSize 0 advances only 8 bytes, and the else branch at line 170 emits an array that can be zero-length without breaking the loop.",
+      "impact": "A LIST whose declared size does not decompose into whole subchunks, or that contains a zero-size subchunk at the end, can make the loop spin.",
+      "action": "Give every generated subchunk a non-zero size and make the LIST size decompose exactly."
+    },
+    {
+      "subject": "FORMATCHUNK.padding lacks the end-of-file guard",
+      "line": 60,
+      "issue": "Five of the six padding branches are guarded by `(chunkSize & 1) && (FTell() < FileSize())`; the format chunk's at line 59 tests only the odd-size condition.",
+      "impact": "On a truncated file the format chunk's pad byte read runs past the end.",
+      "action": "None for generation - a conforming format chunk size (16, 18, 20 or 40) is always even, so the branch is unreachable."
+    },
+    {
+      "subject": "no typedef enum anywhere in the file",
+      "line": 447,
+      "issue": "The template has no enum block at all. Its three enumerated value sets - SMPL_SMPTE at lines 357-365, SMPL_Manufacturer at lines 381-439 and SMPLLOOPS_Type at lines 454-474 - live inside display-only switch statements in read functions, not in type declarations. wFormatTag and wBitsPerSample, the two most consequential enumerated fields in the format, have no value set in the template at all.",
+      "impact": "There are no enum declarations for a value-mining pass to harvest; the switch statements are the only mineable sets, and the format's central enumerations come entirely from the specification.",
+      "action": "Take the enumerated_values entries for wFormatTag and wBitsPerSample as authoritative despite having no template counterpart."
+    },
+    {
+      "subject": "haveValidFormat is a file-scope local, never reset",
+      "line": 21,
+      "issue": "`local int haveValidFormat = false;` at line 21 is set to true at line 52 by any format chunk and never cleared. It is the template's only cross-chunk state.",
+      "impact": "A second format chunk would silently replace the first for the data chunk's purposes, since DATACHUNK reads `format.` fields that name the most recent instance.",
+      "action": "Emit exactly one format chunk."
+    },
+    {
+      "subject": "the top-level switch compares a char[4] against string literals",
+      "line": 538,
+      "issue": "`switch( tag )` at line 538 with `case \"fmt \":` and the other five compares four raw bytes read by ReadBytes at line 535 against unterminated four-character literals.",
+      "impact": "None for parsing, but it means the trailing space in 'fmt ' and 'cue ' is a significant byte, not padding: 'fmt' followed by a NUL would take the default branch and the file would then be rejected at line 70.",
+      "action": "Emit the trailing space explicitly in both identifiers."
+    },
+    {
+      "subject": "SMPLLOOPS display functions mislabel their units",
+      "line": 233,
+      "issue": "WAV_SMPLLOOPS_Start at line 233 prints 'Loop Start at %u byte offset' and WAV_SMPLLOOPS_End at line 245 likewise, but the specification defines both fields in sample frames, not bytes.",
+      "impact": "None for parsing - the fields are read correctly - but a generator following the display text would scale the values by the frame size and put every loop point in the wrong place.",
+      "action": "Treat Start and End as sample frame indices."
+    },
+    {
+      "subject": "no validation beyond the RIFF/WAVE signature and the format-chunk presence check",
+      "line": 523,
+      "issue": "The guard at lines 523-527 and the one at lines 70-74 are the template's only two checks. wFormatTag, wChannels, dwSamplesPerSec, dwAvgBytesPerSec, wBitsPerSample, every chunk size, every cue and loop field and both reserved-by-convention values are read and accepted unexamined.",
+      "impact": "The set of files this template accepts is very much larger than the set of valid WAVE files, so its behaviour is no guide to validity.",
+      "action": "Take every 'spec'-sourced constraint in this file as binding despite the template's silence."
+    }
+  ]
+}

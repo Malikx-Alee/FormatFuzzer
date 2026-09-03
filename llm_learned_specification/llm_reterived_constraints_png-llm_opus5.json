@@ -1,0 +1,3223 @@
+{
+  "meta": {
+    "format": "png",
+    "source_template": "templates_originals/png-orig.bt",
+    "model": "claude-opus-5",
+    "spec_reference": "PNG (Portable Network Graphics) Specification, Version 1.2 (W3C/PNG Development Group, 1999-07-14, http://www.libpng.org/pub/png/spec/1.2/); ISO/IEC 15948:2004 for chunk-ordering restatements; APNG (Animated PNG) Specification 1.0 (https://wiki.mozilla.org/APNG_Specification) for acTL/fcTL/fdAT; RFC 1950 (zlib) and RFC 1951 (DEFLATE) for compressed datastreams; CRC-32/ISO-HDLC (ITU-T V.42) for the per-chunk CRC",
+    "schema_extensions": [
+      {
+        "name": "comparison_sites",
+        "where": "constraints entry CTYPE.cname",
+        "why": "This template contains no ReadUByte/ReadUShort/ReadByte/ReadBytes lookahead calls at all, so the `lookahead` key never applies. The equivalent 'good known values' that FormatFuzzer would mine are the sixteen literal string comparisons `type.cname == \"XXXX\"` in the dispatch chain (lines 301-330) plus the two ordering checks at lines 382 and 385. comparison_sites records each of those call sites with its line, verbatim snippet and compared literal so the rewrite step gets a per-call-site value set rather than only a merged global set."
+      },
+      {
+        "name": "unused_in_parse_flow",
+        "where": "constraints entries for PNG_ICCP_CHUNK_DATA.profile_name and PNG_ICCP_CHUNK_DATA.red",
+        "why": "PNG_ICCP_CHUNK_DATA is typedef'd at lines 95-98 but is never instantiated: the chunk dispatch chain (lines 301-331) has no `iCCP` branch, so iCCP chunks fall through to the generic `ubyte data[length]` path. The flag tells the rewrite step that these entries describe a declared-but-dead type, so it may either wire up an iCCP branch using them or skip them, but must not assume the struct is currently reachable."
+      },
+      {
+        "name": "bit_semantics",
+        "where": "constraints entries CTYPE.cname[0] .. CTYPE.cname[3]",
+        "why": "PNG encodes four independent property flags in bit 5 (0x20) of the four chunk-type bytes. readCHUNK (lines 354-357) tests each one explicitly. A per-byte bitmask_constraint is the only way to record that bit 5 of byte 2 MUST be zero (reserved) while the other three bits are free, which no whole-field constraint on cname can express."
+      },
+      {
+        "name": "template_deviations",
+        "where": "new fifth top-level section",
+        "why": "The .bt disagrees with the PNG specification in several places (signed int16 used for unsigned 16-bit spec fields, an inner struct reading the enclosing chunk's `length` variable by scope capture, a mis-named field, a dead typedef, and length arithmetic that underflows on malformed input). A generator that faithfully reproduced the template's declared types would emit spec-invalid files, so these must be visible as data, not buried in prose."
+      },
+      {
+        "name": "byte_layout",
+        "where": "optional key on constraints entries whose byte size or element size is not obvious from field_type",
+        "why": "Several array fields (PLTE entries, sPLT entries, fdAT payload) have an element size the .bt does not state directly; the rewrite step needs it to emit a self-consistent length field."
+      },
+      {
+        "name": "evidence.line and evidence.snippet retained on spec-sourced entries",
+        "where": "the 26 constraints entries whose source is \"spec\" but whose field is nonetheless declared in the .bt",
+        "why": "The schema pairs source \"spec\" with an evidence object holding only a note. For a field that the template declares but never checks (tIME's month, fcTL's offsets, IHDR's width) the rule genuinely comes from the specification, yet the field has a real declaration line the rewrite step needs in order to place it. These entries carry the required note plus the declaration site, so nothing specified is dropped and the anchor is not lost."
+      }
+    ],
+    "structure_note": "A fixed 8-byte signature followed by a stream of self-describing chunks, each laid out as [uint32 length][char[4] type][length payload bytes][uint32 CRC-32 over type+payload]; the stream must begin with IHDR, contain at least one IDAT, and terminate with a zero-length IEND."
+  },
+  "constraints": {
+    "PNG_SIGNATURE.btPngSignature[0]": {
+      "type": "fixed_value",
+      "description": "First 16-bit word of the 8-byte PNG file signature: the high-bit byte 0x89 that defeats 7-bit-clean transfers, followed by ASCII 'P'.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "required_value": 35152,
+      "required_value_hex": "0x8950",
+      "required_value_ascii": "\\x89P",
+      "endianness": "big",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 367,
+        "snippet": "if (sig.btPngSignature[0] != 0x8950 ||"
+      },
+      "confidence": "high"
+    },
+    "PNG_SIGNATURE.btPngSignature[1]": {
+      "type": "fixed_value",
+      "description": "Second 16-bit word of the PNG signature: ASCII 'N' 'G', completing the '\\x89PNG' magic.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "required_value": 20039,
+      "required_value_hex": "0x4E47",
+      "required_value_ascii": "NG",
+      "endianness": "big",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 368,
+        "snippet": "sig.btPngSignature[1] != 0x4E47 ||"
+      },
+      "confidence": "high"
+    },
+    "PNG_SIGNATURE.btPngSignature[2]": {
+      "type": "fixed_value",
+      "description": "Third 16-bit word of the PNG signature: CR LF, the DOS line ending used to detect CRLF-to-LF text-mode mangling.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "required_value": 3338,
+      "required_value_hex": "0x0D0A",
+      "required_value_ascii": "\\x0D\\x0A",
+      "endianness": "big",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 369,
+        "snippet": "sig.btPngSignature[2] != 0x0D0A ||"
+      },
+      "confidence": "high"
+    },
+    "PNG_SIGNATURE.btPngSignature[3]": {
+      "type": "fixed_value",
+      "description": "Fourth 16-bit word of the PNG signature: DOS end-of-file (0x1A) followed by LF, which stops MS-DOS TYPE and detects LF-to-CRLF mangling.",
+      "corruption_risk": "high",
+      "field_type": "uint16",
+      "source": "both",
+      "required_value": 6666,
+      "required_value_hex": "0x1A0A",
+      "required_value_ascii": "\\x1A\\x0A",
+      "endianness": "big",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 370,
+        "snippet": "sig.btPngSignature[3] != 0x1A0A) {"
+      },
+      "confidence": "high"
+    },
+    "PNG_ICCP_CHUNK_DATA.profile_name": {
+      "type": "pattern_constraint",
+      "description": "NUL-terminated ICC colour-profile name; a PNG keyword of 1-79 Latin-1 printable characters with no leading, trailing or consecutive spaces.",
+      "corruption_risk": "medium",
+      "field_type": "string",
+      "source": "both",
+      "pattern": "^[\\x20-\\x7E\\xA1-\\xFF](?:[\\x20-\\x7E\\xA1-\\xFF]{0,77}[\\x20-\\x7E\\xA1-\\xFF])?\\x00$ with no leading space, no trailing space and no two consecutive spaces; total length 1-79 characters before the terminating NUL",
+      "unused_in_parse_flow": true,
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 16,
+        "rationale": "Keyword length in characters. The spec allows 79 but short ASCII keywords keep the chunk small and exercise the same code paths."
+      },
+      "evidence": {
+        "line": 96,
+        "snippet": "string profile_name;"
+      },
+      "confidence": "medium",
+      "notes": "PNG_ICCP_CHUNK_DATA is declared but never instantiated: the dispatch chain at lines 301-331 has no iCCP branch, so real iCCP chunks are consumed by the generic `ubyte data[length]` path at line 332."
+    },
+    "PNG_ICCP_CHUNK_DATA.red": {
+      "type": "fixed_value",
+      "description": "Mis-named field: at this byte offset the iCCP chunk carries the compression method for the embedded ICC profile, and PNG defines only method 0 (zlib/deflate).",
+      "corruption_risk": "high",
+      "field_type": "ubyte",
+      "source": "spec",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "unused_in_parse_flow": true,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.3 (iCCP Embedded ICC profile): the byte following the NUL-terminated profile name is the compression method, and the only value defined is 0 (deflate/inflate with zlib wrapper). The template names it `red`, which is wrong for iCCP; the declared field is a single ubyte at the correct offset, so the spec rule attaches to it."
+      },
+      "confidence": "medium"
+    },
+    "CTYPE.cname": {
+      "type": "enumerated_values",
+      "description": "Four-byte chunk type code; the template dispatches on its exact ASCII spelling, and every registered PNG 1.2 / APNG 1.0 chunk type is drawn from [A-Za-z]{4}.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "valid_values": [
+        "IHDR",
+        "PLTE",
+        "IDAT",
+        "IEND",
+        "cHRM",
+        "gAMA",
+        "iCCP",
+        "sBIT",
+        "sRGB",
+        "bKGD",
+        "hIST",
+        "tRNS",
+        "pHYs",
+        "sPLT",
+        "tIME",
+        "iTXt",
+        "tEXt",
+        "zTXt",
+        "acTL",
+        "fcTL",
+        "fdAT"
+      ],
+      "value_names": [
+        "Image header (critical)",
+        "Palette (critical)",
+        "Image data (critical)",
+        "Image trailer (critical)",
+        "Primary chromaticities and white point",
+        "Image gamma",
+        "Embedded ICC profile",
+        "Significant bits",
+        "Standard RGB colour space",
+        "Background colour",
+        "Palette histogram",
+        "Transparency",
+        "Physical pixel dimensions",
+        "Suggested palette",
+        "Image last-modification time",
+        "International textual data",
+        "Textual data",
+        "Compressed textual data",
+        "APNG animation control",
+        "APNG frame control",
+        "APNG frame data"
+      ],
+      "preferred_value": [
+        "IHDR",
+        "PLTE",
+        "IDAT",
+        "IEND",
+        "tEXt",
+        "pHYs",
+        "tIME",
+        "cHRM",
+        "sRGB"
+      ],
+      "evil_bit_safe": false,
+      "comparison_sites": [
+        {
+          "line": 301,
+          "snippet": "if (type.cname == \"IHDR\")",
+          "value": "IHDR"
+        },
+        {
+          "line": 303,
+          "snippet": "else if (type.cname == \"tEXt\")",
+          "value": "tEXt"
+        },
+        {
+          "line": 305,
+          "snippet": "else if (type.cname == \"PLTE\")",
+          "value": "PLTE"
+        },
+        {
+          "line": 307,
+          "snippet": "else if (type.cname == \"cHRM\")",
+          "value": "cHRM"
+        },
+        {
+          "line": 309,
+          "snippet": "else if (type.cname == \"sRGB\")",
+          "value": "sRGB"
+        },
+        {
+          "line": 311,
+          "snippet": "else if (type.cname == \"iTXt\")",
+          "value": "iTXt"
+        },
+        {
+          "line": 313,
+          "snippet": "else if (type.cname == \"zTXt\")",
+          "value": "zTXt"
+        },
+        {
+          "line": 315,
+          "snippet": "else if (type.cname == \"tIME\")",
+          "value": "tIME"
+        },
+        {
+          "line": 317,
+          "snippet": "else if (type.cname == \"pHYs\")",
+          "value": "pHYs"
+        },
+        {
+          "line": 319,
+          "snippet": "else if (type.cname == \"bKGD\")",
+          "value": "bKGD"
+        },
+        {
+          "line": 321,
+          "snippet": "else if (type.cname == \"sBIT\")",
+          "value": "sBIT"
+        },
+        {
+          "line": 323,
+          "snippet": "else if (type.cname == \"sPLT\")",
+          "value": "sPLT"
+        },
+        {
+          "line": 325,
+          "snippet": "else if (type.cname == \"acTL\")",
+          "value": "acTL"
+        },
+        {
+          "line": 327,
+          "snippet": "else if (type.cname == \"fcTL\")",
+          "value": "fcTL"
+        },
+        {
+          "line": 329,
+          "snippet": "else if (type.cname == \"fdAT\")",
+          "value": "fdAT"
+        },
+        {
+          "line": 382,
+          "snippet": "if ( chunk[0].type.cname != \"IHDR\" ) {",
+          "value": "IHDR"
+        },
+        {
+          "line": 385,
+          "snippet": "if ( chunk[CHUNK_CNT-1].type.cname != \"IEND\" ) {",
+          "value": "IEND"
+        }
+      ],
+      "evidence": {
+        "line": 113,
+        "snippet": "char    cname[4];           // character representation"
+      },
+      "confidence": "high",
+      "notes": "The template header comment at lines 29-30 notes that PNG only *encourages* [a-zA-Z]{4}; in practice every decoder treats a non-alphabetic type byte as a corrupt stream. IDAT, gAMA, iCCP, hIST and tRNS are handled by the generic `ubyte data[length]` path at line 332 rather than a dedicated branch, but are still legal and in IDAT's case mandatory. This template contains no ReadUByte/ReadUShort/ReadBytes lookahead calls, so `lookahead` is not applicable anywhere in this file; see comparison_sites instead."
+    },
+    "CTYPE.cname[0]": {
+      "type": "bitmask_constraint",
+      "description": "First chunk-type byte; bit 5 (0x20, i.e. lowercase) is the ancillary flag: clear means the chunk is critical and a decoder must abort if it does not understand it, set means ancillary.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x20 is the ancillary property bit; the remaining bits must still form an ASCII letter, so the byte itself lies in 0x41-0x5A (critical) or 0x61-0x7A (ancillary)",
+      "valid_values": [
+        0,
+        32
+      ],
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 354,
+        "snippet": "s += (c.type.cname[0] & 0x20) ? \"Ancillary, \"      : \"Critical, \";"
+      },
+      "confidence": "high",
+      "notes": "valid_values lists the two legal states of the masked bit, not of the whole byte."
+    },
+    "CTYPE.cname[1]": {
+      "type": "bitmask_constraint",
+      "description": "Second chunk-type byte; bit 5 (0x20) is the private flag: clear means a public, registered chunk type, set means a private/application-specific type.",
+      "corruption_risk": "medium",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x20 is the private property bit; the byte must remain an ASCII letter, 0x41-0x5A (public) or 0x61-0x7A (private)",
+      "valid_values": [
+        0,
+        32
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 355,
+        "snippet": "s += (c.type.cname[1] & 0x20) ? \"Private, \"        : \"Public, \";"
+      },
+      "confidence": "high"
+    },
+    "CTYPE.cname[2]": {
+      "type": "bitmask_constraint",
+      "description": "Third chunk-type byte; bit 5 (0x20) is reserved and MUST be 0, so this byte must be an uppercase ASCII letter in every conforming PNG file.",
+      "corruption_risk": "high",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x20 is the reserved property bit and must be clear; the byte must be an uppercase ASCII letter, 0x41-0x5A",
+      "valid_values": [
+        0
+      ],
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 356,
+        "snippet": "s += (c.type.cname[2] & 0x20) ? \"ERROR_RESERVED, \" : \"\";"
+      },
+      "confidence": "high",
+      "notes": "The template flags a set reserved bit as ERROR_RESERVED in the chunk label but does not refuse to parse; the specification makes it a hard requirement. Every chunk type in CTYPE.cname's valid_values already satisfies it."
+    },
+    "CTYPE.cname[3]": {
+      "type": "bitmask_constraint",
+      "description": "Fourth chunk-type byte; bit 5 (0x20) is the safe-to-copy flag: clear means an editor that does not understand the chunk must not copy it past a critical-chunk change, set means it may.",
+      "corruption_risk": "low",
+      "field_type": "char",
+      "source": "both",
+      "valid_bits": "0x20 is the safe-to-copy property bit; the byte must remain an ASCII letter, 0x41-0x5A (unsafe to copy) or 0x61-0x7A (safe to copy)",
+      "valid_values": [
+        0,
+        32
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 357,
+        "snippet": "s += (c.type.cname[3] & 0x20) ? \"Safe to Copy)\"    : \"Unsafe to Copy)\";"
+      },
+      "confidence": "high"
+    },
+    "CTYPE.ctype": {
+      "type": "enumerated_values",
+      "description": "The same four chunk-type bytes viewed as one big-endian uint32; it is a union alias of cname, so it must carry the numeric encoding of one of the legal four-character type codes.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "valid_values": [
+        1229472850,
+        1347179589,
+        1229209940,
+        1229278788,
+        1665684045,
+        1732332865,
+        1766015824,
+        1933723988,
+        1934772034,
+        1649100612,
+        1749635924,
+        1951551059,
+        1883789683,
+        1934642260,
+        1950960965,
+        1767135348,
+        1950701684,
+        2052348020,
+        1633899596,
+        1665211724,
+        1717785972
+      ],
+      "value_names": [
+        "IHDR",
+        "PLTE",
+        "IDAT",
+        "IEND",
+        "cHRM",
+        "gAMA",
+        "iCCP",
+        "sBIT",
+        "sRGB",
+        "bKGD",
+        "hIST",
+        "tRNS",
+        "pHYs",
+        "sPLT",
+        "tIME",
+        "iTXt",
+        "tEXt",
+        "zTXt",
+        "acTL",
+        "fcTL",
+        "fdAT"
+      ],
+      "endianness": "big",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 114,
+        "snippet": "uint32  ctype <format=hex>; // Chunk Type"
+      },
+      "confidence": "high",
+      "notes": "Union member overlapping CTYPE.cname at lines 112-115: writing either one writes the same four bytes. A generator must emit these four bytes exactly once, not twice."
+    },
+    "PNG_CHUNK_IHDR.width": {
+      "type": "range_constraint",
+      "description": "Image width in pixels; zero is explicitly illegal and the value is limited to a PNG four-byte unsigned integer.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 1,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Decoders allocate width*height*channels bytes on sight of IHDR. Spec-legal widths up to 2^31-1 make a single generated file trigger multi-gigabyte allocations and dominate fuzzing runtime; 1-64 keeps every produced image trivially small while still exercising all width-dependent code (row stride, filtering, Adam7 pass geometry)."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.1.1 (IHDR): 'Width and height give the image dimensions in pixels. They are 4-byte integers. Zero is an invalid value.' Like all PNG four-byte unsigned integers the value must not exceed 2^31-1 (section 3.2). The template declares a plain uint32 and performs no check.",
+        "line": 125,
+        "snippet": "uint32   width;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_IHDR.height": {
+      "type": "range_constraint",
+      "description": "Image height in pixels; zero is explicitly illegal and the value is limited to a PNG four-byte unsigned integer.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 1,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Same allocation blow-up as width; the product width*height is what a decoder reserves, so both must be capped together."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.1.1 (IHDR): 'Width and height give the image dimensions in pixels. They are 4-byte integers. Zero is an invalid value.' Bounded above by 2^31-1 per section 3.2. The template declares a plain uint32 and performs no check.",
+        "line": 126,
+        "snippet": "uint32   height;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_IHDR.bits": {
+      "type": "enumerated_values",
+      "description": "Bit depth: number of bits per sample (per palette index for colour type 3); only five values exist and the legal subset narrows further with colour type.",
+      "corruption_risk": "high",
+      "field_type": "ubyte",
+      "source": "spec",
+      "valid_values": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "value_names": [
+        "1-bit",
+        "2-bit",
+        "4-bit",
+        "8-bit",
+        "16-bit"
+      ],
+      "preferred_value": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.1.1 (IHDR): 'Bit depth is a single-byte integer giving the number of bits per sample or per palette index (not per pixel). Valid values are 1, 2, 4, 8, and 16, although not all values are allowed for all colour types.' The template declares it as a bare ubyte and performs no check."
+      },
+      "confidence": "high",
+      "notes": "Bit depth 8 is preferred: it is the only depth legal for every colour type, and it is the depth real decoders exercise most deeply."
+    },
+    "PNG_CHUNK_IHDR.color_type": {
+      "type": "enumerated_values",
+      "description": "Colour type, a sum of the flags 1 (palette used), 2 (colour used) and 4 (alpha channel used); only five combinations are defined.",
+      "corruption_risk": "high",
+      "field_type": "PNG_COLOR_SPACE_TYPE (enum <byte> pngColorSpaceType)",
+      "source": "both",
+      "valid_values": [
+        0,
+        2,
+        3,
+        4,
+        6
+      ],
+      "value_names": [
+        "GrayScale",
+        "TrueColor",
+        "Indexed",
+        "AlphaGrayScale",
+        "AlphaTrueColor"
+      ],
+      "preferred_value": 2,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 128,
+        "snippet": "PNG_COLOR_SPACE_TYPE color_type;"
+      },
+      "confidence": "high",
+      "notes": "The whole enum body is lines 53-59. Colour types 1, 5 and 7 are deliberately absent. This field is read back by other chunks via chunk[0].ihdr.color_type at lines 320 and 322, so it drives the layout of bKGD and sBIT as well as its own validity."
+    },
+    "PNG_CHUNK_IHDR.compr_method": {
+      "type": "fixed_value",
+      "description": "Compression method for the IDAT image datastream; PNG 1.2 defines exactly one method, 0 (deflate with a 32K sliding window, zlib-wrapped).",
+      "corruption_risk": "high",
+      "field_type": "PNG_COMPR_METHOD (enum <byte> pngCompressionMethod)",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 129,
+        "snippet": "PNG_COMPR_METHOD     compr_method;"
+      },
+      "confidence": "high",
+      "notes": "Enum declared at lines 62-64 with the single member Deflate = 0; decoders are required to reject any other value."
+    },
+    "PNG_CHUNK_IHDR.filter_method": {
+      "type": "fixed_value",
+      "description": "Filter method (the preprocessing scheme applied to each scanline before compression); PNG 1.2 defines exactly one, 0 (adaptive filtering with five basic filter types).",
+      "corruption_risk": "high",
+      "field_type": "PNG_FILTER_METHOD (enum <byte> pngFilterMethod)",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 130,
+        "snippet": "PNG_FILTER_METHOD    filter_method;"
+      },
+      "confidence": "high",
+      "notes": "Enum declared at lines 67-69 with the single member AdaptiveFiltering = 0."
+    },
+    "PNG_CHUNK_IHDR.interlace_method": {
+      "type": "enumerated_values",
+      "description": "Interlace method: 0 for no interlacing (scanlines in order), 1 for the Adam7 seven-pass interlace.",
+      "corruption_risk": "high",
+      "field_type": "PNG_INTERLACE_METHOD (enum <byte> pngInterlaceMethod)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "NoInterlace",
+        "Adam7Interlace"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 131,
+        "snippet": "PNG_INTERLACE_METHOD interlace_method;"
+      },
+      "confidence": "high",
+      "notes": "Enum declared at lines 72-75. Method 0 is preferred: Adam7 changes the expected IDAT byte count in a way an uncompressed-payload generator cannot easily satisfy, so a mismatched interlace flag makes decoders bail before deep parsing."
+    },
+    "PNG_CHUNK_TEXT.label": {
+      "type": "pattern_constraint",
+      "description": "NUL-terminated tEXt keyword naming the text field; a PNG keyword of 1-79 printable Latin-1 characters with no leading, trailing or consecutive spaces.",
+      "corruption_risk": "medium",
+      "field_type": "string",
+      "source": "spec",
+      "pattern": "^[\\x20-\\x7E\\xA1-\\xFF]{1,79}\\x00$ with no leading space, no trailing space and no two consecutive spaces",
+      "preferred_value": [
+        "Title",
+        "Author",
+        "Description",
+        "Copyright",
+        "Creation Time",
+        "Software",
+        "Disclaimer",
+        "Warning",
+        "Source",
+        "Comment"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 16,
+        "rationale": "Keyword length in characters; short registered keywords keep the chunk small and are what real decoders special-case."
+      },
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.3.1 (tEXt): 'The keyword must be at least one character and less than 80 characters long. Keywords are always interpreted according to the ISO 8859-1 (Latin-1) character set. They must contain only printable Latin-1 characters and spaces; that is, only character codes 32-126 and 161-255 decimal are allowed. To reduce the chances for human misreading of a keyword, leading and trailing spaces are forbidden, as are consecutive spaces.' The template reads it as an unchecked NUL-terminated string."
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_TEXT.data": {
+      "type": "calculated_value",
+      "description": "The tEXt value string; its byte count is not stored anywhere but is derived from the enclosing chunk length minus the keyword and its NUL terminator, so the two must agree exactly.",
+      "corruption_risk": "high",
+      "field_type": "char[length - Strlen(label) - 1]",
+      "source": "template",
+      "algorithm": "byte count = PNG_CHUNK.length - Strlen(PNG_CHUNK_TEXT.label) - 1",
+      "covers": "the tEXt value bytes that follow the NUL terminator of `label`, to the end of the chunk payload; it excludes the enclosing chunk's length, type and CRC fields, and excludes `label` and its NUL",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "PNG_CHUNK.length",
+        "PNG_CHUNK_TEXT.label"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 64,
+        "rationale": "Value-string byte count. tEXt payloads are unbounded in the spec (up to the 2^31-1 chunk limit); capping at 64 bytes keeps text chunks from dominating file size."
+      },
+      "evidence": {
+        "line": 143,
+        "snippet": "char   data[length - Strlen(label) - 1];   // rest of the data"
+      },
+      "confidence": "high",
+      "notes": "`length` here is the enclosing PNG_CHUNK.length captured by 010 Editor's lexical scoping, not a member of PNG_CHUNK_TEXT. The value is *not* NUL-terminated and must not contain a NUL byte. If Strlen(label)+1 exceeds length the expression goes negative, which is the template's main malformed-input failure mode for tEXt."
+    },
+    "PNG_CHUNK_PLTE.plteChunkData": {
+      "type": "calculated_value",
+      "description": "Palette entry array; the number of entries is not stored but is the chunk length divided by three, so the chunk length must be an exact multiple of 3 and must not describe more than 256 entries.",
+      "corruption_risk": "high",
+      "field_type": "PNG_PALETTE_PIXEL[chunkLen/3]",
+      "source": "both",
+      "algorithm": "entry count = PNG_CHUNK.length / 3, with PNG_CHUNK.length required to be an exact multiple of 3 and in the range 3..768",
+      "covers": "the entire PLTE chunk payload; each entry is exactly three bytes (red, green, blue), and the array excludes the enclosing chunk's length, type and CRC fields",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "PNG_CHUNK.length",
+        "PNG_CHUNK_IHDR.bits",
+        "PNG_CHUNK_IHDR.color_type"
+      ],
+      "byte_layout": "3 bytes per entry: PNG_PALETTE_PIXEL.btRed, .btGreen, .btBlue, each an 8-bit sample regardless of IHDR bit depth",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 256,
+        "rationale": "Entry count. 256 is also the hard spec maximum, and for colour type 3 the count must not exceed 2^bit_depth, so a generator should pick min(256, 2^bits)."
+      },
+      "evidence": {
+        "line": 153,
+        "snippet": "PNG_PALETTE_PIXEL plteChunkData[chunkLen/3];"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.1.2: 'The number of entries is determined from the chunk length. A chunk length not divisible by 3 is an error.' The individual R/G/B samples are free-form colour data and are deliberately not given their own constraints entries."
+    },
+    "PNG_POINT.x": {
+      "type": "range_constraint",
+      "description": "CIE 1931 x chromaticity coordinate of a cHRM white point or primary, stored as the true value multiplied by 100000 and rounded.",
+      "corruption_risk": "low",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 100000,
+        "rationale": "Chromaticity coordinates are fixed-point values scaled by 100000 and in practice lie in 0.0-1.0, i.e. 0-100000. Real values are around 31270 (white x) or 64000 (red x). Values above 100000 are meaningless and colour-managed decoders reject or ignore them."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.2.1 (cHRM): 'Each value is encoded as a 4-byte unsigned integer, representing the x or y value times 100000.' PNG four-byte unsigned integers are capped at 2^31-1 (section 3.2). The template declares a plain uint32 and performs no check.",
+        "line": 84,
+        "snippet": "uint32 x;"
+      },
+      "confidence": "high",
+      "notes": "Used four times inside PNG_CHUNK_CHRM (white, red, green, blue at lines 157-160)."
+    },
+    "PNG_POINT.y": {
+      "type": "range_constraint",
+      "description": "CIE 1931 y chromaticity coordinate of a cHRM white point or primary, stored as the true value multiplied by 100000 and rounded.",
+      "corruption_risk": "low",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 100000,
+        "rationale": "Same fixed-point 100000 scaling as PNG_POINT.x; sane sRGB values are around 32900 (white y) or 33000 (red y)."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.2.1 (cHRM): 'Each value is encoded as a 4-byte unsigned integer, representing the x or y value times 100000.' Capped at 2^31-1 per section 3.2. The template declares a plain uint32 and performs no check.",
+        "line": 85,
+        "snippet": "uint32 y;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SRGB.srgbChunkData": {
+      "type": "enumerated_values",
+      "description": "sRGB rendering intent; the four ICC rendering intents are the only defined values and the chunk is exactly one byte long.",
+      "corruption_risk": "high",
+      "field_type": "PNG_SRGB_CHUNK_DATA (enum <byte>)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "Perceptual",
+        "RelativeColorimetric",
+        "Saturation",
+        "AbsoluteColorimetric"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 164,
+        "snippet": "PNG_SRGB_CHUNK_DATA srgbChunkData;"
+      },
+      "confidence": "high",
+      "notes": "Enum declared at lines 88-93. PNG 1.2 section 4.2.2.4 lists exactly these four intents; a value of 4 or above is a spec violation even though the template accepts any byte."
+    },
+    "PNG_CHUNK_ITXT.itxtIdChunkData": {
+      "type": "pattern_constraint",
+      "description": "NUL-terminated iTXt keyword; a PNG keyword of 1-79 printable Latin-1 characters with no leading, trailing or consecutive spaces.",
+      "corruption_risk": "medium",
+      "field_type": "string",
+      "source": "spec",
+      "pattern": "^[\\x20-\\x7E\\xA1-\\xFF]{1,79}\\x00$ with no leading space, no trailing space and no two consecutive spaces",
+      "preferred_value": [
+        "Title",
+        "Author",
+        "Description",
+        "Comment",
+        "Software"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 16,
+        "rationale": "Keyword length in characters; keeps the chunk small."
+      },
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.3.3 (iTXt): the keyword field obeys the same 1-79 printable-Latin-1 rules as tEXt. The template reads it as an unchecked NUL-terminated string at line 168."
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_ITXT.itxtCompressionFlag": {
+      "type": "enumerated_values",
+      "description": "iTXt compression flag: 0 means the text is stored uncompressed, 1 means it is a zlib datastream compressed with the method in the following byte.",
+      "corruption_risk": "high",
+      "field_type": "byte",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "Uncompressed",
+        "Compressed"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.3.3 (iTXt): 'A compression flag of 0 means uncompressed text, 1 means compressed text.' No other value is defined; the template declares a plain byte and performs no check.",
+        "line": 169,
+        "snippet": "byte itxtCompressionFlag;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.3.3: 'A compression flag of 0 means uncompressed text, 1 means compressed text.' Flag 0 is strongly preferred for generation because it removes the requirement to emit a valid zlib stream, letting a decoder read the text and continue rather than aborting on an inflate error."
+    },
+    "PNG_CHUNK_ITXT.itxtComprMethod": {
+      "type": "fixed_value",
+      "description": "iTXt compression method; PNG defines only method 0 (zlib deflate), and the byte must still be present and zero even when the compression flag is 0.",
+      "corruption_risk": "high",
+      "field_type": "PNG_COMPR_METHOD (enum <byte> pngCompressionMethod)",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 170,
+        "snippet": "PNG_COMPR_METHOD itxtComprMethod;"
+      },
+      "confidence": "high",
+      "notes": "The enum pngCompressionMethod (lines 62-64) has the single member Deflate = 0. Section 4.2.3.3 requires the field to be present unconditionally and to be 0 when the compression flag is 1; when the flag is 0 the value is ignored by decoders but is conventionally 0."
+    },
+    "PNG_CHUNK_ITXT.itxtLanguageTag": {
+      "type": "pattern_constraint",
+      "description": "NUL-terminated RFC-1766/3066 language tag identifying the language of the translated keyword and text; may be the empty string when unspecified.",
+      "corruption_risk": "low",
+      "field_type": "string",
+      "source": "spec",
+      "pattern": "^(?:[A-Za-z0-9]{1,8}(?:-[A-Za-z0-9]{1,8})*)?\\x00$ using only ISO-646 (7-bit ASCII) characters",
+      "preferred_value": [
+        "en",
+        "en-US",
+        ""
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.3.3 (iTXt): the language tag is a null-terminated ISO-646 (ASCII) string following RFC 1766, consisting of hyphen-separated words of 1 to 8 alphanumeric characters each; it may be the empty string. The template reads it as an unchecked NUL-terminated string.",
+        "line": 171,
+        "snippet": "string itxtLanguageTag;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.3.3: 'The language tag ... is a null-terminated string ... Language tags are ASCII, and consist of hyphen-separated words of 1-8 alphanumeric characters each.'"
+    },
+    "PNG_CHUNK_ITXT.itxtTranslatedKeyword": {
+      "type": "pattern_constraint",
+      "description": "NUL-terminated UTF-8 translation of the keyword into the declared language; may be empty, and must contain no NUL byte other than its terminator.",
+      "corruption_risk": "low",
+      "field_type": "string",
+      "source": "spec",
+      "pattern": "well-formed UTF-8 with no embedded NUL, terminated by a single \\x00; may be zero characters long. Newline characters are forbidden.",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 16,
+        "rationale": "Character count; unbounded in the spec, kept short so iTXt chunks stay small."
+      },
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.3.3 (iTXt): the translated keyword is a null-terminated UTF-8 string that may be empty, must contain no NUL other than its terminator, and must not contain newline characters. The template reads it as an unchecked NUL-terminated string.",
+        "line": 172,
+        "snippet": "string itxtTranslatedKeyword;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_ITXT.itxtValChunkData": {
+      "type": "calculated_value",
+      "description": "The iTXt text payload; its byte count is not stored and must be derived from the chunk length minus the four preceding variable and fixed fields, so all five must agree exactly.",
+      "corruption_risk": "high",
+      "field_type": "char[chunkLen - Strlen(itxtIdChunkData) - 1 - Strlen(itxtLanguageTag) - 1 - Strlen(itxtTranslatedKeyword) - 1 - 2]",
+      "source": "template",
+      "algorithm": "byte count = PNG_CHUNK.length - Strlen(itxtIdChunkData) - 1 - Strlen(itxtLanguageTag) - 1 - Strlen(itxtTranslatedKeyword) - 1 - 2",
+      "covers": "the text bytes from the end of the translated keyword's NUL to the end of the chunk payload; the three subtracted 1s are the three NUL terminators and the subtracted 2 is itxtCompressionFlag plus itxtComprMethod. It excludes the enclosing chunk's length, type and CRC fields.",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "PNG_CHUNK.length",
+        "PNG_CHUNK_ITXT.itxtIdChunkData",
+        "PNG_CHUNK_ITXT.itxtLanguageTag",
+        "PNG_CHUNK_ITXT.itxtTranslatedKeyword",
+        "PNG_CHUNK_ITXT.itxtCompressionFlag"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 64,
+        "rationale": "Text byte count; unbounded in the spec up to the chunk-length limit, capped so iTXt chunks do not dominate file size."
+      },
+      "evidence": {
+        "line": 173,
+        "snippet": "char itxtValChunkData[chunkLen -"
+      },
+      "confidence": "high",
+      "notes": "The array-size expression spans lines 173-177. When itxtCompressionFlag is 1 these bytes must be a valid zlib datastream (RFC 1950) whose inflated content is UTF-8; when it is 0 they are raw UTF-8 with no terminator."
+    },
+    "PNG_CHUNK_ZTXT.ztxtIdChunkData": {
+      "type": "pattern_constraint",
+      "description": "NUL-terminated zTXt keyword; a PNG keyword of 1-79 printable Latin-1 characters with no leading, trailing or consecutive spaces.",
+      "corruption_risk": "medium",
+      "field_type": "string",
+      "source": "spec",
+      "pattern": "^[\\x20-\\x7E\\xA1-\\xFF]{1,79}\\x00$ with no leading space, no trailing space and no two consecutive spaces",
+      "preferred_value": [
+        "Comment",
+        "Description",
+        "Copyright",
+        "Software"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 16,
+        "rationale": "Keyword length in characters."
+      },
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.3.2 (zTXt): the keyword field obeys the same 1-79 printable-Latin-1 rules as tEXt. The template reads it as an unchecked NUL-terminated string at line 181."
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_ZTXT.comprMethod": {
+      "type": "fixed_value",
+      "description": "zTXt compression method; PNG defines only method 0 (zlib deflate), and any other value makes the chunk undecodable.",
+      "corruption_risk": "high",
+      "field_type": "PNG_COMPR_METHOD (enum <byte> pngCompressionMethod)",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 182,
+        "snippet": "PNG_COMPR_METHOD comprMethod;"
+      },
+      "confidence": "high",
+      "notes": "Enum pngCompressionMethod, lines 62-64, single member Deflate = 0."
+    },
+    "PNG_CHUNK_ZTXT.ztxtValChunkData": {
+      "type": "calculated_value",
+      "description": "The compressed zTXt text; its byte count is derived from the chunk length minus the keyword, its NUL and the compression-method byte, and the bytes themselves must form a valid zlib datastream.",
+      "corruption_risk": "high",
+      "field_type": "char[chunkLen - Strlen(ztxtIdChunkData) - 2]",
+      "source": "both",
+      "algorithm": "byte count = PNG_CHUNK.length - Strlen(ztxtIdChunkData) - 2; the content itself is a zlib (RFC 1950) datastream wrapping a DEFLATE (RFC 1951) stream, terminated by an Adler-32 checksum of the uncompressed data",
+      "covers": "the compressed text bytes from just after comprMethod to the end of the chunk payload; the subtracted 2 is the keyword's NUL terminator plus the one-byte comprMethod. It excludes the enclosing chunk's length, type and CRC fields.",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "PNG_CHUNK.length",
+        "PNG_CHUNK_ZTXT.ztxtIdChunkData"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 11,
+        "max": 96,
+        "rationale": "Compressed byte count. The minimum is the size of a zlib stream wrapping a single stored (BTYPE=00) DEFLATE block with an empty payload: 2 header bytes + 5 block bytes + 4 Adler-32 bytes = 11. Capped at 96 so zTXt chunks stay small."
+      },
+      "evidence": {
+        "line": 183,
+        "snippet": "char ztxtValChunkData[chunkLen - Strlen(ztxtIdChunkData) -2];"
+      },
+      "confidence": "high",
+      "notes": "The most productive generation strategy is a stored (uncompressed) DEFLATE block: bytes 78 01, then 01, LEN low, LEN high, ~LEN low, ~LEN high, then LEN literal bytes, then the big-endian Adler-32 of those bytes. That reaches the decoder's text handling instead of aborting in inflate. The Adler-32 inside this payload is a nested checksum the outer chunk CRC does not cover."
+    },
+    "PNG_CHUNK_TIME.timeYear": {
+      "type": "range_constraint",
+      "description": "Complete four-digit year of last image modification (not an offset from 1900); the spec declares it as a two-byte unsigned integer.",
+      "corruption_risk": "low",
+      "field_type": "int16",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1995,
+        "max": 2035,
+        "rationale": "Plausible modification years for a PNG file; keeps the value in the range date-formatting code in viewers can render without overflow, while still being a real 16-bit value."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.5 (tIME): 'Year: 2 bytes (complete; for example, 1995, not 95)'. The field is an unsigned 2-byte integer; the template declares int16 (signed) and performs no check.",
+        "line": 187,
+        "snippet": "int16 timeYear  <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "Template deviation: PNG 1.2 section 4.2.4.5 specifies an unsigned 2-byte integer, but the template declares int16 (signed), so years above 32767 display negative. See meta template_deviations."
+    },
+    "PNG_CHUNK_TIME.timeMonth": {
+      "type": "range_constraint",
+      "description": "Month of last modification, 1-12; zero and values above 12 are invalid.",
+      "corruption_risk": "low",
+      "field_type": "byte",
+      "source": "spec",
+      "min": 1,
+      "max": 12,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.5 (tIME): 'Month: 1 byte (1-12)'. The template declares a plain byte and performs no check.",
+        "line": 188,
+        "snippet": "byte  timeMonth <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.4.5 (tIME): 'Month: 1 byte (1-12)'."
+    },
+    "PNG_CHUNK_TIME.timeDay": {
+      "type": "range_constraint",
+      "description": "Day of month of last modification, 1-31.",
+      "corruption_risk": "low",
+      "field_type": "byte",
+      "source": "spec",
+      "min": 1,
+      "max": 31,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.5 (tIME): 'Day: 1 byte (1-31)'. The spec does not require the day to be valid for the given month. The template declares a plain byte and performs no check.",
+        "line": 189,
+        "snippet": "byte  timeDay   <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.4.5: 'Day: 1 byte (1-31)'. The spec does not require the day to be valid for the given month."
+    },
+    "PNG_CHUNK_TIME.timeHour": {
+      "type": "range_constraint",
+      "description": "Hour of last modification in 24-hour UTC, 0-23.",
+      "corruption_risk": "low",
+      "field_type": "byte",
+      "source": "spec",
+      "min": 0,
+      "max": 23,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.5 (tIME): 'Hour: 1 byte (0-23)'. The template declares a plain byte and performs no check.",
+        "line": 190,
+        "snippet": "byte  timeHour  <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.4.5: 'Hour: 1 byte (0-23)'."
+    },
+    "PNG_CHUNK_TIME.timeMin": {
+      "type": "range_constraint",
+      "description": "Minute of last modification, 0-59.",
+      "corruption_risk": "low",
+      "field_type": "byte",
+      "source": "spec",
+      "min": 0,
+      "max": 59,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.5 (tIME): 'Minute: 1 byte (0-59)'. The template declares a plain byte and performs no check.",
+        "line": 191,
+        "snippet": "byte  timeMin   <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.4.5: 'Minute: 1 byte (0-59)'."
+    },
+    "PNG_CHUNK_TIME.timeSec": {
+      "type": "range_constraint",
+      "description": "Second of last modification, 0-60; 60 is allowed to represent a leap second.",
+      "corruption_risk": "low",
+      "field_type": "byte",
+      "source": "spec",
+      "min": 0,
+      "max": 60,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.5 (tIME): 'Second: 1 byte (0-60) (to allow for leap seconds)'. The template declares a plain byte and performs no check.",
+        "line": 192,
+        "snippet": "byte  timeSec   <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.4.5: 'Second: 1 byte (0-60) (to allow for leap seconds)'."
+    },
+    "PNG_CHUNK_BKGD.bgColorPaletteIndex": {
+      "type": "range_constraint",
+      "description": "Background colour as a palette index; present only for colour type 3, and must address an entry that actually exists in PLTE.",
+      "corruption_risk": "medium",
+      "field_type": "ubyte",
+      "source": "both",
+      "min": 0,
+      "max": 255,
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "The palette may legally contain as few as one entry, and the index must be strictly less than the PLTE entry count. Index 0 is the only value valid for every palette size, so a generator that does not track the palette length must emit 0."
+      },
+      "evidence": {
+        "line": 198,
+        "snippet": "ubyte bgColorPaletteIndex <format=hex>;"
+      },
+      "confidence": "high",
+      "notes": "Selected by `case 3:` of the switch at line 196, driven by chunk[0].ihdr.color_type passed in at line 320."
+    },
+    "PNG_CHUNK_BKGD.bgGrayscalePixelValue": {
+      "type": "range_constraint",
+      "description": "Background colour as a single greyscale sample; present only for colour types 0 and 4, and must be less than 2^bit_depth.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 255,
+        "rationale": "The sample is always stored in two bytes but the high-order bits must be zero for any bit depth below 16. Capping at 255 keeps the value legal for every bit depth from 8 upward and harmless below that."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 203,
+        "snippet": "uint16 bgGrayscalePixelValue <format=hex>;"
+      },
+      "confidence": "high",
+      "notes": "Selected by `case 0:`/`case 4:` of the switch at line 196. PNG 1.2 section 4.2.4.1: the value is stored as two bytes regardless of bit depth, but 'if the image bit depth is less than 16, the least significant bits are used and the others are 0'."
+    },
+    "PNG_CHUNK_BKGD.bgColorPixelRed": {
+      "type": "range_constraint",
+      "description": "Red component of the background colour; present only for colour types 2 and 6, and must be less than 2^bit_depth.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 255,
+        "rationale": "Two-byte storage but only the low bit_depth bits may be non-zero; 0-255 is safe for bit depth 8 and 16."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 208,
+        "snippet": "uint16 bgColorPixelRed <format=hex>;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_BKGD.bgColorPixelGreen": {
+      "type": "range_constraint",
+      "description": "Green component of the background colour; present only for colour types 2 and 6, and must be less than 2^bit_depth.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 255,
+        "rationale": "Two-byte storage but only the low bit_depth bits may be non-zero."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 209,
+        "snippet": "uint16 bgColorPixelGreen <format=hex>;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_BKGD.bgColorPixelBlue": {
+      "type": "range_constraint",
+      "description": "Blue component of the background colour; present only for colour types 2 and 6, and must be less than 2^bit_depth.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 255,
+        "rationale": "Two-byte storage but only the low bit_depth bits may be non-zero."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 210,
+        "snippet": "uint16 bgColorPixelBlue <format=hex>;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_PHYS.physPixelPerUnitX": {
+      "type": "range_constraint",
+      "description": "Number of pixels per unit along the X axis; a PNG four-byte unsigned integer, so limited to 2^31-1.",
+      "corruption_risk": "low",
+      "field_type": "uint",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1,
+        "max": 20000,
+        "rationale": "Real values are around 2835 (72 dpi in pixels per metre) to 11811 (300 dpi). Viewers multiply this into layout arithmetic, so spec-legal values near 2^31 produce absurd physical sizes and can overflow downstream scaling code without adding coverage."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.2 (pHYs): 'Pixels per unit, X axis: 4 bytes (unsigned integer)'. PNG four-byte unsigned integers are capped at 2^31-1 (section 3.2). The template declares a plain uint and performs no check.",
+        "line": 220,
+        "snippet": "uint physPixelPerUnitX;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_PHYS.physPixelPerUnitY": {
+      "type": "range_constraint",
+      "description": "Number of pixels per unit along the Y axis; a PNG four-byte unsigned integer, so limited to 2^31-1.",
+      "corruption_risk": "low",
+      "field_type": "uint",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1,
+        "max": 20000,
+        "rationale": "Same reasoning as physPixelPerUnitX; conventionally equal to it for square pixels."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.2 (pHYs): 'Pixels per unit, Y axis: 4 bytes (unsigned integer)'. Capped at 2^31-1 per section 3.2. The template declares a plain uint and performs no check.",
+        "line": 221,
+        "snippet": "uint physPixelPerUnitY;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_PHYS.physUnitSpec": {
+      "type": "enumerated_values",
+      "description": "Unit specifier for the pHYs values: 0 means the unit is unknown and only the X:Y aspect ratio is meaningful, 1 means the unit is the metre.",
+      "corruption_risk": "medium",
+      "field_type": "enum <byte> (anonymous, declared inline)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "UnkownUnit",
+        "Meter"
+      ],
+      "preferred_value": 1,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 225,
+        "snippet": "} physUnitSpec;"
+      },
+      "confidence": "high",
+      "notes": "Anonymous inline enum declared at lines 222-225 with members UnkownUnit = 0 and Meter = 1 (the misspelling is the template's). PNG 1.2 section 4.2.4.2 defines only these two values. Value 1 is preferred because it makes the pHYs values physically meaningful and drives DPI-handling code in viewers."
+    },
+    "PNG_CHUNK_SBIT.sbitRed": {
+      "type": "range_constraint",
+      "description": "Significant bits in the red component of the palette entries, for colour type 3; must be at least 1 and, because palette samples are always 8-bit, at most 8.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 231,
+        "snippet": "byte sbitRed;"
+      },
+      "confidence": "high",
+      "notes": "Selected by `case 3:` of the switch at line 229. PNG 1.2 section 4.2.4.4: 'Each depth specified in sBIT must be greater than zero and less than or equal to the sample depth ... For colour type 3, the sample depth is always 8.'"
+    },
+    "PNG_CHUNK_SBIT.sbitGreen": {
+      "type": "range_constraint",
+      "description": "Significant bits in the green component of the palette entries, for colour type 3; 1-8 because palette samples are always 8-bit.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 232,
+        "snippet": "byte sbitGreen;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SBIT.sbitBlue": {
+      "type": "range_constraint",
+      "description": "Significant bits in the blue component of the palette entries, for colour type 3; 1-8 because palette samples are always 8-bit.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 233,
+        "snippet": "byte sbitBlue;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SBIT.sbitGraySource": {
+      "type": "range_constraint",
+      "description": "Significant bits in the greyscale samples, for colour type 0; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 237,
+        "snippet": "byte sbitGraySource;"
+      },
+      "confidence": "high",
+      "notes": "Selected by `case 0:` of the switch at line 229. The true upper bound is PNG_CHUNK_IHDR.bits, not 16; see dependencies."
+    },
+    "PNG_CHUNK_SBIT.sbitGrayAlphaSource": {
+      "type": "range_constraint",
+      "description": "Significant bits in the greyscale samples, for colour type 4; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 241,
+        "snippet": "byte sbitGrayAlphaSource;"
+      },
+      "confidence": "high",
+      "notes": "Selected by `case 4:` of the switch at line 229. Colour type 4 permits bit depths 8 and 16 only, so the effective bound is 8 or 16."
+    },
+    "PNG_CHUNK_SBIT.sbitGrayAlphaSourceAlpha": {
+      "type": "range_constraint",
+      "description": "Significant bits in the alpha samples, for colour type 4; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 242,
+        "snippet": "byte sbitGrayAlphaSourceAlpha;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SBIT.sbitColorRed": {
+      "type": "range_constraint",
+      "description": "Significant bits in the red samples, for colour type 2; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 246,
+        "snippet": "byte sbitColorRed;"
+      },
+      "confidence": "high",
+      "notes": "Selected by `case 2:` of the switch at line 229. Colour type 2 permits bit depths 8 and 16 only."
+    },
+    "PNG_CHUNK_SBIT.sbitColorGreen": {
+      "type": "range_constraint",
+      "description": "Significant bits in the green samples, for colour type 2; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 247,
+        "snippet": "byte sbitColorGreen;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SBIT.sbitColorBlue": {
+      "type": "range_constraint",
+      "description": "Significant bits in the blue samples, for colour type 2; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 248,
+        "snippet": "byte sbitColorBlue;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SBIT.sbitColorAlphaRed": {
+      "type": "range_constraint",
+      "description": "Significant bits in the red samples, for colour type 6; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 252,
+        "snippet": "byte sbitColorAlphaRed;"
+      },
+      "confidence": "high",
+      "notes": "Selected by `case 6:` of the switch at line 229. Colour type 6 permits bit depths 8 and 16 only."
+    },
+    "PNG_CHUNK_SBIT.sbitColorAlphaGreen": {
+      "type": "range_constraint",
+      "description": "Significant bits in the green samples, for colour type 6; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 253,
+        "snippet": "byte sbitColorAlphaGreen;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SBIT.sbitColorAlphaBlue": {
+      "type": "range_constraint",
+      "description": "Significant bits in the blue samples, for colour type 6; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 254,
+        "snippet": "byte sbitColorAlphaBlue;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SBIT.sbitColorAlphaAlpha": {
+      "type": "range_constraint",
+      "description": "Significant bits in the alpha samples, for colour type 6; must be at least 1 and no greater than the IHDR bit depth.",
+      "corruption_risk": "medium",
+      "field_type": "byte",
+      "source": "both",
+      "min": 1,
+      "max": 16,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 255,
+        "snippet": "byte sbitColorAlphaAlpha;"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 255 in the source listing (the fourth byte of the colour-type-6 case at lines 252-255)."
+    },
+    "PNG_CHUNK_SPLT.paletteName": {
+      "type": "pattern_constraint",
+      "description": "NUL-terminated name identifying this suggested palette; a PNG keyword of 1-79 printable Latin-1 characters, and it must be unique among all sPLT chunks in the file.",
+      "corruption_risk": "medium",
+      "field_type": "string",
+      "source": "spec",
+      "pattern": "^[\\x20-\\x7E\\xA1-\\xFF]{1,79}\\x00$ with no leading space, no trailing space and no two consecutive spaces; must not duplicate the paletteName of any other sPLT chunk in the file",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 16,
+        "rationale": "Name length in characters."
+      },
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.6 (sPLT): 'The palette name can be any string that conforms to the rules for keywords ... Palette names must be unique within a PNG datastream.' The template reads it as an unchecked NUL-terminated string at line 265."
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_SPLT.sampleDepth": {
+      "type": "enumerated_values",
+      "description": "Sample depth of the suggested-palette entries: 8 means each entry is 6 bytes (four 8-bit samples plus a 16-bit frequency), 16 means each entry is 10 bytes (four 16-bit samples plus a 16-bit frequency). No other value is defined.",
+      "corruption_risk": "high",
+      "field_type": "byte",
+      "source": "spec",
+      "valid_values": [
+        8,
+        16
+      ],
+      "value_names": [
+        "8-bit samples (6 bytes per entry)",
+        "16-bit samples (10 bytes per entry)"
+      ],
+      "preferred_value": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "PNG 1.2 section 4.2.4.6 (sPLT): 'The sample depth ... must be 8 or 16.' The template declares a plain byte and performs no check, even though this value fixes the stride of the entry array that follows.",
+        "line": 266,
+        "snippet": "byte sampleDepth;"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 4.2.4.6: 'The sample depth ... must be 8 or 16.' This byte determines the stride of spltData, so a wrong value desynchronises the whole chunk even though the template reads it as a bare byte."
+    },
+    "PNG_CHUNK_SPLT.spltData": {
+      "type": "calculated_value",
+      "description": "The suggested-palette entry array; its byte count is derived from the chunk length minus the name, its NUL and the sample-depth byte, and it must be an exact multiple of the per-entry stride implied by sampleDepth.",
+      "corruption_risk": "high",
+      "field_type": "byte[chunkLen - Strlen(paletteName) - 2]",
+      "source": "both",
+      "algorithm": "byte count = PNG_CHUNK.length - Strlen(paletteName) - 2, and that count must be divisible by 6 when sampleDepth is 8 or by 10 when sampleDepth is 16",
+      "covers": "the palette entries from just after sampleDepth to the end of the chunk payload; the subtracted 2 is the name's NUL terminator plus the one-byte sampleDepth. It excludes the enclosing chunk's length, type and CRC fields.",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "PNG_CHUNK.length",
+        "PNG_CHUNK_SPLT.paletteName",
+        "PNG_CHUNK_SPLT.sampleDepth"
+      ],
+      "byte_layout": "sampleDepth 8: red, green, blue, alpha (1 byte each) + uint16 frequency = 6 bytes per entry. sampleDepth 16: red, green, blue, alpha (2 bytes each, big-endian) + uint16 frequency = 10 bytes per entry.",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Entry count (not bytes). The spec sets no limit, so an unbounded count would let one sPLT chunk reach the 2^31-1 chunk-length ceiling; 64 entries is 384 or 640 bytes and exercises the same parsing loop."
+      },
+      "evidence": {
+        "line": 267,
+        "snippet": "byte spltData[chunkLen - Strlen(paletteName) -2];"
+      },
+      "confidence": "high",
+      "notes": "The spec also requires entries to be sorted by decreasing frequency, and sample values to be scaled to the declared sample depth; neither is checked anywhere."
+    },
+    "PNG_CHUNK_ACTL.num_frames": {
+      "type": "calculated_value",
+      "description": "APNG total frame count; it is not free, it must equal the number of fcTL chunks in the file, and it must be at least 1.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "algorithm": "count of fcTL chunks in the datastream; must be >= 1 and <= 2^31-1",
+      "covers": "the whole datastream: every chunk whose CTYPE.cname equals \"fcTL\" is counted exactly once, including the fcTL that describes the IDAT frame when one is present",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "CTYPE.cname"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 4,
+        "rationale": "Every counted frame requires a matching fcTL chunk (26 bytes plus overhead) and normally at least one fdAT chunk, so this number directly multiplies file size. A spec-legal value near 2^31 either produces a gigantic file or an immediately-rejected mismatch; 1-4 frames exercises the whole APNG state machine."
+      },
+      "evidence": {
+        "note": "APNG 1.0 specification, acTL chunk: 'num_frames: 4 bytes, number of frames ... must equal the number of fcTL chunks. 0 is not a valid value. 1 is a valid value, for a single-frame APNG.' The template declares a plain uint32 and performs no check.",
+        "line": 271,
+        "snippet": "uint32 num_frames;"
+      },
+      "confidence": "high",
+      "notes": "APNG 1.0: 'num_frames ... must equal the number of fcTL chunks. 0 is not a valid value.' Decoders that find a mismatch reject the animation outright."
+    },
+    "PNG_CHUNK_ACTL.num_plays": {
+      "type": "range_constraint",
+      "description": "Number of times the animation should loop; 0 means loop forever.",
+      "corruption_risk": "low",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 3,
+        "rationale": "Purely a playback hint that costs no file bytes, but a huge value can make a player loop effectively forever during automated testing. 0-3 covers the infinite case and small finite counts."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, acTL chunk: 'num_plays: 4 bytes, number of times to loop this APNG. 0 indicates infinite looping.' As a PNG four-byte unsigned integer it is capped at 2^31-1. The template declares a plain uint32 and performs no check.",
+        "line": 272,
+        "snippet": "uint32 num_plays;"
+      },
+      "confidence": "high",
+      "notes": "APNG 1.0: 'num_plays ... indicates the number of times that this animation should play; if it is 0, the animation should play indefinitely.' Like all PNG four-byte unsigned integers it is capped at 2^31-1."
+    },
+    "PNG_CHUNK_FCTL.sequence_number": {
+      "type": "calculated_value",
+      "description": "Position of this fcTL chunk in the single sequence counter shared by all fcTL and fdAT chunks; it must be the next unused value with no gaps and no repeats.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "algorithm": "monotonic counter starting at 0, incremented by exactly 1 for every fcTL or fdAT chunk in file order",
+      "covers": "no bytes; it is an ordinal over the combined fcTL/fdAT chunk sequence, so the first such chunk in the file carries 0, the next 1, and so on",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "CTYPE.cname",
+        "PNG_CHUNK_FDAT.sequence_number"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fcTL chunk: 'sequence_number: 4 bytes, sequence number of the animation chunk, starting from 0 ... The fcTL and fdAT chunks have a 4 byte sequence number. Both chunk types share the sequence. Decoders must treat out-of-order APNG chunks as an error.' The template declares a plain uint32 and performs no check.",
+        "line": 276,
+        "snippet": "uint32 sequence_number;"
+      },
+      "confidence": "high",
+      "notes": "APNG 1.0: 'Sequence numbers start at 0 and the fcTL and fdAT chunks share the sequence. Decoders must treat missing or out-of-order sequence numbers as an error.' includes_self is true in the sense that this chunk consumes the counter value it stores."
+    },
+    "PNG_CHUNK_FCTL.width": {
+      "type": "range_constraint",
+      "description": "Width of the frame rectangle in pixels; must be non-zero and, together with x_offset, must not extend past the image width declared in IHDR.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 1,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Frame rectangles are clipped to the IHDR canvas, which is itself generated at 1-64 pixels; a larger value is an immediate spec violation and buys no coverage."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fcTL chunk: 'width: 4 bytes, width of the following frame' with the constraint that '0 is not a valid value for width or height' and 'x_offset + width <= IHDR width'. The template declares a plain uint32 and performs no check.",
+        "line": 277,
+        "snippet": "uint32 width;"
+      },
+      "confidence": "high",
+      "notes": "APNG 1.0: 'x_offset + width must be <= the image width from IHDR' and 'The frame must be rendered within the region ... 0 is an invalid value for width or height.'"
+    },
+    "PNG_CHUNK_FCTL.height": {
+      "type": "range_constraint",
+      "description": "Height of the frame rectangle in pixels; must be non-zero and, together with y_offset, must not extend past the image height declared in IHDR.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 1,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Bounded by the generated IHDR canvas height for the same reason as PNG_CHUNK_FCTL.width."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fcTL chunk: 'height: 4 bytes, height of the following frame'; 0 is invalid and 'y_offset + height <= IHDR height'. The template declares a plain uint32 and performs no check.",
+        "line": 278,
+        "snippet": "uint32 height;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_FCTL.x_offset": {
+      "type": "range_constraint",
+      "description": "X position of the frame rectangle within the canvas; x_offset + width must not exceed the IHDR width.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "Offset 0 is the only value guaranteed to keep x_offset + width inside the canvas without tracking IHDR.width and the frame width together; the first frame is required to use 0 in any case."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fcTL chunk: 'x_offset: 4 bytes, x position at which to render the following frame', constrained by 'x_offset + width <= IHDR width'. The template declares a plain uint32 and performs no check.",
+        "line": 279,
+        "snippet": "uint32 x_offset;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_FCTL.y_offset": {
+      "type": "range_constraint",
+      "description": "Y position of the frame rectangle within the canvas; y_offset + height must not exceed the IHDR height.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "min": 0,
+      "max": 2147483647,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "Same containment reasoning as x_offset; the first frame is required to use 0."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fcTL chunk: 'y_offset: 4 bytes, y position at which to render the following frame', constrained by 'y_offset + height <= IHDR height'. The template declares a plain uint32 and performs no check.",
+        "line": 280,
+        "snippet": "uint32 y_offset;"
+      },
+      "confidence": "high"
+    },
+    "PNG_CHUNK_FCTL.delay_num": {
+      "type": "range_constraint",
+      "description": "Numerator of the frame delay, in seconds; the spec type is a 2-byte unsigned integer.",
+      "corruption_risk": "low",
+      "field_type": "int16",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 100,
+        "rationale": "The delay is delay_num/delay_den seconds. Large numerators with a small denominator make a player stall for hours on a single frame during automated testing without exercising any extra code."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fcTL chunk: 'delay_num: 2 bytes, frame delay fraction numerator'. The field is an unsigned 16-bit integer; the template declares int16 (signed) and performs no check.",
+        "line": 281,
+        "snippet": "int16  delay_num <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "Template deviation: APNG specifies an unsigned 16-bit integer, but the template declares int16 (signed)."
+    },
+    "PNG_CHUNK_FCTL.delay_den": {
+      "type": "range_constraint",
+      "description": "Denominator of the frame delay, in seconds; a value of 0 is legal and is defined to mean 100 (i.e. the numerator is in hundredths of a second).",
+      "corruption_risk": "low",
+      "field_type": "int16",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "big",
+      "generation_range": {
+        "min": 0,
+        "max": 1000,
+        "rationale": "Denominators of 0 (meaning 100), 100 and 1000 are the values real encoders emit; nothing above that changes decoder behaviour."
+      },
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fcTL chunk: 'delay_den: 2 bytes, frame delay fraction denominator ... If the denominator is 0, it is to be treated as if it were 100.' The field is an unsigned 16-bit integer; the template declares int16 (signed) and performs no check.",
+        "line": 282,
+        "snippet": "int16  delay_den <format=decimal>;"
+      },
+      "confidence": "high",
+      "notes": "APNG 1.0: 'If the denominator is 0, it is to be treated as if it were 100.' Template deviation: declared int16 (signed) where the spec says unsigned."
+    },
+    "PNG_CHUNK_FCTL.dispose_op": {
+      "type": "enumerated_values",
+      "description": "How the frame's output buffer is to be disposed of before rendering the next frame; only three values are defined.",
+      "corruption_risk": "high",
+      "field_type": "APNG_DISPOSE_OP (enum <byte>)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1,
+        2
+      ],
+      "value_names": [
+        "APNG_DISPOSE_OP_NONE",
+        "APNG_DISPOSE_OP_BACKGROUND",
+        "APNG_DISPOSE_OP_PREVIOUS"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 283,
+        "snippet": "APNG_DISPOSE_OP dispose_op;"
+      },
+      "confidence": "high",
+      "notes": "Enum declared at lines 100-104. APNG 1.0 additionally forbids APNG_DISPOSE_OP_PREVIOUS on the very first frame, since there is no previous buffer to restore; see dependencies."
+    },
+    "PNG_CHUNK_FCTL.blend_op": {
+      "type": "enumerated_values",
+      "description": "How the frame is composited onto the output buffer: SOURCE overwrites the frame rectangle, OVER alpha-blends onto it. Only two values are defined.",
+      "corruption_risk": "high",
+      "field_type": "APNG_BLEND_OP (enum <byte>)",
+      "source": "both",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "APNG_BLEND_OP_SOURCE",
+        "APNG_BLEND_OP_OVER"
+      ],
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 284,
+        "snippet": "APNG_BLEND_OP blend_op;"
+      },
+      "confidence": "high",
+      "notes": "Enum declared at lines 106-109. APNG 1.0 requires the first frame to use APNG_BLEND_OP_SOURCE; see dependencies."
+    },
+    "PNG_CHUNK_FDAT.sequence_number": {
+      "type": "calculated_value",
+      "description": "Position of this fdAT chunk in the sequence counter shared with fcTL; it must be the next unused value, with no gaps and no repeats.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "spec",
+      "algorithm": "monotonic counter starting at 0, incremented by exactly 1 for every fcTL or fdAT chunk in file order",
+      "covers": "no bytes; it is an ordinal over the combined fcTL/fdAT chunk sequence and must continue the numbering established by the preceding fcTL",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "CTYPE.cname",
+        "PNG_CHUNK_FCTL.sequence_number"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "APNG 1.0 specification, fdAT chunk: 'sequence_number: 4 bytes, sequence number of the animation chunk, starting from 0 ... The fcTL and fdAT chunks have a 4 byte sequence number. Both chunk types share the sequence.' The template declares a plain uint32 and performs no check.",
+        "line": 288,
+        "snippet": "uint32 sequence_number;"
+      },
+      "confidence": "high",
+      "notes": "APNG 1.0: 'The fcTL and fdAT chunks share the sequence. Decoders must treat missing or out-of-order sequence numbers as an error.'"
+    },
+    "PNG_CHUNK_FDAT.frame_data": {
+      "type": "calculated_value",
+      "description": "The frame's compressed image data; its byte count is the enclosing chunk length minus the 4-byte sequence number, and the concatenated frame_data of consecutive fdAT chunks forms one zlib datastream exactly as IDAT does.",
+      "corruption_risk": "high",
+      "field_type": "ubyte[length-4]",
+      "source": "both",
+      "algorithm": "byte count = PNG_CHUNK.length - 4",
+      "covers": "the chunk payload after the 4-byte sequence_number, to the end of the payload; it excludes the enclosing chunk's length, type and CRC fields and excludes sequence_number itself",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "PNG_CHUNK.length",
+        "PNG_CHUNK_FDAT.sequence_number"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 4096,
+        "rationale": "Payload byte count. The chunk length is spec-limited to 2^31-1; capping the frame payload at 4 KiB keeps generated APNG files small while still producing multi-chunk frames."
+      },
+      "evidence": {
+        "line": 289,
+        "snippet": "ubyte  frame_data[length-4];"
+      },
+      "confidence": "high",
+      "notes": "`length` is the enclosing PNG_CHUNK.length captured by lexical scope, not a member of PNG_CHUNK_FDAT. A chunk length below 4 makes this expression negative, so the enclosing length must be at least 4 and in practice at least 5."
+    },
+    "PNG_CHUNK.length": {
+      "type": "calculated_value",
+      "description": "Byte count of this chunk's data field, excluding the length, type and CRC fields themselves; it must exactly match the bytes actually present and must not exceed 2^31-1.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "algorithm": "byte count of the chunk payload only",
+      "covers": "exactly the bytes between the 4-byte type field and the 4-byte CRC field; it excludes the length field itself, the type field and the CRC",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "CTYPE.cname"
+      ],
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 0,
+        "max": 4096,
+        "rationale": "The spec ceiling of 2^31-1 lets a single chunk claim two gigabytes; a generator that emits such a value either writes a two-gigabyte file or produces a file every decoder truncates at once. 0-4096 bytes per chunk keeps whole generated PNGs in the low kilobytes while still crossing typical decoder buffer boundaries. Chunks with a fixed size (IHDR 13, IEND 0, cHRM 32, and the others in dependencies) must use their exact value instead."
+      },
+      "evidence": {
+        "line": 298,
+        "snippet": "uint32  length;                      // Number of data bytes (not including length,type, or crc)"
+      },
+      "confidence": "high",
+      "notes": "PNG 1.2 section 3.2: 'Although encoders and decoders should treat the length as unsigned, its value must not exceed 2^31-1 bytes.' The template performs no bound check at all: it reads `length` and immediately uses it as an array size at line 332, so an oversized value drives the parse off the end of the file. Many chunk types pin this to an exact constant; those are recorded in dependencies."
+    },
+    "PNG_CHUNK.data": {
+      "type": "calculated_value",
+      "description": "Generic payload for any chunk type the template does not decode specifically (IDAT, gAMA, iCCP, hIST, tRNS and any unknown type); its size is exactly the length field.",
+      "corruption_risk": "high",
+      "field_type": "ubyte[length]",
+      "source": "template",
+      "algorithm": "byte count = PNG_CHUNK.length",
+      "covers": "the whole chunk payload, excluding the length, type and CRC fields",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "PNG_CHUNK.length",
+        "CTYPE.cname"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 4096,
+        "rationale": "Mirrors PNG_CHUNK.length's generation bound; this array is what a runaway length actually materialises as."
+      },
+      "evidence": {
+        "line": 332,
+        "snippet": "ubyte   data[length];       // Data (or not present)"
+      },
+      "confidence": "high",
+      "notes": "Guarded by `else if( length > 0 )` at line 331, so a zero-length chunk (notably IEND) produces no data field at all. For IDAT specifically the concatenated payloads of all IDAT chunks must form a single zlib datastream (RFC 1950) whose inflated content is the filtered scanlines; random bytes here make every decoder fail in inflate, so a generator should emit a stored-block zlib stream. This is the highest-value place in the format to spend structure on."
+    },
+    "PNG_CHUNK.crc": {
+      "type": "calculated_value",
+      "description": "CRC-32 of the chunk type and chunk data; computed over the type field and the payload but never over the length field or the CRC itself, and checked by the template against every chunk.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "algorithm": "CRC-32/ISO-HDLC (polynomial 0xEDB88320 reflected, init 0xFFFFFFFF, reflected in and out, final XOR 0xFFFFFFFF) - the same CRC as zlib's crc32()",
+      "covers": "the 4-byte chunk type field plus all PNG_CHUNK.length bytes of chunk data; it excludes the 4-byte length field that precedes the type and excludes the CRC field itself",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "CTYPE.cname",
+        "CTYPE.ctype",
+        "PNG_CHUNK.length",
+        "PNG_CHUNK.data"
+      ],
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 335,
+        "snippet": "local uint32 crc_calc = Checksum(CHECKSUM_CRC32, pos_start, data_size);"
+      },
+      "confidence": "high",
+      "notes": "pos_start is captured at line 299 immediately after reading `length` (so it points at the type field) and data_size at line 333 is FTell() - pos_start immediately before reading the CRC (so it spans type + payload). The mismatch is reported by the guard at lines 336-340. This is a hard requirement for every chunk including IEND, whose CRC over the four bytes 'IEND' with an empty payload is the constant 0xAE426082. A wrong CRC makes libpng reject the file outright, so this field must never receive an evil value."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 0
+      },
+      "then": {
+        "field": "PNG_CHUNK_IHDR.bits",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ]
+      },
+      "description": "Greyscale images permit every defined bit depth.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 2
+      },
+      "then": {
+        "field": "PNG_CHUNK_IHDR.bits",
+        "type": "enumerated_values",
+        "valid_values": [
+          8,
+          16
+        ]
+      },
+      "description": "Truecolour images permit bit depths 8 and 16 only.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 3
+      },
+      "then": {
+        "field": "PNG_CHUNK_IHDR.bits",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          2,
+          4,
+          8
+        ]
+      },
+      "description": "Indexed-colour images permit bit depths 1, 2, 4 and 8 only; depth 16 is illegal because a palette index cannot exceed 8 bits.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 4
+      },
+      "then": {
+        "field": "PNG_CHUNK_IHDR.bits",
+        "type": "enumerated_values",
+        "valid_values": [
+          8,
+          16
+        ]
+      },
+      "description": "Greyscale-with-alpha images permit bit depths 8 and 16 only.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 6
+      },
+      "then": {
+        "field": "PNG_CHUNK_IHDR.bits",
+        "type": "enumerated_values",
+        "valid_values": [
+          8,
+          16
+        ]
+      },
+      "description": "Truecolour-with-alpha images permit bit depths 8 and 16 only.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 3
+      },
+      "then": {
+        "section": "chunk type \"PLTE\"",
+        "required": true
+      },
+      "description": "An indexed-colour image is meaningless without its palette, so PLTE is mandatory when colour type is 3.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "in": [
+          0,
+          4
+        ]
+      },
+      "then": {
+        "section": "chunk type \"PLTE\"",
+        "forbidden": true
+      },
+      "description": "Greyscale images (with or without alpha) must not carry a PLTE chunk.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "in": [
+          2,
+          6
+        ]
+      },
+      "then": {
+        "section": "chunk type \"PLTE\"",
+        "required": false,
+        "note": "optional; if present it is only a suggested palette for quantising decoders and PLTE must still precede IDAT"
+      },
+      "description": "Truecolour images may optionally carry PLTE as a suggested palette.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "in": [
+          4,
+          6
+        ]
+      },
+      "then": {
+        "section": "chunk type \"tRNS\"",
+        "forbidden": true
+      },
+      "description": "Images that already carry a full alpha channel must not also carry a tRNS transparency chunk.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 3
+      },
+      "then": {
+        "section": "chunk type \"hIST\"",
+        "note": "hIST, if present, must contain exactly one uint16 per PLTE entry, so its chunk length must equal 2 * (PLTE length / 3)"
+      },
+      "description": "The palette histogram has exactly one 16-bit frequency entry per palette entry.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "section": "chunk type \"hIST\"",
+        "present": true
+      },
+      "then": {
+        "section": "chunk type \"PLTE\"",
+        "required": true
+      },
+      "description": "hIST describes the palette, so it may only appear when PLTE is present.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 3
+      },
+      "then": {
+        "field": "PNG_CHUNK_PLTE.plteChunkData",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 256,
+        "note": "entry count must additionally not exceed 2^PNG_CHUNK_IHDR.bits"
+      },
+      "description": "For indexed-colour images the palette must not contain more entries than the bit depth can index.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 3
+      },
+      "then": {
+        "field": "PNG_CHUNK_BKGD.bgColorPaletteIndex",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 255,
+        "note": "must be strictly less than the PLTE entry count, i.e. less than PNG_CHUNK.length of the PLTE chunk divided by 3"
+      },
+      "description": "For indexed-colour images bKGD holds a single palette index and only that field is present.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 197,
+        "snippet": "case 3: // Indexed"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "in": [
+          0,
+          4
+        ]
+      },
+      "then": {
+        "field": "PNG_CHUNK_BKGD.bgGrayscalePixelValue",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "present instead of the palette index and the RGB triple; must be less than 2^PNG_CHUNK_IHDR.bits"
+      },
+      "description": "For greyscale colour types bKGD holds a single 16-bit greyscale sample.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 202,
+        "snippet": "case 4: // Grayscale with alpha"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "in": [
+          2,
+          6
+        ]
+      },
+      "then": {
+        "field": "PNG_CHUNK_BKGD.bgColorPixelRed",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "bgColorPixelRed, bgColorPixelGreen and bgColorPixelBlue are all present, in that order; each must be less than 2^PNG_CHUNK_IHDR.bits"
+      },
+      "description": "For truecolour types bKGD holds three 16-bit samples and neither the palette index nor the greyscale value is present.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 207,
+        "snippet": "case 6: // TrueColor with alpha"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 3
+      },
+      "then": {
+        "section": "PNG_CHUNK_SBIT",
+        "note": "exactly three bytes are present: sbitRed, sbitGreen, sbitBlue, each in 1..8"
+      },
+      "description": "sBIT for indexed-colour images describes the palette's three 8-bit channels.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 230,
+        "snippet": "case 3: // Indexed"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 0
+      },
+      "then": {
+        "field": "PNG_CHUNK_SBIT.sbitGraySource",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 16,
+        "note": "the only byte present; must not exceed PNG_CHUNK_IHDR.bits"
+      },
+      "description": "sBIT for greyscale images is a single byte bounded by the image bit depth.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 236,
+        "snippet": "case 0: // Grayscale"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 4
+      },
+      "then": {
+        "section": "PNG_CHUNK_SBIT",
+        "note": "exactly two bytes are present: sbitGrayAlphaSource then sbitGrayAlphaSourceAlpha, each in 1..PNG_CHUNK_IHDR.bits (so 1..8 or 1..16)"
+      },
+      "description": "sBIT for greyscale-with-alpha images carries a grey depth and an alpha depth.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 240,
+        "snippet": "case 4: // Grayscale with alpha"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 2
+      },
+      "then": {
+        "section": "PNG_CHUNK_SBIT",
+        "note": "exactly three bytes are present: sbitColorRed, sbitColorGreen, sbitColorBlue, each in 1..PNG_CHUNK_IHDR.bits (so 1..8 or 1..16)"
+      },
+      "description": "sBIT for truecolour images carries one depth per colour channel.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 245,
+        "snippet": "case 2: // TrueColor"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "equals": 6
+      },
+      "then": {
+        "section": "PNG_CHUNK_SBIT",
+        "note": "exactly four bytes are present: sbitColorAlphaRed, sbitColorAlphaGreen, sbitColorAlphaBlue, sbitColorAlphaAlpha, each in 1..PNG_CHUNK_IHDR.bits (so 1..8 or 1..16)"
+      },
+      "description": "sBIT for truecolour-with-alpha images carries one depth per colour channel plus one for alpha.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 251,
+        "snippet": "case 6: // TrueColor with alpha"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.bits",
+        "max": 8
+      },
+      "then": {
+        "section": "PNG_CHUNK_SBIT",
+        "note": "for colour types 0, 2, 4 and 6 every sBIT byte must be in 1..PNG_CHUNK_IHDR.bits; for colour type 3 the bound is always 1..8 regardless of bit depth"
+      },
+      "description": "Every significant-bits value is bounded above by the sample depth of the image it describes.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "IHDR"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 13,
+        "required_value_hex": "0x0000000D"
+      },
+      "description": "The image header is exactly 13 bytes: 4 width, 4 height, and one byte each for bit depth, colour type, compression method, filter method and interlace method.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "IEND"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x00000000"
+      },
+      "description": "The image trailer carries no data at all; its length must be zero, which also means the template's `else if( length > 0 )` branch emits no data field for it.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 331,
+        "snippet": "else if( length > 0 )"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "cHRM"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 32,
+        "required_value_hex": "0x00000020"
+      },
+      "description": "cHRM holds four PNG_POINT structures of two uint32 each: 4 * 2 * 4 = 32 bytes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 157,
+        "snippet": "PNG_POINT white;"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "gAMA"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 4,
+        "required_value_hex": "0x00000004"
+      },
+      "description": "gAMA holds a single uint32 gamma value scaled by 100000; the template has no gAMA branch so it lands in the generic data path.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "sRGB"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 1,
+        "required_value_hex": "0x00000001"
+      },
+      "description": "sRGB holds a single rendering-intent byte.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 164,
+        "snippet": "PNG_SRGB_CHUNK_DATA srgbChunkData;"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "tIME"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 7,
+        "required_value_hex": "0x00000007"
+      },
+      "description": "tIME holds a 2-byte year plus five single-byte fields: 2 + 5 = 7 bytes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 187,
+        "snippet": "int16 timeYear  <format=decimal>;"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "pHYs"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 9,
+        "required_value_hex": "0x00000009"
+      },
+      "description": "pHYs holds two uint32 values plus a one-byte unit specifier: 4 + 4 + 1 = 9 bytes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 220,
+        "snippet": "uint physPixelPerUnitX;"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "acTL"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 8,
+        "required_value_hex": "0x00000008"
+      },
+      "description": "acTL holds num_frames and num_plays, two uint32 values: 4 + 4 = 8 bytes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 271,
+        "snippet": "uint32 num_frames;"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "fcTL"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "fixed_value",
+        "required_value": 26,
+        "required_value_hex": "0x0000001A"
+      },
+      "description": "fcTL holds five uint32 values, two int16 values and two enum bytes: 20 + 4 + 2 = 26 bytes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 276,
+        "snippet": "uint32 sequence_number;"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "fdAT"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "range_constraint",
+        "min": 5,
+        "max": 2147483647,
+        "generation_range": {
+          "min": 5,
+          "max": 4096,
+          "rationale": "4 bytes of sequence number plus a bounded frame payload"
+        }
+      },
+      "description": "fdAT must carry a 4-byte sequence number plus at least one payload byte; the template's `frame_data[length-4]` underflows for any smaller length.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 289,
+        "snippet": "ubyte  frame_data[length-4];"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "PLTE"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "range_constraint",
+        "min": 3,
+        "max": 768,
+        "note": "must be an exact multiple of 3; the template divides by 3 without checking the remainder"
+      },
+      "description": "PLTE holds 1 to 256 three-byte entries, so its length is a multiple of 3 between 3 and 768.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 153,
+        "snippet": "PNG_PALETTE_PIXEL plteChunkData[chunkLen/3];"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "sBIT"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "note": "1 for colour type 0, 2 for colour type 4, 3 for colour types 2 and 3, 4 for colour type 6"
+      },
+      "description": "The sBIT chunk length is fixed by the colour type, matching the number of channels the switch at line 229 reads.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 229,
+        "snippet": "switch (colorType) {"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "bKGD"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          2,
+          6
+        ],
+        "note": "1 for colour type 3, 2 for colour types 0 and 4, 6 for colour types 2 and 6"
+      },
+      "description": "The bKGD chunk length is fixed by the colour type, matching the branch the switch at line 196 takes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 196,
+        "snippet": "switch (colorType) {"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "tRNS"
+      },
+      "then": {
+        "field": "PNG_CHUNK.length",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 256,
+        "note": "exactly 2 for colour type 0 (one 16-bit grey sample), exactly 6 for colour type 2 (three 16-bit samples), and 1..PLTE entry count for colour type 3 (one alpha byte per palette entry); tRNS is forbidden for colour types 4 and 6"
+      },
+      "description": "The tRNS chunk length is entirely determined by the colour type and, for indexed images, by the palette size.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "IDAT"
+      },
+      "then": {
+        "field": "PNG_CHUNK.data",
+        "type": "calculated_value",
+        "note": "the concatenation of the data fields of all IDAT chunks, in order, must form exactly one zlib datastream (RFC 1950) whose inflated content is the filtered scanlines; each scanline is preceded by a filter-type byte in 0..4"
+      },
+      "description": "IDAT payloads are not independent blobs: they are slices of a single compressed stream, so splitting is free but the concatenation must be valid.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_ITXT.itxtCompressionFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "PNG_CHUNK_ITXT.itxtValChunkData",
+        "type": "calculated_value",
+        "note": "the bytes must be a valid zlib datastream (RFC 1950) whose inflated content is UTF-8 text; itxtComprMethod must be 0"
+      },
+      "description": "A compression flag of 1 turns the iTXt text field into a compressed stream that must inflate cleanly.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_ITXT.itxtCompressionFlag",
+        "equals": 0
+      },
+      "then": {
+        "field": "PNG_CHUNK_ITXT.itxtValChunkData",
+        "type": "pattern_constraint",
+        "pattern": "well-formed UTF-8, not NUL-terminated, may contain newlines"
+      },
+      "description": "A compression flag of 0 means the iTXt text is stored as raw UTF-8.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_SPLT.sampleDepth",
+        "equals": 8
+      },
+      "then": {
+        "field": "PNG_CHUNK_SPLT.spltData",
+        "type": "calculated_value",
+        "note": "byte count must be an exact multiple of 6 (red, green, blue, alpha as 1 byte each plus a uint16 frequency)"
+      },
+      "description": "A sample depth of 8 fixes the sPLT entry stride at 6 bytes.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_SPLT.sampleDepth",
+        "equals": 16
+      },
+      "then": {
+        "field": "PNG_CHUNK_SPLT.spltData",
+        "type": "calculated_value",
+        "note": "byte count must be an exact multiple of 10 (red, green, blue, alpha as big-endian uint16 each plus a uint16 frequency)"
+      },
+      "description": "A sample depth of 16 fixes the sPLT entry stride at 10 bytes.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "section": "chunk type \"acTL\"",
+        "present": true
+      },
+      "then": {
+        "section": "chunk type \"fcTL\"",
+        "required": true,
+        "note": "at least PNG_CHUNK_ACTL.num_frames of them, and exactly that many"
+      },
+      "description": "An animation control chunk without frame control chunks describes an animation with no frames, which no APNG decoder accepts.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "section": "chunk type \"fcTL\"",
+        "present": true
+      },
+      "then": {
+        "section": "chunk type \"acTL\"",
+        "required": true,
+        "note": "acTL must also appear before the first fcTL"
+      },
+      "description": "Frame control chunks are only meaningful inside an animation declared by acTL.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "section": "chunk type \"fdAT\"",
+        "present": true
+      },
+      "then": {
+        "section": "chunk type \"fcTL\"",
+        "required": true,
+        "note": "each run of fdAT chunks must be immediately preceded by the fcTL describing that frame"
+      },
+      "description": "Frame data has no meaning without the frame control chunk that gives its rectangle, delay and disposal.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_FCTL.sequence_number",
+        "equals": 0
+      },
+      "then": {
+        "field": "PNG_CHUNK_FCTL.dispose_op",
+        "type": "enumerated_values",
+        "valid_values": [
+          0,
+          1
+        ],
+        "note": "APNG_DISPOSE_OP_PREVIOUS (2) is illegal on the first frame; decoders must treat it as APNG_DISPOSE_OP_BACKGROUND"
+      },
+      "description": "The first frame cannot restore a previous output buffer because none exists yet.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_FCTL.sequence_number",
+        "equals": 0,
+        "condition": "and the fcTL appears before the first IDAT, making IDAT the first frame"
+      },
+      "then": {
+        "field": "PNG_CHUNK_FCTL.blend_op",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x00",
+        "note": "and width must equal PNG_CHUNK_IHDR.width, height must equal PNG_CHUNK_IHDR.height, x_offset and y_offset must both be 0"
+      },
+      "description": "When the default image is also the first animation frame, that frame must cover the whole canvas and be composited with APNG_BLEND_OP_SOURCE.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_FCTL.width",
+        "min": 1
+      },
+      "then": {
+        "field": "PNG_CHUNK_FCTL.x_offset",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 2147483647,
+        "note": "x_offset + width must be <= PNG_CHUNK_IHDR.width and y_offset + height must be <= PNG_CHUNK_IHDR.height"
+      },
+      "description": "Every frame rectangle must lie entirely inside the canvas declared by IHDR.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_ACTL.num_frames",
+        "min": 1
+      },
+      "then": {
+        "section": "chunk type \"fcTL\"",
+        "note": "the number of fcTL chunks in the file must equal PNG_CHUNK_ACTL.num_frames exactly"
+      },
+      "description": "acTL's frame count is a redundant encoding of the fcTL chunk count and the two must agree.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_FCTL.delay_den",
+        "equals": 0
+      },
+      "then": {
+        "field": "PNG_CHUNK_FCTL.delay_num",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "the delay is delay_num/100 seconds when the denominator is 0"
+      },
+      "description": "A zero denominator is legal and is defined to mean 100, so the numerator becomes hundredths of a second.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "bKGD"
+      },
+      "then": {
+        "section": "chunk[0].ihdr",
+        "required": true,
+        "note": "the template passes chunk[0].ihdr.color_type into PNG_CHUNK_BKGD, so the very first chunk must be an IHDR or this reference is invalid and the switch falls into its error_message default"
+      },
+      "description": "Template-level requirement: bKGD and sBIT parsing reach back into chunk[0] for the colour type, so IHDR really must be the first chunk for these chunks to parse at all.",
+      "source": "template",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 320,
+        "snippet": "PNG_CHUNK_BKGD    bkgd(chunk[0].ihdr.color_type);"
+      }
+    },
+    {
+      "when": {
+        "field": "CTYPE.cname",
+        "equals": "sBIT"
+      },
+      "then": {
+        "section": "chunk[0].ihdr",
+        "required": true,
+        "note": "same chunk[0].ihdr.color_type back-reference as bKGD"
+      },
+      "description": "sBIT layout is chosen from the colour type stored in the first chunk, so a non-IHDR first chunk makes sBIT unparseable.",
+      "source": "template",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 322,
+        "snippet": "PNG_CHUNK_SBIT    sbit(chunk[0].ihdr.color_type);"
+      }
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.color_type",
+        "in": [
+          0,
+          2,
+          3,
+          4,
+          6
+        ],
+        "condition": "any colour type outside this set"
+      },
+      "then": {
+        "section": "PNG_CHUNK_BKGD",
+        "note": "the switch default at line 213 calls error_message and returns -4, aborting the template; the same happens in PNG_CHUNK_SBIT at line 258"
+      },
+      "description": "An out-of-set colour type does not merely mislabel the image, it makes bKGD and sBIT unparseable and stops the template.",
+      "source": "template",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 214,
+        "snippet": "error_message( \"*WARNING: Unknown Color Model Type for background color chunk.\" );"
+      }
+    },
+    {
+      "when": {
+        "section": "chunk type \"sRGB\"",
+        "present": true
+      },
+      "then": {
+        "section": "chunk type \"iCCP\"",
+        "forbidden": true
+      },
+      "description": "A datastream must not contain both sRGB and iCCP; they are two mutually exclusive ways of declaring the colour space.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "PNG_CHUNK_IHDR.interlace_method",
+        "equals": 1
+      },
+      "then": {
+        "field": "PNG_CHUNK.data",
+        "type": "calculated_value",
+        "note": "the inflated IDAT content must contain the seven Adam7 reduced images in order, each with its own per-scanline filter bytes; empty passes contribute no bytes at all"
+      },
+      "description": "Adam7 interlacing completely changes the expected size and layout of the decompressed image data.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "PNG_SIGNATURE",
+      "detail": "the 8-byte signature 89 50 4E 47 0D 0A 1A 0A occupies file offsets 0-7, before any chunk",
+      "description": "Every PNG datastream begins with the same fixed 8-byte signature and nothing may precede it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one, never repeated",
+      "generation_note": "emit as a fixed 8-byte head element with no randomisation and no evil-bit substitution",
+      "evidence": {
+        "line": 365,
+        "snippet": "PNG_SIGNATURE sig <bgcolor=cLtPurple>;"
+      }
+    },
+    {
+      "rule": "first_element",
+      "subject": "chunk type \"IHDR\"",
+      "detail": "must be the first chunk, i.e. chunk[0], immediately after the signature",
+      "description": "The image header must come first because every later chunk's meaning depends on its colour type and bit depth.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one per file",
+      "generation_note": "emit as a fixed head chunk before the bounded repeated middle section; the template's bKGD and sBIT branches read chunk[0].ihdr directly, so this position is load-bearing, not cosmetic",
+      "evidence": {
+        "line": 382,
+        "snippet": "if ( chunk[0].type.cname != \"IHDR\" ) {"
+      }
+    },
+    {
+      "rule": "last_element",
+      "subject": "chunk type \"IEND\"",
+      "detail": "must be the final chunk, and its length must be 0 so the whole chunk is the 12 bytes 00 00 00 00 49 45 4E 44 AE 42 60 82",
+      "description": "The image trailer marks the end of the datastream and nothing may follow it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one per file",
+      "generation_note": "emit as a fixed 12-byte tail element after the repeated middle section; the whole chunk including its CRC is a constant, so it can be written literally",
+      "evidence": {
+        "line": 385,
+        "snippet": "if ( chunk[CHUNK_CNT-1].type.cname != \"IEND\" ) {"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "chunk type \"IDAT\"",
+      "detail": "at least one IDAT chunk must be present",
+      "description": "A PNG datastream without image data is invalid however well formed its other chunks are.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "1 to 3 IDAT chunks; each chunk payload capped at 4096 bytes, so the compressed stream never exceeds ~12 KiB",
+      "generation_note": "emit at least one IDAT between the head chunks and IEND; the payloads must concatenate into one zlib stream, so the simplest correct generator emits a single IDAT holding a complete stored-block zlib datastream"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "chunk type \"IDAT\"",
+      "detail": "multiple IDAT chunks must appear consecutively with no other chunk type between them",
+      "description": "The IDAT payloads are slices of one compressed stream, so interleaving any other chunk breaks the stream.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "at most 3 consecutive IDAT chunks",
+      "generation_note": "generate the IDAT run as one indivisible block, never as independently placed chunks in the shuffled middle section"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk type \"IHDR\"",
+      "detail": "exactly 1",
+      "description": "Exactly one image header per datastream.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly 1",
+      "generation_note": "fixed head element, never part of the repeated section"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk type \"IEND\"",
+      "detail": "exactly 1",
+      "description": "Exactly one image trailer per datastream.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly 1",
+      "generation_note": "fixed tail element, never part of the repeated section"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk type \"PLTE\"",
+      "detail": "at most 1",
+      "description": "A datastream may contain no more than one palette.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 or 1",
+      "generation_note": "emit as an optional single element in the pre-IDAT head, not in the repeated array"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk type \"PLTE\"",
+      "detail": "must appear after IHDR and before the first IDAT",
+      "description": "The palette must be known before any image data is decoded.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 or 1 occurrence",
+      "generation_note": "place in the fixed pre-IDAT section"
+    },
+    {
+      "rule": "required",
+      "subject": "chunk type \"PLTE\"",
+      "detail": "mandatory when PNG_CHUNK_IHDR.color_type is 3",
+      "condition": "only when the colour type is 3 (Indexed)",
+      "description": "Indexed-colour images cannot be decoded without a palette.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "exactly 1 when the condition holds",
+      "generation_note": "make PLTE emission conditional on the colour type chosen for IHDR rather than random"
+    },
+    {
+      "rule": "forbidden",
+      "subject": "chunk type \"PLTE\"",
+      "detail": "must not appear when PNG_CHUNK_IHDR.color_type is 0 or 4",
+      "condition": "only when the colour type is greyscale (0) or greyscale with alpha (4)",
+      "description": "A palette is meaningless for greyscale images and its presence is a spec violation.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 occurrences when the condition holds",
+      "generation_note": "suppress PLTE entirely for greyscale colour types"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk types \"cHRM\", \"gAMA\", \"iCCP\", \"sBIT\", \"sRGB\"",
+      "detail": "must appear after IHDR, before PLTE (if present), and before the first IDAT",
+      "description": "Colour-space chunks affect how PLTE and IDAT are interpreted, so they must precede both.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "at most 1 of each; at most 5 chunks total from this group",
+      "generation_note": "emit as an optional, order-preserving block between IHDR and PLTE"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk types \"bKGD\", \"hIST\", \"tRNS\"",
+      "detail": "must appear after PLTE (if PLTE is present) and before the first IDAT",
+      "description": "These chunks reference palette entries or sample values, so they follow the palette and precede the image data.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "at most 1 of each; at most 3 chunks total from this group",
+      "generation_note": "emit as an optional block between PLTE and the IDAT run"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk types \"pHYs\", \"sPLT\"",
+      "detail": "must appear after IHDR and before the first IDAT; their position relative to PLTE is unconstrained",
+      "description": "Physical dimensions and suggested palettes must be known before the image data is processed.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "at most 1 pHYs; at most 4 sPLT chunks",
+      "generation_note": "emit in the pre-IDAT section; each sPLT needs a unique paletteName"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk types \"cHRM\", \"gAMA\", \"iCCP\", \"sBIT\", \"sRGB\", \"bKGD\", \"hIST\", \"tRNS\", \"pHYs\", \"tIME\"",
+      "detail": "at most 1 of each per datastream",
+      "description": "Each of these ancillary chunks may appear only once; a second copy is a spec violation even though the template happily parses any number.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 of each",
+      "generation_note": "model each as an independent optional element, not as members of a repeated array"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk type \"sPLT\"",
+      "detail": "any number, but every sPLT must carry a paletteName distinct from every other sPLT in the file",
+      "description": "Multiple suggested palettes are allowed provided their names are unique.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 to 4 sPLT chunks, each with at most 64 entries",
+      "generation_note": "if more than one is emitted, derive the names from the array index so uniqueness is structural"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk types \"tEXt\", \"zTXt\", \"iTXt\"",
+      "detail": "any number, anywhere after IHDR and before IEND, before or after IDAT",
+      "description": "Text chunks are the only chunks with no ordering restriction beyond the IHDR/IEND bracket.",
+      "corruption_risk": "low",
+      "source": "spec",
+      "generation_bound": "0 to 4 text chunks in total, each with a payload of at most 96 bytes",
+      "generation_note": "these are the natural payload of the bounded repeated middle section; keep the total count small so text does not crowd out structural coverage"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk type \"tIME\"",
+      "detail": "may appear anywhere after IHDR and before IEND",
+      "description": "The modification-time chunk has no ordering constraint relative to PLTE or IDAT.",
+      "corruption_risk": "low",
+      "source": "spec",
+      "generation_bound": "0 or 1",
+      "generation_note": "safe to place in the repeated middle section"
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "chunk types \"sRGB\" and \"iCCP\"",
+      "detail": "at most one of the two may appear in a datastream",
+      "description": "sRGB and iCCP are competing declarations of the colour space and must not both be present.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "at most 1 chunk drawn from the pair",
+      "generation_note": "model as a union or a single optional slot that picks one of the two types"
+    },
+    {
+      "rule": "requires",
+      "subject": "chunk type \"hIST\"",
+      "detail": "requires a PLTE chunk earlier in the datastream, and must contain exactly one uint16 per palette entry",
+      "description": "The palette histogram is defined only in terms of an existing palette.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 or 1, and only when PLTE was emitted",
+      "generation_note": "gate hIST emission on the PLTE branch and derive its length from the palette entry count"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk type \"acTL\"",
+      "detail": "must appear after IHDR and before the first IDAT",
+      "condition": "only in APNG files",
+      "description": "The animation control chunk declares the file to be an APNG and must be seen before the default image.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 or 1",
+      "generation_note": "emit at most one acTL in the pre-IDAT section, and only when generating an animated file"
+    },
+    {
+      "rule": "requires",
+      "subject": "chunk type \"fcTL\"",
+      "detail": "requires a preceding acTL; the number of fcTL chunks must equal PNG_CHUNK_ACTL.num_frames; sequence numbers across fcTL and fdAT must run 0,1,2,... with no gaps",
+      "condition": "only in APNG files",
+      "description": "Frame control chunks form a numbered sequence that acTL's frame count must match exactly.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "1 to 4 fcTL chunks, matching the generated num_frames",
+      "generation_note": "generate frames as a bounded array and set num_frames from the array length, never independently; carry a single shared counter to fill every sequence_number in both fcTL and fdAT"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk type \"fdAT\"",
+      "detail": "must appear after the first IDAT and after the fcTL that describes its frame; the fdAT chunks of one frame must be contiguous",
+      "condition": "only in APNG files",
+      "description": "Frame data follows the default image and belongs to the most recent frame control chunk.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "1 to 2 fdAT chunks per frame, each payload capped at 4096 bytes",
+      "generation_note": "emit each animation frame as the fixed pair [one fcTL][one or two fdAT], appended after the IDAT run and before IEND"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk type \"fcTL\" describing the default image",
+      "detail": "if an fcTL appears before the first IDAT it makes IDAT the first animation frame, and that fcTL must carry sequence_number 0, the full IHDR width and height, zero offsets and blend_op APNG_BLEND_OP_SOURCE",
+      "condition": "only when the default image is part of the animation",
+      "description": "APNG allows the default image to double as frame 0, but only under strict geometry constraints.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 or 1 such fcTL",
+      "generation_note": "the simpler and safer generation strategy is to keep every fcTL after IDAT, so the default image is not an animation frame at all"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "PNG_CHUNK",
+      "detail": "the chunk stream repeats until end of file with no spec maximum; the template loops `while(!FEof())`",
+      "description": "The top-level parse is an unbounded loop over chunks, which is what a generator must bound explicitly.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "8 to 24 chunks total per file, including the mandatory IHDR, the IDAT run and IEND. With every payload capped at 4096 bytes this holds generated files under roughly 100 KiB, which keeps throughput high; an unbounded loop over a uint32 length field is the single easiest way for this format to produce multi-gigabyte outputs.",
+      "generation_note": "replace the while(!FEof()) loop with: fixed IHDR head, optional pre-IDAT ancillary block, a bounded IDAT run, a bounded array of freely-placeable chunks, an optional APNG frame array, then the fixed IEND tail",
+      "evidence": {
+        "line": 376,
+        "snippet": "while(!FEof()) {"
+      }
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any bytes after the IEND chunk",
+      "detail": "the datastream ends with IEND's CRC; trailing bytes are not part of the PNG",
+      "description": "The template keeps looping until FEof and so silently parses trailing garbage as further chunks, but a conforming file has none.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "generation_bound": "0 trailing bytes",
+      "generation_note": "stop writing immediately after IEND's CRC",
+      "evidence": {
+        "line": 386,
+        "snippet": "error_message( \"*ERROR: Chunk IEND must be last chunk.\" );"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "PNG_CHUNK field order",
+      "detail": "within every chunk the order is fixed: uint32 length, char[4] type, `length` payload bytes, uint32 CRC",
+      "description": "The chunk envelope is invariant across every chunk type, and the CRC always sits last.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly these four elements per chunk, in this order",
+      "generation_note": "generate the payload first, then back-patch length, then compute the CRC over type plus payload; length and CRC can never be chosen before the payload exists",
+      "evidence": {
+        "line": 298,
+        "snippet": "uint32  length;                      // Number of data bytes (not including length,type, or crc)"
+      }
+    }
+  ],
+  "template_deviations": [
+    {
+      "subject": "PNG_CHUNK_TIME.timeYear, PNG_CHUNK_FCTL.delay_num, PNG_CHUNK_FCTL.delay_den",
+      "line": 187,
+      "issue": "Declared as int16 (signed) where the PNG and APNG specifications define unsigned 2-byte integers.",
+      "impact": "A generator that respects the declared signed type will never emit values above 32767, silently shrinking the legal range by half; a parser will display large legal values as negative.",
+      "action": "Treat all three as uint16 for generation."
+    },
+    {
+      "subject": "PNG_CHUNK_TEXT.data and PNG_CHUNK_FDAT.frame_data",
+      "line": 143,
+      "issue": "Both array sizes reference `length`, which is not a member of the struct they appear in; it is the enclosing PNG_CHUNK.length captured by 010 Editor's lexical scoping.",
+      "impact": "The rewrite step must wire the enclosing chunk's length into these structs explicitly (as PNG_CHUNK_PLTE, PNG_CHUNK_ITXT, PNG_CHUNK_ZTXT and PNG_CHUNK_SPLT already do via their chunkLen parameter), or the generated code will not compile or will read the wrong value.",
+      "action": "Pass length as an explicit parameter, matching the chunkLen convention used by the other length-dependent structs."
+    },
+    {
+      "subject": "PNG_CHUNK_TEXT.data, PNG_CHUNK_ITXT.itxtValChunkData, PNG_CHUNK_ZTXT.ztxtValChunkData, PNG_CHUNK_SPLT.spltData, PNG_CHUNK_FDAT.frame_data",
+      "line": 183,
+      "issue": "Every one of these array sizes is a subtraction that can go negative when the length field is smaller than the variable-length prefix it describes. Nothing clamps the result.",
+      "impact": "On malformed input the template computes a negative array size. On generation the same arithmetic means the length field and the string fields must be chosen together, never independently.",
+      "action": "Generate the variable-length prefixes first, then derive the chunk length as prefix size plus a bounded payload size, guaranteeing a non-negative remainder."
+    },
+    {
+      "subject": "PNG_ICCP_CHUNK_DATA",
+      "line": 95,
+      "issue": "The struct is typedef'd but never instantiated; the dispatch chain has no iCCP branch, so iCCP chunks are consumed by the generic ubyte data[length] path. Its second field is also named `red`, which is meaningless for iCCP: at that offset the format has the compression method byte.",
+      "impact": "Constraints recorded for this type describe dead code unless the rewrite step adds an iCCP branch.",
+      "action": "Either add an iCCP branch (profile name, compression method 0, then a zlib-compressed ICC profile) or leave iCCP on the generic path; do not generate PNG_ICCP_CHUNK_DATA as written, since it omits the compressed-profile field entirely."
+    },
+    {
+      "subject": "PNG_CHUNK.length",
+      "line": 298,
+      "issue": "The length field is read and used directly as an array size with no bound check of any kind, not even against the 2^31-1 spec ceiling or the remaining file size.",
+      "impact": "This is the template's laxest point and, for generation, the single most important field to bound. An unconstrained uint32 here produces multi-gigabyte files.",
+      "action": "Always derive length from the payload actually generated, and cap generated payloads as recorded in the generation_range."
+    },
+    {
+      "subject": "PNG_CHUNK_PLTE.plteChunkData",
+      "line": 153,
+      "issue": "chunkLen/3 truncates rather than rejecting a length that is not a multiple of 3, and no upper bound of 256 entries is enforced.",
+      "impact": "The parser accepts palettes the spec forbids; a generator must not imitate it.",
+      "action": "Generate an entry count in 1..256 and set the chunk length to exactly three times it."
+    },
+    {
+      "subject": "signature and ordering checks",
+      "line": 371,
+      "issue": "The signature check at lines 367-373 aborts, but the IHDR-first and IEND-last checks at lines 381-387 only emit a warning and only run when CHUNK_CNT > 1, so a single-chunk file is never checked at all.",
+      "impact": "The template will happily parse files with no IHDR and no IEND, which no decoder accepts.",
+      "action": "Treat IHDR-first and IEND-last as hard structural requirements during generation regardless of the template's leniency."
+    },
+    {
+      "subject": "PNG_CHUNK_IHDR.bits, PNG_CHUNK_IHDR.width, PNG_CHUNK_IHDR.height",
+      "line": 127,
+      "issue": "The bit depth is a bare ubyte with no enum and no check, and the dimensions are unchecked uint32 values that are allowed to be zero.",
+      "impact": "Uniform random generation here yields an IHDR that every real decoder rejects on its first check, so no generated file would reach the IDAT decoder.",
+      "action": "Constrain bits to the five legal depths narrowed by colour type, and both dimensions to a small non-zero range."
+    }
+  ]
+}

@@ -1,0 +1,2394 @@
+{
+  "meta": {
+    "format": "gif",
+    "source_template": "templates_originals/gif-orig.bt",
+    "model": "claude-opus-5",
+    "spec_reference": "GRAPHICS INTERCHANGE FORMAT, Version 89a (CompuServe Incorporated, 31 July 1990) - the GIF89a specification, including Appendix E (Interlaced Images) and Appendix F (Variable-Length-Code LZW Compression); GIF87a (CompuServe, 15 June 1987) for the version-gated differences; the de-facto NETSCAPE 2.0 Application Extension for animation looping",
+    "schema_extensions": [
+      {
+        "name": "bitfield_layout",
+        "where": "every constraints entry whose field is a bitfield (the three packed-fields structs)",
+        "why": "BitfieldLeftToRight() at line 63 makes the first-declared bitfield member occupy the MOST significant bits of the byte. Nothing in the base schema records bit position, yet a generator that packs these fields in the opposite order produces a byte that is individually 'legal' in every field and completely wrong on disk - it would swap the Global Color Table Flag with the size exponent. This key names the exact bit range each field occupies."
+      },
+      {
+        "name": "bit_width",
+        "where": "fixed_value entries for the two Reserved bitfields",
+        "why": "required_value_hex is specified to match the field width, but a 2-bit or 3-bit field has no natural hex width. bit_width states the real width so the hex value is not misread as a full byte."
+      },
+      {
+        "name": "lookahead sub-keys: values_hex, comparison, terminates_loop, covers_fields, byte_role, additional_call_sites",
+        "where": "the seven constraints entries that carry a lookahead object",
+        "why": "This template's dispatch is entirely lookahead-driven and the base lookahead schema cannot express three things it needs. First, two of the peeks are NEGATIVE tests (`!= 0x3B` at line 102, `size != 0` at line 45) that terminate a loop rather than select a branch - comparison and terminates_loop record which. Second, LittleEndian() is in force, so a ReadUShort literal such as 0xF921 is the two bytes 0x21 then 0xF9 on disk and covers TWO fields - covers_fields and byte_role record the split, without which a generator would write the bytes reversed. Third, the sub-block peek happens at two call sites (lines 44 and 50) - additional_call_sites records the second."
+      },
+      {
+        "name": "excluded_values / excluded_values_hex",
+        "where": "constraints entry UNDEFINEDDATA.Label",
+        "why": "This field is defined by exclusion rather than by a positive value set: any byte is structurally legal EXCEPT the four the dispatch chain already claims. A range_constraint with min/max cannot express a hole, and an enumerated_values list of 252 values would be unreadable."
+      },
+      {
+        "name": "fixed_result / fixed_result_hex",
+        "where": "the three BlockSize entries, which are calculated_value by the checklist rule that every size field is a calculated_value",
+        "why": "These fields are both a byte count AND an invariant, because the sub-blocks they measure are fixed-shape. fixed_result records the constant so the rewrite step can emit it directly instead of recomputing it, while algorithm/covers/includes_self still document what it measures."
+      },
+      {
+        "name": "byte_layout",
+        "where": "the two colour table entries",
+        "why": "The 3-bytes-per-entry stride of a colour table is nowhere stated in the .bt - it is implicit in the RGB struct - and the rewrite step needs it to convert between an entry count and a byte count."
+      },
+      {
+        "name": "endianness_note",
+        "where": "constraints entry DATASUBBLOCK.Size",
+        "why": "Marks a single-byte field as having no endianness, so its absence from the endianness key is not read as an omission."
+      },
+      {
+        "name": "template_deviations",
+        "where": "new fifth top-level section",
+        "why": "The .bt disagrees with the GIF89a specification in several load-bearing places: three block-size fields that are read and then ignored, two terminators that are never checked, a fall-through branch that assumes an unverified introducer byte, and a top-level loop with no end-of-file guard. A generator that faithfully imitated the parser's laxity would emit files that this template accepts and no real decoder does, so these must be visible as data rather than buried in prose."
+      }
+    ],
+    "structure_note": "A fixed 6-byte header and 7-byte logical screen descriptor, an optional global colour table whose length is encoded as a 3-bit exponent, then an unbounded stream of self-delimiting blocks each introduced by 0x21 (extension), 0x2C (image) or 0x3B (trailer), terminated by that single 0x3B trailer byte."
+  },
+  "constraints": {
+    "DATASUBBLOCK.Size": {
+      "type": "calculated_value",
+      "description": "Byte count of the Data array that immediately follows it; must be 1-255 because the value 0 is the block terminator that ends the sub-block chain instead of introducing another sub-block.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "algorithm": "byte count",
+      "covers": "exactly the DATASUBBLOCK.Data bytes that immediately follow this byte; it excludes the Size byte itself, every other sub-block in the chain, and the trailing DATASUBBLOCKS.BlockTerminator",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "DATASUBBLOCK.Data"
+      ],
+      "endianness_note": "single byte",
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 1,
+        "max": 255,
+        "rationale": "The whole legal range is only one byte wide so no cap is needed for the value itself; the blow-up risk in this format is the *number* of sub-blocks in a chain, which is unbounded and is capped in the structure section instead."
+      },
+      "lookahead": {
+        "function": "ReadUByte",
+        "call_site_line": 44,
+        "values": [
+          0
+        ],
+        "values_hex": [
+          "0x00"
+        ],
+        "preferred": [],
+        "comparison": "not_equals",
+        "terminates_loop": true,
+        "additional_call_sites": [
+          {
+            "line": 50,
+            "snippet": "size = ReadUByte(FTell());"
+          }
+        ],
+        "note": "The peeked byte is compared against 0 by the while at line 45. A non-zero peek means another DATASUBBLOCK follows; a zero peek ends the chain and the byte is consumed as DATASUBBLOCKS.BlockTerminator instead."
+      },
+      "evidence": {
+        "line": 47,
+        "snippet": "UBYTE\tSize;"
+      },
+      "confidence": "high",
+      "notes": "The peek at line 44 happens before the Size byte is consumed, so `Data[size]` and `Size` always agree by construction in the parser. A generator must instead emit the payload first and back-patch this byte. GIF89a: 'Block Size - Number of bytes in the Data Sub-block; the size must be within 0 and 255.'"
+    },
+    "DATASUBBLOCK.Data": {
+      "type": "calculated_value",
+      "description": "The sub-block payload; its byte count is not independently stored, it is exactly the preceding Size byte, so the two must agree or the whole chain desynchronises.",
+      "corruption_risk": "high",
+      "field_type": "char[size]",
+      "source": "template",
+      "algorithm": "byte count = DATASUBBLOCK.Size",
+      "covers": "the payload bytes immediately following the Size byte, up to but not including the next sub-block's Size byte or the chain's BlockTerminator",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "DATASUBBLOCK.Size"
+      ],
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 1,
+        "max": 255,
+        "rationale": "Mirrors DATASUBBLOCK.Size; a single sub-block cannot exceed 255 bytes by construction."
+      },
+      "evidence": {
+        "line": 48,
+        "snippet": "char\tData[size];"
+      },
+      "confidence": "high",
+      "notes": "The content is free-form for comment, plain-text and application data, but for IMAGEDATA the concatenation of every Data array in the chain is one LZW code stream and is highly constrained; see the dependencies entry for IMAGEDATA.DataSubBlocks."
+    },
+    "DATASUBBLOCKS.BlockTerminator": {
+      "type": "fixed_value",
+      "description": "The zero byte that ends every data sub-block chain; without it a decoder keeps reading sub-blocks and runs off the end of the file.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 52,
+        "snippet": "UBYTE\tBlockTerminator;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 15 (Data Sub-blocks) and section 16 (Block Terminator): 'This zero-length Data Sub-block is used to terminate a sequence of Data Sub-blocks.' The template reads it as an unchecked UBYTE, but the while condition at line 45 guarantees it is 0 for a well-formed file. This byte is a structural terminator and must never receive an evil value: DATASUBBLOCKS is instantiated five times (IMAGEDATA.DataSubBlocks, CommentExtension.CommentData, PlainTextExtension.PlainTextData, ApplicationExtension.ApplicationData, UndefinedData.DataSubBlocks), so one wrong terminator destroys the rest of the file."
+    },
+    "GIFHEADER.Signature": {
+      "type": "fixed_value",
+      "description": "The three-byte file signature; the template aborts outright on anything other than the ASCII characters 'GIF'.",
+      "corruption_risk": "high",
+      "field_type": "char[3]",
+      "source": "both",
+      "required_value": "GIF",
+      "required_value_hex": "0x474946",
+      "required_value_ascii": "GIF",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 78,
+        "snippet": "if( GifHeader.Signature != \"GIF\" )"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 56 (`char\\tSignature[3];`) and checked by the guard at lines 78-82, which calls Warning and returns -1. GIF89a section 17: 'Signature - Identifies the GIF Data Stream. This field contains the fixed value 47 49 46 (\"GIF\").'"
+    },
+    "GIFHEADER.Version": {
+      "type": "enumerated_values",
+      "description": "Three-byte version number identifying which revision of the GIF definition the stream conforms to; only the two published versions exist.",
+      "corruption_risk": "high",
+      "field_type": "char[3]",
+      "source": "spec",
+      "valid_values": [
+        "87a",
+        "89a"
+      ],
+      "value_names": [
+        "GIF87a (May 1987)",
+        "GIF89a (July 1989)"
+      ],
+      "preferred_value": "89a",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 17 (Header): 'Version - Version number used to format the data stream. Identifies the minimum set of capabilities necessary to a decoder to fully process the contents of the Data Stream. Version Numbers as of 10 July 1990: \"87a\" - May 1987, \"89a\" - July 1989.' The template reads it as an unchecked char[3] and never compares it.",
+        "line": 57,
+        "snippet": "char\tVersion[3];"
+      },
+      "confidence": "high",
+      "notes": "89a is strongly preferred for generation: every extension block this template can produce (Graphic Control, Comment, Plain Text, Application) was introduced in 89a, so a file declaring 87a that contains any of them is out of spec. Decoders in practice ignore this field, but a generated file should be internally consistent."
+    },
+    "LOGICALSCREENDESCRIPTOR.Width": {
+      "type": "range_constraint",
+      "description": "Width in pixels of the logical screen onto which every image in the stream is composited; images may not extend past it.",
+      "corruption_risk": "high",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Decoders allocate Width*Height bytes of canvas the moment they read this descriptor, so the spec-legal 65535x65535 forces a 4 GB allocation from a 7-byte header. 1-64 keeps every generated file trivially cheap to decode while still exercising the canvas/frame containment arithmetic. 0 is excluded because a zero-width canvas is degenerate and most decoders reject it."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 18 (Logical Screen Descriptor): 'Logical Screen Width - Width, in pixels, of the Logical Screen where the images will be rendered in the displaying device.' The field is an unsigned 16-bit integer, so the true bound is 0-65535; the template reads a plain ushort and performs no check.",
+        "line": 61,
+        "snippet": "ushort\tWidth;"
+      },
+      "confidence": "high"
+    },
+    "LOGICALSCREENDESCRIPTOR.Height": {
+      "type": "range_constraint",
+      "description": "Height in pixels of the logical screen onto which every image in the stream is composited.",
+      "corruption_risk": "high",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Same canvas-allocation blow-up as Width; the product Width*Height is what a decoder reserves, so both must be capped together."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 18 (Logical Screen Descriptor): 'Logical Screen Height - Height, in pixels, of the Logical Screen where the images will be rendered in the displaying device.' Unsigned 16-bit; the template performs no check.",
+        "line": 62,
+        "snippet": "ushort\tHeight;"
+      },
+      "confidence": "high"
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag": {
+      "type": "enumerated_values",
+      "description": "Single-bit flag: 1 means a Global Color Table immediately follows the Logical Screen Descriptor, 0 means there is none.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "no Global Color Table follows",
+        "a Global Color Table follows"
+      ],
+      "preferred_value": 1,
+      "bitfield_layout": "bit 7 (most significant bit) of the packed-fields byte, because BitfieldLeftToRight() at line 63 makes the first-declared member occupy the high-order bits",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 88,
+        "snippet": "if (LogicalScreenDescriptor.PackedFields.GlobalColorTableFlag == 1) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 65 and branched on at line 88. This flag alone decides whether the next 6 to 768 bytes of the file are a colour table or the start of the data-block stream, so a wrong value shifts every subsequent offset. Value 1 is preferred because a stream with no global table forces every image to carry a local one, and an image with neither is undecodable."
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.ColorResolution": {
+      "type": "range_constraint",
+      "description": "Three-bit field holding the number of bits per primary colour available in the original image, minus one; purely informational and ignored by decoders.",
+      "corruption_risk": "low",
+      "field_type": "UBYTE : 3",
+      "source": "spec",
+      "min": 0,
+      "max": 7,
+      "preferred_value": 7,
+      "bitfield_layout": "bits 6-4 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 18: 'Color Resolution - Number of bits per primary color available to the original image, minus 1. This value represents the size of the entire palette from which the colors in the graphic were selected, not the number of colors actually used in the graphic. For example, if the value in this field is 3, then the palette of the original image had 4 bits per primary color available to create the image.' A 3-bit field, so 0-7. The template performs no check.",
+        "line": 66,
+        "snippet": "UBYTE\tColorResolution : 3;"
+      },
+      "confidence": "high",
+      "notes": "7 (meaning 8 bits per primary) is what essentially every real encoder writes."
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SortFlag": {
+      "type": "enumerated_values",
+      "description": "Single-bit flag: 1 asserts that the Global Color Table is sorted in order of decreasing importance, 0 that it is not.",
+      "corruption_risk": "low",
+      "field_type": "UBYTE : 1",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "not ordered",
+        "ordered by decreasing importance"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bit 3 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 18: 'Sort Flag - Indicates whether the Global Color Table is sorted. If the flag is set, the Global Color Table is sorted, in order of decreasing importance. Typically, the order would be decreasing frequency, with most frequent color first. This assists a decoder, with fewer available colors, in choosing the best subset of colors; the decoder may use an initial segment of the table to render the graphic. Values: 0 - Not ordered, 1 - Ordered by decreasing importance, most important color first.' This flag was introduced in GIF89a and must be 0 in an 87a stream. The template performs no check.",
+        "line": 67,
+        "snippet": "UBYTE\tSortFlag : 1;"
+      },
+      "confidence": "high",
+      "notes": "0 is preferred because setting it makes a claim about the colour table that a randomly generated table will not satisfy."
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable": {
+      "type": "calculated_value",
+      "description": "Three-bit exponent encoding the length of the Global Color Table; the table holds 2^(value+1) entries of three bytes each, so this field alone determines how many bytes follow the descriptor.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "algorithm": "log2(number of Global Color Table entries) - 1, i.e. the entry count is 2^(SizeOfGlobalColorTable + 1) and the byte count is 3 * 2^(SizeOfGlobalColorTable + 1)",
+      "covers": "the GLOBALCOLORTABLE.rgb array that immediately follows the Logical Screen Descriptor; it excludes the descriptor itself and everything after the table",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "GLOBALCOLORTABLE.rgb"
+      ],
+      "bitfield_layout": "bits 2-0 (the three least significant bits) of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 0,
+        "max": 7,
+        "rationale": "The full 3-bit range is safe: even the maximum encodes only 256 entries, i.e. 768 bytes. Note the field is exponential, so each increment doubles the table; the value is nonetheless hard-capped by its own width, which is why no tighter bound is needed here."
+      },
+      "evidence": {
+        "line": 93,
+        "snippet": "for (i = 0; i <= LogicalScreenDescriptor.PackedFields.SizeOfGlobalColorTable; i++) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 68; the template turns it into a length by the doubling loop at lines 92-95 (`size = 1` then `size *= 2` for i = 0..value inclusive), which computes exactly 2^(value+1). GIF89a section 18: 'Size of Global Color Table - If the Global Color Table Flag is set to 1, the value in this field is used to calculate the number of bytes contained in the Global Color Table. To determine that actual size of the color table, raise 2 to [the value of the field + 1].' When the Global Color Table Flag is 0 this field is ignored, but the spec still recommends setting it to the size of the table the encoder would have used."
+    },
+    "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex": {
+      "type": "range_constraint",
+      "description": "Index into the Global Color Table of the colour used for pixels of the logical screen not covered by any image; must address an entry that actually exists.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 0,
+      "max": 255,
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "The Global Color Table may legally hold as few as two entries, and the spec requires this byte to be 0 outright when there is no global table at all. 0 is the only value valid in every case, so a generator that does not track the table length must emit 0."
+      },
+      "evidence": {
+        "note": "GIF89a section 18: 'Background Color Index - Index into the Global Color Table for the Background Color. The Background Color is the color used for those pixels on the screen that are not covered by an image. If the Global Color Table Flag is set to (zero), this field should be zero and should be ignored.' The index must be less than the table entry count. The template reads a plain UBYTE and performs no check.",
+        "line": 70,
+        "snippet": "UBYTE\tBackgroundColorIndex;"
+      },
+      "confidence": "high"
+    },
+    "LOGICALSCREENDESCRIPTOR.PixelAspectRatio": {
+      "type": "range_constraint",
+      "description": "Encoded pixel aspect ratio of the original image; 0 means no ratio is given, any other value n means the ratio is (n + 15) / 64.",
+      "corruption_risk": "low",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 0,
+      "max": 255,
+      "preferred_value": 0,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 18: 'Pixel Aspect Ratio - Factor used to compute an approximation of the aspect ratio of the pixel in the original image. If the value of the field is not 0, this approximation of the aspect ratio is computed based on the formula: Aspect Ratio = (Pixel Aspect Ratio + 15) / 64. The Pixel Aspect Ratio is defined to be the quotient of the pixel's width over its height. The value range in this field allows specification of the widest pixel of 4:1 to the tallest pixel of 1:4 in increments of 1/64th.' The template reads a plain UBYTE and performs no check.",
+        "line": 71,
+        "snippet": "UBYTE\tPixelAspectRatio;"
+      },
+      "confidence": "high",
+      "notes": "0 is preferred: it is what essentially every real encoder writes, and it means the decoder assumes square pixels rather than rescaling the canvas."
+    },
+    "GLOBALCOLORTABLE.rgb": {
+      "type": "calculated_value",
+      "description": "The Global Color Table; its entry count is not stored directly but is 2^(SizeOfGlobalColorTable + 1), so the table length and the packed-fields exponent must agree exactly.",
+      "corruption_risk": "high",
+      "field_type": "RGB[size]",
+      "source": "both",
+      "algorithm": "entry count = 2^(LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable + 1); byte count = 3 * that",
+      "covers": "the colour table bytes immediately following the 7-byte Logical Screen Descriptor; it excludes the descriptor and everything after the table",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable",
+        "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag"
+      ],
+      "byte_layout": "3 bytes per entry: RGB.R, RGB.G, RGB.B, each an unsigned 8-bit sample",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 2,
+        "max": 256,
+        "rationale": "Entry count. The exponent field caps this at 256 entries (768 bytes) and floors it at 2, so the full range is already generation-safe; it is recorded here so the rewrite step derives the array length from the exponent rather than choosing it independently."
+      },
+      "evidence": {
+        "line": 96,
+        "snippet": "RGB rgb[size];"
+      },
+      "confidence": "high",
+      "notes": "Present only when GlobalColorTableFlag is 1 (guard at line 88). The individual R/G/B samples are free-form colour data and deliberately have no constraints entries of their own. There is no way to encode a table of any size other than a power of two, and no way to encode one entry or zero entries."
+    },
+    "IMAGEDESCRIPTOR.ImageSeperator": {
+      "type": "fixed_value",
+      "description": "The block introducer that identifies an Image Descriptor; the template selects this whole branch by peeking this exact byte.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 44,
+      "required_value_hex": "0x2C",
+      "required_value_ascii": ",",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUByte",
+        "call_site_line": 104,
+        "values": [
+          44
+        ],
+        "values_hex": [
+          "0x2C"
+        ],
+        "preferred": [
+          44
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "IMAGEDESCRIPTOR.ImageSeperator"
+        ],
+        "note": "This is the highest-value lookahead in the file after the trailer test: it is the sole discriminator between a Table-Based Image and every extension block."
+      },
+      "evidence": {
+        "line": 104,
+        "snippet": "if (ReadUByte(FTell()) == 0x2C) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 107; the branch is selected by the peek at line 104. GIF89a section 20: 'Image Separator - Identifies the beginning of an Image Descriptor. This field contains the fixed value 0x2C.' The template's field name misspells 'Separator'; use the .bt spelling."
+    },
+    "IMAGEDESCRIPTOR.ImageLeftPosition": {
+      "type": "range_constraint",
+      "description": "Column, in pixels, of the image's left edge within the logical screen; the image must fit entirely inside the canvas.",
+      "corruption_risk": "medium",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "Offset 0 is the only value that keeps ImageLeftPosition + ImageWidth inside the canvas without tracking the logical screen width and the image width together; a non-zero offset that overflows the canvas is rejected or clipped by real decoders."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 20 (Image Descriptor): 'Image Left Position - Column number, in pixels, of the left edge of the image, with respect to the left edge of the Logical Screen. Leftmost column of the Logical Screen is 0.' The image must lie within the boundaries of the Logical Screen. Unsigned 16-bit; the template performs no check.",
+        "line": 108,
+        "snippet": "ushort\tImageLeftPosition;"
+      },
+      "confidence": "high"
+    },
+    "IMAGEDESCRIPTOR.ImageTopPosition": {
+      "type": "range_constraint",
+      "description": "Row, in pixels, of the image's top edge within the logical screen; the image must fit entirely inside the canvas.",
+      "corruption_risk": "medium",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "Same containment reasoning as ImageLeftPosition."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 20: 'Image Top Position - Row number, in pixels, of the top edge of the image with respect to the top edge of the Logical Screen. Top row of the Logical Screen is 0.' Unsigned 16-bit; the template performs no check.",
+        "line": 109,
+        "snippet": "ushort\tImageTopPosition;"
+      },
+      "confidence": "high"
+    },
+    "IMAGEDESCRIPTOR.ImageWidth": {
+      "type": "range_constraint",
+      "description": "Width of this image in pixels; combined with the left position it must not extend past the logical screen width.",
+      "corruption_risk": "high",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Decoders allocate ImageWidth*ImageHeight index bytes per frame and then run LZW into that buffer; the spec-legal maximum forces a 4 GB frame buffer. Bounded to match the generated logical screen so the containment rule holds."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 20: 'Image Width - Width of the image in pixels.' Unsigned 16-bit; the image must lie within the boundaries of the Logical Screen. The template performs no check.",
+        "line": 110,
+        "snippet": "ushort\tImageWidth;"
+      },
+      "confidence": "high"
+    },
+    "IMAGEDESCRIPTOR.ImageHeight": {
+      "type": "range_constraint",
+      "description": "Height of this image in pixels; combined with the top position it must not extend past the logical screen height.",
+      "corruption_risk": "high",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 1,
+        "max": 64,
+        "rationale": "Same frame-buffer allocation blow-up as ImageWidth."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 20: 'Image Height - Height of the image in pixels.' Unsigned 16-bit; the template performs no check.",
+        "line": 111,
+        "snippet": "ushort\tImageHeight;"
+      },
+      "confidence": "high"
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag": {
+      "type": "enumerated_values",
+      "description": "Single-bit flag: 1 means a Local Color Table immediately follows this Image Descriptor and overrides the global one for this image, 0 means the Global Color Table is used.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "use the Global Color Table",
+        "a Local Color Table follows"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bit 7 (most significant bit) of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 120,
+        "snippet": "if (ImageDescriptor.PackedFields.LocalColorTableFlag == 1) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 113 and branched on at line 120. Like the global flag it decides whether the next 6 to 768 bytes are a colour table or the start of the image data, so a wrong value shifts every subsequent offset. 0 is preferred when a Global Color Table exists because it keeps the file smaller; if neither table exists the image is undecodable, which is captured in dependencies."
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.InterlaceFlag": {
+      "type": "enumerated_values",
+      "description": "Single-bit flag: 1 means the image rows are stored in the four-pass GIF interlace order rather than sequentially.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE : 1",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "image is not interlaced",
+        "image is interlaced, four-pass order"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bit 6 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 20: 'Interlace Flag - Indicates if the image is interlaced. An image is interlaced in a four-pass interlace pattern. Values: 0 - Image is not interlaced, 1 - Image is interlaced.' Appendix E gives the passes as: pass 1 every 8th row starting at row 0, pass 2 every 8th row starting at row 4, pass 3 every 4th row starting at row 2, pass 4 every 2nd row starting at row 1. The template performs no check.",
+        "line": 114,
+        "snippet": "UBYTE\tInterlaceFlag : 1;"
+      },
+      "confidence": "high",
+      "notes": "0 is preferred: interlacing does not change the number of pixel indices in the LZW stream, only their row ordering, so it adds no structural coverage while making the decoded output harder for a checker to reason about."
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.SortFlag": {
+      "type": "enumerated_values",
+      "description": "Single-bit flag: 1 asserts that the Local Color Table is sorted in order of decreasing importance.",
+      "corruption_risk": "low",
+      "field_type": "UBYTE : 1",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "not ordered",
+        "ordered by decreasing importance"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bit 5 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 20: 'Sort Flag - Indicates whether the Local Color Table is sorted. If the flag is set, the Local Color Table is sorted, in order of decreasing importance. Typically, the order would be decreasing frequency, with most frequent color first.' Introduced in GIF89a, so it must be 0 in an 87a stream. The template performs no check.",
+        "line": 115,
+        "snippet": "UBYTE\tSortFlag : 1;"
+      },
+      "confidence": "high"
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.Reserved": {
+      "type": "fixed_value",
+      "description": "Two reserved bits in the Image Descriptor packed-fields byte; the specification requires them to be zero.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE : 2",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x0",
+      "required_value_ascii": "\\x00",
+      "bit_width": 2,
+      "bitfield_layout": "bits 4-3 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 116,
+        "snippet": "UBYTE\tReserved : 2;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 20 lists this as 'Reserved - 2 bits'. Reserved bits must be written as zero; the template declares the field and never checks it. required_value_hex is given as a single nibble because the field is only 2 bits wide."
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable": {
+      "type": "calculated_value",
+      "description": "Three-bit exponent encoding the length of the Local Color Table; the table holds 2^(value+1) entries of three bytes each.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "algorithm": "log2(number of Local Color Table entries) - 1, i.e. the entry count is 2^(SizeOfLocalColorTable + 1) and the byte count is 3 * 2^(SizeOfLocalColorTable + 1)",
+      "covers": "the LOCALCOLORTABLE.rgb array that immediately follows this Image Descriptor; it excludes the descriptor and the image data that follows the table",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "LOCALCOLORTABLE.rgb"
+      ],
+      "bitfield_layout": "bits 2-0 (the three least significant bits) of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 0,
+        "max": 7,
+        "rationale": "The full 3-bit range is safe: the maximum encodes 256 entries, i.e. 768 bytes. Recorded so the rewrite step derives the table length from this exponent rather than choosing the two independently."
+      },
+      "evidence": {
+        "line": 125,
+        "snippet": "for (i = 0; i <= ImageDescriptor.PackedFields.SizeOfLocalColorTable; i++) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 117; turned into a length by the doubling loop at lines 124-127. GIF89a section 20: 'Size of Local Color Table - If the Local Color Table Flag is set to 1, the value in this field is used to calculate the number of bytes contained in the Local Color Table. To determine that actual size of the color table, raise 2 to the value of the field + 1.'"
+    },
+    "LOCALCOLORTABLE.rgb": {
+      "type": "calculated_value",
+      "description": "The Local Color Table for this image; its entry count is 2^(SizeOfLocalColorTable + 1) and must agree exactly with that exponent.",
+      "corruption_risk": "high",
+      "field_type": "RGB[size]",
+      "source": "both",
+      "algorithm": "entry count = 2^(IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable + 1); byte count = 3 * that",
+      "covers": "the colour table bytes immediately following the 10-byte Image Descriptor; it excludes the descriptor and the Table-Based Image Data that follows",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable",
+        "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag"
+      ],
+      "byte_layout": "3 bytes per entry: RGB.R, RGB.G, RGB.B, each an unsigned 8-bit sample",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 2,
+        "max": 256,
+        "rationale": "Entry count, hard-capped at 256 by the 3-bit exponent. Note that a local table is emitted per image, so N images with maximum tables cost 768*N bytes; keeping the exponent low is the cheaper choice when several images are generated."
+      },
+      "evidence": {
+        "line": 128,
+        "snippet": "RGB rgb[size];"
+      },
+      "confidence": "high",
+      "notes": "Present only when LocalColorTableFlag is 1 (guard at line 120). The table is in scope for this image only; the spec requires a decoder to revert to the Global Color Table for the next image."
+    },
+    "IMAGEDATA.LZWMinimumCodeSize": {
+      "type": "range_constraint",
+      "description": "Initial LZW code width in bits for the compressed image data that follows; must be at least 2 even for a two-colour image, and at most 8 because a GIF colour table can hold at most 256 entries.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 2,
+      "max": 8,
+      "preferred_value": 8,
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 22 (Table Based Image Data): 'LZW Minimum Code Size - This byte determines the initial number of bits used for LZW codes in the image data.' Appendix F: 'the LZW minimum code size ... must be at least 2 [bits], even when encoding an image with only two colors.' The upper bound of 8 follows from the 256-entry maximum of a GIF colour table; values above 8 leave no room for the Clear and End-of-Information codes within the 12-bit LZW code limit. The template reads a plain UBYTE and performs no check.",
+        "line": 133,
+        "snippet": "UBYTE\tLZWMinimumCodeSize;"
+      },
+      "confidence": "high",
+      "notes": "The Clear code is 2^LZWMinimumCodeSize and the End-of-Information code is 2^LZWMinimumCodeSize + 1, so this byte fixes the two control codes of the stream that follows. It should be at least ceil(log2(active colour table entry count)), and 8 is universally safe. Getting this byte wrong desynchronises the entire LZW bit stream even when every sub-block length is correct."
+    },
+    "GRAPHICCONTROLEXTENSION.ExtensionIntroducer": {
+      "type": "fixed_value",
+      "description": "The byte that introduces every GIF extension block; for a Graphic Control Extension it is the low half of the 0xF921 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 136,
+        "values": [
+          63777
+        ],
+        "values_hex": [
+          "0xF921"
+        ],
+        "preferred": [
+          63777
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "GRAPHICCONTROLEXTENSION.ExtensionIntroducer",
+          "GRAPHICCONTROLEXTENSION.GraphicControlLabel"
+        ],
+        "byte_role": "LittleEndian() is in force (line 30), so the compared ushort 0xF921 is the two bytes 0x21 then 0xF9 on disk; this field is the low byte 0x21",
+        "note": "One of the four two-byte extension discriminators peeked by the dispatch chain at lines 136, 154, 161 and 179."
+      },
+      "evidence": {
+        "line": 136,
+        "snippet": "} else if (ReadUShort(FTell()) == 0xF921) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 139 with the inline comment '// 0x21'. GIF89a section 23: 'Extension Introducer - Identifies the beginning of an extension block. This field contains the fixed value 0x21.'"
+    },
+    "GRAPHICCONTROLEXTENSION.GraphicControlLabel": {
+      "type": "fixed_value",
+      "description": "The extension label identifying this block as a Graphic Control Extension; the high half of the 0xF921 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 249,
+      "required_value_hex": "0xF9",
+      "required_value_ascii": "\\xF9",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 136,
+        "values": [
+          63777
+        ],
+        "values_hex": [
+          "0xF921"
+        ],
+        "preferred": [
+          63777
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "GRAPHICCONTROLEXTENSION.ExtensionIntroducer",
+          "GRAPHICCONTROLEXTENSION.GraphicControlLabel"
+        ],
+        "byte_role": "the high byte 0xF9 of the little-endian ushort 0xF921, i.e. the second byte on disk"
+      },
+      "evidence": {
+        "line": 140,
+        "snippet": "UBYTE GraphicControlLabel; // 0xF9"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 23: 'Graphic Control Label - Identifies the current block as a Graphic Control Extension. This field contains the fixed value 0xF9.'"
+    },
+    "GRAPHICCONTROLSUBBLOCK.BlockSize": {
+      "type": "calculated_value",
+      "description": "Number of bytes in the Graphic Control Extension sub-block after this byte; the sub-block is fixed-shape, so the value is invariably 4.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "algorithm": "byte count",
+      "covers": "the four bytes that follow it inside GRAPHICCONTROLSUBBLOCK: the one packed-fields byte, the two-byte DelayTime and the one-byte TransparentColorIndex; it excludes this size byte itself and the trailing BlockTerminator",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [],
+      "fixed_result": 4,
+      "fixed_result_hex": "0x04",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 142,
+        "snippet": "UBYTE\tBlockSize;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 23: 'Block Size - Number of bytes in the block, after the Block Size field and up to but not including the Block Terminator. This field contains the fixed value 4.' The template reads this byte but never uses it to bound the following reads, so a wrong value is silently ignored by the template while a real decoder skips the wrong number of bytes and desynchronises."
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.Reserved": {
+      "type": "fixed_value",
+      "description": "Three reserved bits at the top of the Graphic Control Extension packed-fields byte; the specification requires them to be zero.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x0",
+      "required_value_ascii": "\\x00",
+      "bit_width": 3,
+      "bitfield_layout": "bits 7-5 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "line": 144,
+        "snippet": "UBYTE\tReserved : 3;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 23 lists this as 'Reserved - 3 bits'. Reserved bits must be written as zero; the template declares the field and never checks it. required_value_hex is a single nibble because the field is only 3 bits wide."
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.DisposalMethod": {
+      "type": "enumerated_values",
+      "description": "Three-bit code telling the decoder what to do with the frame's area after it has been displayed; only four of the eight encodable values are defined.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE : 3",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "No disposal specified - the decoder is not required to take any action",
+        "Do not dispose - the graphic is left in place",
+        "Restore to background color - the area used by the graphic is filled with the background colour",
+        "Restore to previous - the decoder restores the area to what it was before the graphic was drawn"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bits 4-2 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 23: 'Disposal Method - Indicates the way in which the graphic is to be treated after being displayed. Values: 0 - No disposal specified. The decoder is not required to take any action. 1 - Do not dispose. The graphic is to be left in place. 2 - Restore to background color. The area used by the graphic must be restored to the background color. 3 - Restore to previous. The decoder is required to restore the area overwritten by the graphic with what was there prior to rendering the graphic. 4-7 - To be defined.' The field is 3 bits so 4-7 are encodable but undefined; the template performs no check.",
+        "line": 145,
+        "snippet": "UBYTE\tDisposalMethod : 3;"
+      },
+      "confidence": "high",
+      "notes": "Values 4-7 are encodable and are exactly the kind of reserved-range value worth generating occasionally, but 0-3 are what a conforming file uses. Method 3 (restore to previous) is meaningless on the first frame because there is no previous state to restore."
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.UserInputFlag": {
+      "type": "enumerated_values",
+      "description": "Single-bit flag: 1 means the decoder should wait for user input before moving on to the next frame.",
+      "corruption_risk": "low",
+      "field_type": "UBYTE : 1",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "user input is not expected",
+        "user input is expected"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bit 1 of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 23: 'User Input Flag - Indicates whether or not user input is expected before continuing. If the flag is set, processing will continue when user input is entered. The nature of the User input is determined by the application (Carriage Return, Mouse Button Click, etc.). Values: 0 - User input is not expected, 1 - User input is expected.' The template performs no check.",
+        "line": 146,
+        "snippet": "UBYTE\tUserInputFlag : 1;"
+      },
+      "confidence": "high",
+      "notes": "0 is preferred: a set flag can make an animating decoder block indefinitely waiting for input, which stalls automated testing without adding coverage."
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.TransparentColorFlag": {
+      "type": "enumerated_values",
+      "description": "Single-bit flag: 1 means the TransparentColorIndex field is meaningful and pixels with that index are left untouched.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE : 1",
+      "source": "spec",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "transparent index is not given",
+        "transparent index is given"
+      ],
+      "preferred_value": 0,
+      "bitfield_layout": "bit 0 (least significant bit) of the packed-fields byte under BitfieldLeftToRight()",
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 23: 'Transparency Flag - Indicates whether a transparency index is given in the Transparent Index field. Values: 0 - Transparent Index is not given, 1 - Transparent Index is given.' The template performs no check.",
+        "line": 147,
+        "snippet": "UBYTE\tTransparentColorFlag : 1;"
+      },
+      "confidence": "high",
+      "notes": "0 is preferred because setting it makes TransparentColorIndex load-bearing: it must then address a real colour table entry, which a generator that does not track the table length cannot guarantee."
+    },
+    "GRAPHICCONTROLSUBBLOCK.DelayTime": {
+      "type": "range_constraint",
+      "description": "Number of hundredths of a second to wait after rendering this frame before continuing; 0 means do not wait.",
+      "corruption_risk": "low",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 100,
+        "rationale": "The unit is 1/100 s, so the spec maximum of 65535 is a stall of nearly eleven minutes per frame. A player under automated test would hang on a single frame; 0-100 covers instant through one second and exercises the same code."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 23: 'Delay Time - If not 0, this field specifies the number of hundredths (1/100) of a second to wait before continuing with the processing of the Data Stream. The clock starts ticking immediately after the graphic is rendered.' Unsigned 16-bit; the template performs no check.",
+        "line": 149,
+        "snippet": "ushort\tDelayTime;"
+      },
+      "confidence": "high"
+    },
+    "GRAPHICCONTROLSUBBLOCK.TransparentColorIndex": {
+      "type": "range_constraint",
+      "description": "Colour table index whose pixels are to be left untouched when rendering; meaningful only when TransparentColorFlag is 1, and it must then address an entry that exists in the active colour table.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 0,
+      "max": 255,
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "The active colour table may hold as few as two entries, so 0 is the only index valid for every table size. The spec also expects this byte to be 0 when the transparency flag is clear."
+      },
+      "evidence": {
+        "note": "GIF89a section 23: 'Transparency Index - The Transparency Index is such that when encountered, the corresponding pixel of the display device is not modified and processing goes on to the next pixel. The index is present if and only if the Transparency Flag is set to 1.' The index must be less than the active colour table's entry count. The template performs no check.",
+        "line": 150,
+        "snippet": "UBYTE\tTransparentColorIndex;"
+      },
+      "confidence": "high"
+    },
+    "GRAPHICCONTROLEXTENSION.BlockTerminator": {
+      "type": "fixed_value",
+      "description": "The zero byte that closes the Graphic Control Extension's single sub-block; without it a decoder keeps reading sub-blocks past the end of the extension.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 152,
+        "snippet": "UBYTE\tBlockTerminator;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 23: 'Block Terminator - This zero-length data block marks the end of the Graphic Control Extension.' Note that this extension is the one place where the template hard-codes the terminator as a separate field instead of using the DATASUBBLOCKS type, and it never checks that it is 0."
+    },
+    "COMMENTEXTENSION.ExtensionIntroducer": {
+      "type": "fixed_value",
+      "description": "The byte that introduces every GIF extension block; for a Comment Extension it is the low half of the 0xFE21 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 154,
+        "values": [
+          65057
+        ],
+        "values_hex": [
+          "0xFE21"
+        ],
+        "preferred": [
+          65057
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "COMMENTEXTENSION.ExtensionIntroducer",
+          "COMMENTEXTENSION.CommentLabel"
+        ],
+        "byte_role": "LittleEndian() is in force, so 0xFE21 is the two bytes 0x21 then 0xFE on disk; this field is the low byte 0x21"
+      },
+      "evidence": {
+        "line": 154,
+        "snippet": "} else if (ReadUShort(FTell()) == 0xFE21) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 157 with the inline comment '// 0x21'."
+    },
+    "COMMENTEXTENSION.CommentLabel": {
+      "type": "fixed_value",
+      "description": "The extension label identifying this block as a Comment Extension; the high half of the 0xFE21 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 254,
+      "required_value_hex": "0xFE",
+      "required_value_ascii": "\\xFE",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 154,
+        "values": [
+          65057
+        ],
+        "values_hex": [
+          "0xFE21"
+        ],
+        "preferred": [
+          65057
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "COMMENTEXTENSION.ExtensionIntroducer",
+          "COMMENTEXTENSION.CommentLabel"
+        ],
+        "byte_role": "the high byte 0xFE of the little-endian ushort 0xFE21, i.e. the second byte on disk"
+      },
+      "evidence": {
+        "line": 158,
+        "snippet": "UBYTE CommentLabel; // 0xFE"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 24: 'Comment Label - Identifies the block as a Comment Extension. This field contains the fixed value 0xFE.' The comment data itself should be 7-bit printable ASCII per the spec, but nothing enforces it."
+    },
+    "PLAINTEXTEXTENTION.ExtensionIntroducer": {
+      "type": "fixed_value",
+      "description": "The byte that introduces every GIF extension block; for a Plain Text Extension it is the low half of the 0x0121 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 161,
+        "values": [
+          289
+        ],
+        "values_hex": [
+          "0x0121"
+        ],
+        "preferred": [
+          289
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "PLAINTEXTEXTENTION.ExtensionIntroducer",
+          "PLAINTEXTEXTENTION.PlainTextLabel"
+        ],
+        "byte_role": "LittleEndian() is in force, so 0x0121 is the two bytes 0x21 then 0x01 on disk; this field is the low byte 0x21"
+      },
+      "evidence": {
+        "line": 161,
+        "snippet": "} else if (ReadUShort(FTell()) == 0x0121) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 164 with the inline comment '// 0x21'. The struct name misspells 'EXTENSION'; use the .bt spelling PLAINTEXTEXTENTION."
+    },
+    "PLAINTEXTEXTENTION.PlainTextLabel": {
+      "type": "fixed_value",
+      "description": "The extension label identifying this block as a Plain Text Extension; the high half of the 0x0121 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 1,
+      "required_value_hex": "0x01",
+      "required_value_ascii": "\\x01",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 161,
+        "values": [
+          289
+        ],
+        "values_hex": [
+          "0x0121"
+        ],
+        "preferred": [
+          289
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "PLAINTEXTEXTENTION.ExtensionIntroducer",
+          "PLAINTEXTEXTENTION.PlainTextLabel"
+        ],
+        "byte_role": "the high byte 0x01 of the little-endian ushort 0x0121, i.e. the second byte on disk"
+      },
+      "evidence": {
+        "line": 165,
+        "snippet": "UBYTE PlainTextLabel; // 0x01"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 25: 'Plain Text Label - Identifies the current block as a Plain Text Extension. This field contains the fixed value 0x01.'"
+    },
+    "PLAINTEXTSUBBLOCK.BlockSize": {
+      "type": "calculated_value",
+      "description": "Number of bytes in the Plain Text Extension's fixed header sub-block after this byte; the sub-block is fixed-shape, so the value is invariably 12.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "algorithm": "byte count",
+      "covers": "the twelve bytes that follow it inside PLAINTEXTSUBBLOCK: four ushorts (TextGridLeftPosition, TextGridTopPosition, TextGridWidth, TextGridHeight) and four UBYTEs (CharacterCellWidth, CharacterCellHeight, TextForegroundColorIndex, TextBackgroundColorIndex); it excludes this size byte itself and the PlainTextData sub-block chain that follows",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [],
+      "fixed_result": 12,
+      "fixed_result_hex": "0x0C",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 167,
+        "snippet": "UBYTE\tBlockSize;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 25: 'Block Size - Number of bytes in the block, after the Block Size field and up to but not including the beginning of the data portion. This field contains the fixed value 12.' The template reads the byte but reads the twelve following fields unconditionally rather than using it, so a wrong value is invisible to the template and fatal to a real decoder."
+    },
+    "PLAINTEXTSUBBLOCK.TextGridLeftPosition": {
+      "type": "range_constraint",
+      "description": "Column, in pixels, of the left edge of the text grid within the logical screen; the grid must lie inside the canvas.",
+      "corruption_risk": "low",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "Offset 0 is the only value that keeps the grid inside the canvas without tracking the logical screen width and the grid width together."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25 (Plain Text Extension): 'Text Grid Left Position - Column number, in pixels, of the left edge of the text grid, with respect to the left edge of the Logical Screen.' The text grid must lie within the boundaries of the Logical Screen. Unsigned 16-bit; the template performs no check.",
+        "line": 168,
+        "snippet": "ushort\tTextGridLeftPosition;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.TextGridTopPosition": {
+      "type": "range_constraint",
+      "description": "Row, in pixels, of the top edge of the text grid within the logical screen; the grid must lie inside the canvas.",
+      "corruption_risk": "low",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 0,
+        "max": 0,
+        "rationale": "Same containment reasoning as TextGridLeftPosition."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25: 'Text Grid Top Position - Row number, in pixels, of the top edge of the text grid, with respect to the top edge of the Logical Screen.' Unsigned 16-bit; the template performs no check.",
+        "line": 169,
+        "snippet": "ushort\tTextGridTopPosition;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.TextGridWidth": {
+      "type": "range_constraint",
+      "description": "Width of the text grid in pixels; the spec expects it to be an integer multiple of the character cell width.",
+      "corruption_risk": "low",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 8,
+        "max": 64,
+        "rationale": "The grid is laid out as TextGridWidth/CharacterCellWidth columns; a spec-legal 65535 with a one-pixel cell asks a renderer for 65535 columns per row. Bounded to match the generated logical screen and to stay a clean multiple of the generated cell width."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25: 'Text Grid Width - Width of the text grid in pixels.' The spec adds that 'the width of the grid must be an integer multiple of the character cell width' for the text to be laid out correctly. Unsigned 16-bit; the template performs no check.",
+        "line": 170,
+        "snippet": "ushort\tTextGridWidth;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.TextGridHeight": {
+      "type": "range_constraint",
+      "description": "Height of the text grid in pixels; the spec expects it to be an integer multiple of the character cell height.",
+      "corruption_risk": "low",
+      "field_type": "ushort",
+      "source": "spec",
+      "min": 0,
+      "max": 65535,
+      "endianness": "little",
+      "generation_range": {
+        "min": 8,
+        "max": 64,
+        "rationale": "Same row-count blow-up as TextGridWidth; bounded to a clean multiple of the generated cell height."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25: 'Text Grid Height - Height of the text grid in pixels.' The height must be an integer multiple of the character cell height. Unsigned 16-bit; the template performs no check.",
+        "line": 171,
+        "snippet": "ushort\tTextGridHeight;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.CharacterCellWidth": {
+      "type": "range_constraint",
+      "description": "Width in pixels of each character cell in the text grid; must be non-zero because the renderer divides the grid width by it.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 1,
+      "max": 255,
+      "generation_range": {
+        "min": 4,
+        "max": 8,
+        "rationale": "Typical character cells are 5-8 pixels wide. Keeping the cell a small divisor of the generated grid width satisfies the integer-multiple rule automatically."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25: 'Character Cell Width - Width, in pixels, of each character cell in the grid.' A value of 0 would make the columns-per-row computation divide by zero, so it is excluded. The template reads a plain UBYTE and performs no check.",
+        "line": 172,
+        "snippet": "UBYTE\tCharacterCellWidth;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.CharacterCellHeight": {
+      "type": "range_constraint",
+      "description": "Height in pixels of each character cell in the text grid; must be non-zero because the renderer divides the grid height by it.",
+      "corruption_risk": "medium",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 1,
+      "max": 255,
+      "generation_range": {
+        "min": 4,
+        "max": 8,
+        "rationale": "Typical character cells are 6-12 pixels tall; a small divisor of the generated grid height satisfies the integer-multiple rule automatically."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25: 'Character Cell Height - Height, in pixels, of each character cell in the grid.' A value of 0 would make the rows computation divide by zero. The template performs no check.",
+        "line": 173,
+        "snippet": "UBYTE\tCharacterCellHeight;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.TextForegroundColorIndex": {
+      "type": "range_constraint",
+      "description": "Index into the Global Color Table of the text foreground colour; must address an entry that exists.",
+      "corruption_risk": "low",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 0,
+      "max": 255,
+      "generation_range": {
+        "min": 0,
+        "max": 1,
+        "rationale": "The Global Color Table may hold as few as two entries, so only indices 0 and 1 are valid for every legal table size."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25: 'Text Foreground Color Index - Index into the Global Color Table to be used to render the text foreground color.' The Plain Text Extension uses the Global Color Table only; it has no local table, so if there is no Global Color Table the extension cannot be rendered. The template performs no check.",
+        "line": 174,
+        "snippet": "UBYTE\tTextForegroundColorIndex;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.TextBackgroundColorIndex": {
+      "type": "range_constraint",
+      "description": "Index into the Global Color Table of the text background colour; must address an entry that exists.",
+      "corruption_risk": "low",
+      "field_type": "UBYTE",
+      "source": "spec",
+      "min": 0,
+      "max": 255,
+      "generation_range": {
+        "min": 0,
+        "max": 1,
+        "rationale": "Same two-entry minimum table size as TextForegroundColorIndex."
+      },
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 25: 'Text Background Color Index - Index into the Global Color Table to be used to render the text background color.' The template performs no check.",
+        "line": 175,
+        "snippet": "UBYTE\tTextBackgroundColorIndex;"
+      },
+      "confidence": "high"
+    },
+    "APPLICATIONEXTENTION.ExtensionIntroducer": {
+      "type": "fixed_value",
+      "description": "The byte that introduces every GIF extension block; for an Application Extension it is the low half of the 0xFF21 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 179,
+        "values": [
+          65313
+        ],
+        "values_hex": [
+          "0xFF21"
+        ],
+        "preferred": [
+          65313
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "APPLICATIONEXTENTION.ExtensionIntroducer",
+          "APPLICATIONEXTENTION.ApplicationLabel"
+        ],
+        "byte_role": "LittleEndian() is in force, so 0xFF21 is the two bytes 0x21 then 0xFF on disk; this field is the low byte 0x21"
+      },
+      "evidence": {
+        "line": 179,
+        "snippet": "} else if (ReadUShort(FTell()) == 0xFF21) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 182 with the inline comment '// 0x21'. The struct name misspells 'EXTENSION'; use the .bt spelling APPLICATIONEXTENTION."
+    },
+    "APPLICATIONEXTENTION.ApplicationLabel": {
+      "type": "fixed_value",
+      "description": "The extension label identifying this block as an Application Extension; the high half of the 0xFF21 word the template peeks.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 255,
+      "required_value_hex": "0xFF",
+      "required_value_ascii": "\\xFF",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 179,
+        "values": [
+          65313
+        ],
+        "values_hex": [
+          "0xFF21"
+        ],
+        "preferred": [
+          65313
+        ],
+        "comparison": "equals",
+        "terminates_loop": false,
+        "covers_fields": [
+          "APPLICATIONEXTENTION.ExtensionIntroducer",
+          "APPLICATIONEXTENTION.ApplicationLabel"
+        ],
+        "byte_role": "the high byte 0xFF of the little-endian ushort 0xFF21, i.e. the second byte on disk"
+      },
+      "evidence": {
+        "line": 183,
+        "snippet": "UBYTE ApplicationLabel; // 0xFF"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 26: 'Extension Label - Identifies the block as an Application Extension. This field contains the fixed value 0xFF.'"
+    },
+    "APPLICATIONSUBBLOCK.BlockSize": {
+      "type": "calculated_value",
+      "description": "Number of bytes in the Application Extension's identification sub-block after this byte; the sub-block is fixed-shape, so the value is invariably 11.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "algorithm": "byte count",
+      "covers": "the eleven bytes that follow it inside APPLICATIONSUBBLOCK: the 8-byte ApplicationIdentifier plus the 3-byte ApplicationAuthenticationCode; it excludes this size byte itself and the ApplicationData sub-block chain that follows",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [],
+      "fixed_result": 11,
+      "fixed_result_hex": "0x0B",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 185,
+        "snippet": "UBYTE\tBlockSize;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a section 26: 'Block Size - Number of bytes in this block after the Block Size field, up to but not including the beginning of the Application Data. This field contains the fixed value 11.' The template reads the byte but then reads 8 + 3 bytes unconditionally rather than using it."
+    },
+    "APPLICATIONSUBBLOCK.ApplicationIdentifier": {
+      "type": "pattern_constraint",
+      "description": "Eight-character sequence naming the application that owns this extension; the specification requires printable ASCII.",
+      "corruption_risk": "medium",
+      "field_type": "char[8]",
+      "source": "spec",
+      "pattern": "^[\\x20-\\x7E]{8}$ - exactly eight printable ASCII characters, space-padded rather than NUL-terminated",
+      "preferred_value": [
+        "NETSCAPE",
+        "ANIMEXTS",
+        "XMP Data",
+        "ICCRGBG1"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 26 (Application Extension): 'Application Identifier - Sequence of eight printable ASCII characters used to identify the application owning the Application Extension.' The field is exactly 8 bytes with no terminator. The template reads a plain char[8] and performs no check.",
+        "line": 186,
+        "snippet": "char\tApplicationIdentifier[8];"
+      },
+      "confidence": "high",
+      "notes": "'NETSCAPE' with authentication code '2.0' is by far the most productive value: it is the de-facto animation-loop extension that every browser and animation decoder special-cases, so it drives real parsing rather than a generic skip."
+    },
+    "APPLICATIONSUBBLOCK.ApplicationAuthenticationCode": {
+      "type": "pattern_constraint",
+      "description": "Three-byte code that, together with the identifier, authenticates the application extension; conventionally a printable version string.",
+      "corruption_risk": "medium",
+      "field_type": "char[3]",
+      "source": "spec",
+      "pattern": "^.{3}$ - exactly three bytes; in every extension in real use these are printable ASCII, e.g. '2.0' for NETSCAPE and 'XMP' for XMP Data",
+      "preferred_value": [
+        "2.0",
+        "1.0",
+        "XMP"
+      ],
+      "evil_bit_safe": true,
+      "evidence": {
+        "note": "GIF89a section 26: 'Application Authentication Code - Sequence of three bytes used to authenticate the Application Identifier. An Application program may use an algorithm to compute a binary code that uniquely identifies it as the application owning the Application Extension.' Exactly 3 bytes, no terminator. The template reads a plain char[3] and performs no check.",
+        "line": 187,
+        "snippet": "char\tApplicationAuthenticationCode[3];"
+      },
+      "confidence": "high",
+      "notes": "Must be paired with the identifier: 'NETSCAPE' requires '2.0'. See the dependency covering the NETSCAPE looping sub-block."
+    },
+    "UNDEFINEDDATA.ExtensionIntroducer": {
+      "type": "fixed_value",
+      "description": "The extension introducer of a block whose label the template does not recognise; it must still be 0x21 or the byte is not the start of a block at all and the parse desynchronises.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "evil_bit_safe": false,
+      "evidence": {
+        "line": 194,
+        "snippet": "UBYTE\tExtensionIntroducer; // 21"
+      },
+      "confidence": "high",
+      "notes": "This is the fall-through branch (line 191) taken when the peeked byte is neither 0x3B nor 0x2C and the peeked word is none of 0xF921, 0xFE21, 0x0121, 0xFF21. The template assumes the byte is 0x21 and reads a label plus a sub-block chain, but it never verifies it: if the byte is anything else, the template consumes two arbitrary bytes and then interprets the following data as a sub-block chain, losing synchronisation for the rest of the file. GIF89a permits exactly three block introducers - 0x21 (extension), 0x2C (image separator) and 0x3B (trailer) - so a generator must emit 0x21 here."
+    },
+    "UNDEFINEDDATA.Label": {
+      "type": "range_constraint",
+      "description": "Extension label for a block type this template does not decode; any byte is structurally legal, but it must not be one of the four the dispatch chain already handles or the template would have taken a different branch.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "min": 0,
+      "max": 255,
+      "excluded_values": [
+        1,
+        249,
+        254,
+        255
+      ],
+      "excluded_values_hex": [
+        "0x01",
+        "0xF9",
+        "0xFE",
+        "0xFF"
+      ],
+      "preferred_value": 2,
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 255,
+        "rationale": "The byte itself costs nothing, but 0x01, 0xF9, 0xFE and 0xFF must be excluded: emitting one of them here produces a block that the template's own dispatch chain would re-parse as a Plain Text, Graphic Control, Comment or Application Extension with a completely different fixed-size body, so the generated file would not round-trip through its own grammar."
+      },
+      "evidence": {
+        "line": 195,
+        "snippet": "UBYTE\tLabel; // F9"
+      },
+      "confidence": "high",
+      "notes": "The inline comment '// F9' at line 195 is copy-paste residue from the Graphic Control Extension and is misleading: 0xF9 is precisely the one value this field cannot hold. GIF89a section 23 assigns label ranges: 0x00-0x7F to graphic rendering blocks, 0x80-0xF9 to control blocks, and 0xFA-0xFF to special-purpose blocks. Only 0x01, 0xF9, 0xFE and 0xFF are actually defined."
+    },
+    "TRAILER.GIFTrailer": {
+      "type": "fixed_value",
+      "description": "The single byte that terminates the GIF data stream; it is what ends the template's top-level data loop, so a file without it is parsed until the reader runs off the end.",
+      "corruption_risk": "high",
+      "field_type": "UBYTE",
+      "source": "both",
+      "required_value": 59,
+      "required_value_hex": "0x3B",
+      "required_value_ascii": ";",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUByte",
+        "call_site_line": 102,
+        "values": [
+          59
+        ],
+        "values_hex": [
+          "0x3B"
+        ],
+        "preferred": [
+          59
+        ],
+        "comparison": "not_equals",
+        "terminates_loop": true,
+        "covers_fields": [
+          "TRAILER.GIFTrailer"
+        ],
+        "note": "The data loop at line 102 runs for as long as the peeked byte is NOT 0x3B, so this value is the sole loop terminator for the entire data-block stream. It is the single most important byte in the file after the 'GIF' signature: omit it and the template never terminates."
+      },
+      "evidence": {
+        "line": 102,
+        "snippet": "while (ReadUByte(FTell()) != 0x3B) {"
+      },
+      "confidence": "high",
+      "notes": "Declared at line 203 inside struct TRAILER. GIF89a section 27: 'Trailer - This block is a single-field block indicating the end of the GIF Data Stream. It contains the fixed value 0x3B.'"
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 1
+      },
+      "then": {
+        "section": "GLOBALCOLORTABLE",
+        "required": true,
+        "note": "the table occupies exactly 3 * 2^(SizeOfGlobalColorTable + 1) bytes immediately after the Logical Screen Descriptor"
+      },
+      "description": "A set Global Color Table Flag makes the table mandatory and fixes its length from the size exponent.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 88,
+        "snippet": "if (LogicalScreenDescriptor.PackedFields.GlobalColorTableFlag == 1) {"
+      }
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "section": "GLOBALCOLORTABLE",
+        "forbidden": true
+      },
+      "description": "A clear Global Color Table Flag means no table bytes may appear; emitting one shifts every subsequent offset in the file.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 88,
+        "snippet": "if (LogicalScreenDescriptor.PackedFields.GlobalColorTableFlag == 1) {"
+      }
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "field": "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x00"
+      },
+      "description": "With no Global Color Table there is nothing for the background index to point at, so the specification requires the byte to be zero.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 255,
+        "note": "must be strictly less than 2^(LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable + 1)"
+      },
+      "description": "The background index must address an entry that actually exists in the Global Color Table.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable",
+        "min": 0
+      },
+      "then": {
+        "field": "GLOBALCOLORTABLE.rgb",
+        "type": "calculated_value",
+        "note": "entry count = 2^(SizeOfGlobalColorTable + 1), i.e. 2, 4, 8, 16, 32, 64, 128 or 256 entries and 6, 12, 24, 48, 96, 192, 384 or 768 bytes"
+      },
+      "description": "The size exponent and the table length are two encodings of one number and must agree exactly.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 93,
+        "snippet": "for (i = 0; i <= LogicalScreenDescriptor.PackedFields.SizeOfGlobalColorTable; i++) {"
+      }
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "equals": 1
+      },
+      "then": {
+        "section": "LOCALCOLORTABLE",
+        "required": true,
+        "note": "the table occupies exactly 3 * 2^(SizeOfLocalColorTable + 1) bytes immediately after the Image Descriptor and before the LZW minimum code size byte"
+      },
+      "description": "A set Local Color Table Flag makes the table mandatory and fixes its length from the size exponent.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 120,
+        "snippet": "if (ImageDescriptor.PackedFields.LocalColorTableFlag == 1) {"
+      }
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "section": "LOCALCOLORTABLE",
+        "forbidden": true
+      },
+      "description": "A clear Local Color Table Flag means the image data begins immediately after the Image Descriptor.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 120,
+        "snippet": "if (ImageDescriptor.PackedFields.LocalColorTableFlag == 1) {"
+      }
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable",
+        "min": 0
+      },
+      "then": {
+        "field": "LOCALCOLORTABLE.rgb",
+        "type": "calculated_value",
+        "note": "entry count = 2^(SizeOfLocalColorTable + 1)"
+      },
+      "description": "The local size exponent and the local table length are two encodings of one number and must agree exactly.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 125,
+        "snippet": "for (i = 0; i <= ImageDescriptor.PackedFields.SizeOfLocalColorTable; i++) {"
+      }
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "type": "fixed_value",
+        "required_value": 1,
+        "required_value_hex": "0x1",
+        "note": "an image with no local table falls back to the global table, so one of the two flags must be set"
+      },
+      "description": "An image with neither a local nor a global colour table has no way to map its pixel indices to colours and is undecodable.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.TransparentColorFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "GRAPHICCONTROLSUBBLOCK.TransparentColorIndex",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 255,
+        "note": "must be strictly less than the entry count of the colour table active for the frame this extension modifies - the Local Color Table if the following image sets LocalColorTableFlag, otherwise the Global Color Table"
+      },
+      "description": "A set transparency flag makes the index load-bearing: it must address a real colour table entry.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.TransparentColorFlag",
+        "equals": 0
+      },
+      "then": {
+        "field": "GRAPHICCONTROLSUBBLOCK.TransparentColorIndex",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x00",
+        "note": "the byte is still present and still occupies one byte of the fixed 4-byte sub-block; it is simply ignored, and encoders write 0"
+      },
+      "description": "With the transparency flag clear the index is meaningless but the byte is not optional - the sub-block is fixed at 4 bytes.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "87a"
+      },
+      "then": {
+        "section": "GRAPHICCONTROLEXTENSION",
+        "forbidden": true
+      },
+      "description": "The Graphic Control Extension was introduced in GIF89a; an 87a stream containing one is out of spec.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "87a"
+      },
+      "then": {
+        "section": "PLAINTEXTEXTENTION",
+        "forbidden": true
+      },
+      "description": "The Plain Text Extension was introduced in GIF89a; an 87a stream containing one is out of spec.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "87a"
+      },
+      "then": {
+        "section": "APPLICATIONEXTENTION",
+        "forbidden": true
+      },
+      "description": "The Application Extension was introduced in GIF89a; an 87a stream containing one is out of spec.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "87a"
+      },
+      "then": {
+        "section": "COMMENTEXTENSION",
+        "forbidden": true
+      },
+      "description": "The Comment Extension was introduced in GIF89a; an 87a stream containing one is out of spec.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "87a"
+      },
+      "then": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SortFlag",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x0"
+      },
+      "description": "The colour table Sort Flag is a GIF89a addition; in an 87a stream that bit is reserved and must be zero.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "87a"
+      },
+      "then": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.SortFlag",
+        "type": "fixed_value",
+        "required_value": 0,
+        "required_value_hex": "0x0"
+      },
+      "description": "The local colour table Sort Flag is a GIF89a addition; in an 87a stream that bit is reserved and must be zero.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "89a"
+      },
+      "then": {
+        "section": "any extension block",
+        "required": false,
+        "note": "89a permits but does not require Graphic Control, Comment, Plain Text and Application Extensions"
+      },
+      "description": "Declaring 89a is the only way to legally use any extension block, which is why it is the preferred version for generation.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable",
+        "min": 0
+      },
+      "then": {
+        "field": "IMAGEDATA.LZWMinimumCodeSize",
+        "type": "range_constraint",
+        "min": 2,
+        "max": 8,
+        "note": "should be at least max(2, SizeOfLocalColorTable + 1) when a local table is present, or max(2, SizeOfGlobalColorTable + 1) when the image falls back to the global table, so that every representable pixel index addresses a real colour"
+      },
+      "description": "The initial LZW code width must be wide enough to encode every index of the active colour table.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDATA.LZWMinimumCodeSize",
+        "min": 2
+      },
+      "then": {
+        "field": "DATASUBBLOCK.Data",
+        "type": "calculated_value",
+        "note": "the concatenation of every Data array in IMAGEDATA.DataSubBlocks is one LZW code stream read least-significant-bit first, starting at LZWMinimumCodeSize+1 bits per code, opening with the Clear code 2^LZWMinimumCodeSize and ending with the End-of-Information code 2^LZWMinimumCodeSize + 1; codes never exceed 12 bits"
+      },
+      "description": "Image data sub-blocks are not independent blobs - they are slices of one bit stream, so splitting is free but the concatenation must decode.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR.ImageWidth",
+        "min": 0
+      },
+      "then": {
+        "field": "IMAGEDESCRIPTOR.ImageLeftPosition",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "ImageLeftPosition + ImageWidth must be <= LOGICALSCREENDESCRIPTOR.Width"
+      },
+      "description": "Every image must lie entirely inside the logical screen it is composited onto.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR.ImageHeight",
+        "min": 0
+      },
+      "then": {
+        "field": "IMAGEDESCRIPTOR.ImageTopPosition",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "ImageTopPosition + ImageHeight must be <= LOGICALSCREENDESCRIPTOR.Height"
+      },
+      "description": "Every image must lie entirely inside the logical screen it is composited onto.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "PLAINTEXTSUBBLOCK.TextGridWidth",
+        "min": 0
+      },
+      "then": {
+        "field": "PLAINTEXTSUBBLOCK.TextGridLeftPosition",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "TextGridLeftPosition + TextGridWidth must be <= LOGICALSCREENDESCRIPTOR.Width, and TextGridTopPosition + TextGridHeight must be <= LOGICALSCREENDESCRIPTOR.Height"
+      },
+      "description": "The plain-text grid, like an image, must lie entirely inside the logical screen.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "PLAINTEXTSUBBLOCK.CharacterCellWidth",
+        "min": 1
+      },
+      "then": {
+        "field": "PLAINTEXTSUBBLOCK.TextGridWidth",
+        "type": "range_constraint",
+        "min": 0,
+        "max": 65535,
+        "note": "TextGridWidth should be an exact integer multiple of CharacterCellWidth, and TextGridHeight an exact integer multiple of CharacterCellHeight"
+      },
+      "description": "The grid is laid out in whole character cells, so its dimensions must be multiples of the cell dimensions.",
+      "source": "spec",
+      "confidence": "medium",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "section": "PLAINTEXTEXTENTION",
+        "present": true
+      },
+      "then": {
+        "section": "GLOBALCOLORTABLE",
+        "required": true
+      },
+      "description": "A Plain Text Extension colours its text from the Global Color Table only - it has no local table - so it cannot be rendered without one.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationIdentifier",
+        "equals": "NETSCAPE"
+      },
+      "then": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationAuthenticationCode",
+        "type": "fixed_value",
+        "required_value": "2.0",
+        "required_value_hex": "0x322E30",
+        "note": "and ApplicationData must be a single 3-byte sub-block holding 0x01 followed by a little-endian ushort loop count, then the 0x00 block terminator; a loop count of 0 means loop forever"
+      },
+      "description": "The NETSCAPE looping extension has a fixed authentication code and a fixed 3-byte payload shape that every animation decoder special-cases.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "section": "GRAPHICCONTROLEXTENSION",
+        "present": true
+      },
+      "then": {
+        "section": "IMAGEDESCRIPTOR or PLAINTEXTEXTENTION",
+        "required": true,
+        "note": "the very next block after the Graphic Control Extension must be the Image Descriptor or Plain Text Extension it modifies; no other block may intervene"
+      },
+      "description": "A Graphic Control Extension has no meaning on its own - its scope is exactly the one graphic-rendering block that immediately follows it.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high"
+    },
+    {
+      "when": {
+        "field": "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.DisposalMethod",
+        "equals": 3
+      },
+      "then": {
+        "section": "GRAPHICCONTROLEXTENSION",
+        "required": false,
+        "note": "restore-to-previous requires a previously rendered frame to restore, so it is meaningless on the first graphic block of the stream"
+      },
+      "description": "Disposal method 3 refers to prior canvas state, which does not exist before the first frame has been drawn.",
+      "source": "spec",
+      "confidence": "medium",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.InterlaceFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "DATASUBBLOCK.Data",
+        "type": "calculated_value",
+        "note": "the decoded index stream still contains exactly ImageWidth * ImageHeight indices, but the rows are delivered in four passes: every 8th row from row 0, every 8th row from row 4, every 4th row from row 2, then every 2nd row from row 1"
+      },
+      "description": "Interlacing changes the row order of the decoded data, not its size, so the LZW stream length is unaffected.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SortFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "GLOBALCOLORTABLE.rgb",
+        "type": "calculated_value",
+        "note": "the entries must be ordered by decreasing importance, most important colour first; a randomly generated table will not satisfy this"
+      },
+      "description": "Setting the sort flag makes a claim about the colour table's ordering that the table itself must honour.",
+      "source": "spec",
+      "confidence": "medium",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR.PixelAspectRatio",
+        "min": 1
+      },
+      "then": {
+        "field": "LOGICALSCREENDESCRIPTOR.PixelAspectRatio",
+        "type": "range_constraint",
+        "min": 1,
+        "max": 255,
+        "note": "a non-zero value n means the pixel width-to-height ratio is (n + 15) / 64, spanning 4:1 at n=241 down to 1:4 at n=1; 0 means no ratio is given"
+      },
+      "description": "A non-zero pixel aspect ratio is interpreted through a fixed formula, so the byte is not a free scalar.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low"
+    },
+    {
+      "when": {
+        "field": "DATASUBBLOCK.Size",
+        "equals": 0
+      },
+      "then": {
+        "section": "DATASUBBLOCK",
+        "forbidden": true,
+        "note": "a zero size byte is the DATASUBBLOCKS.BlockTerminator, not a sub-block with an empty payload; the while at line 45 exits before constructing a DATASUBBLOCK"
+      },
+      "description": "Zero is not a legal sub-block length - it is the chain terminator, so an 'empty sub-block' cannot be encoded.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 45,
+        "snippet": "while (size != 0) {"
+      }
+    },
+    {
+      "when": {
+        "field": "UNDEFINEDDATA.ExtensionIntroducer",
+        "equals": 33
+      },
+      "then": {
+        "field": "UNDEFINEDDATA.Label",
+        "type": "enumerated_values",
+        "valid_values": [],
+        "excluded_values": [
+          1,
+          249,
+          254,
+          255
+        ],
+        "note": "any byte except 0x01, 0xF9, 0xFE and 0xFF; those four would be re-parsed by the dispatch chain at lines 136, 154, 161 and 179 as a different, fixed-shape extension"
+      },
+      "description": "The undefined-extension branch is defined by exclusion, so its label must avoid every value the dispatch chain already claims.",
+      "source": "template",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 191,
+        "snippet": "} else {"
+      }
+    },
+    {
+      "when": {
+        "section": "any block",
+        "present": true
+      },
+      "then": {
+        "field": "UNDEFINEDDATA.ExtensionIntroducer",
+        "type": "enumerated_values",
+        "valid_values": [
+          33,
+          44,
+          59
+        ],
+        "note": "0x21 extension introducer, 0x2C image separator, 0x3B trailer - the only three bytes that may appear at a block boundary"
+      },
+      "description": "At every block boundary in the data stream exactly three introducer bytes are legal; any other byte means the stream has lost synchronisation.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 102,
+        "snippet": "while (ReadUByte(FTell()) != 0x3B) {"
+      }
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "GIFHEADER",
+      "detail": "the 6-byte Header occupies file offsets 0-5: 'GIF' at 0-2 and the version at 3-5, before anything else",
+      "description": "Every GIF data stream begins with the fixed Header and nothing may precede it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one, never repeated",
+      "generation_note": "emit as a fixed 6-byte head element; the three signature bytes take no randomisation and no evil-bit substitution",
+      "evidence": {
+        "line": 77,
+        "snippet": "GIFHEADER GifHeader;"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "LOGICALSCREENDESCRIPTOR",
+      "detail": "exactly 7 bytes, immediately after the Header at file offset 6",
+      "description": "The Logical Screen Descriptor is mandatory and its position is fixed, since nothing before it is variable-length.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one per file",
+      "generation_note": "emit as a fixed 7-byte element straight after the header: two ushorts, one packed byte, two UBYTEs",
+      "evidence": {
+        "line": 86,
+        "snippet": "LOGICALSCREENDESCRIPTOR LogicalScreenDescriptor;"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "GLOBALCOLORTABLE",
+      "detail": "must immediately follow the Logical Screen Descriptor, with no intervening bytes",
+      "condition": "only when LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag is 1",
+      "description": "The Global Color Table has no introducer or length prefix of its own, so it is located purely by position.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "0 or 1; at most 256 entries, i.e. 768 bytes",
+      "generation_note": "emit conditionally on GlobalColorTableFlag, directly after the descriptor, with exactly 2^(SizeOfGlobalColorTable+1) RGB triples",
+      "evidence": {
+        "line": 88,
+        "snippet": "if (LogicalScreenDescriptor.PackedFields.GlobalColorTableFlag == 1) {"
+      }
+    },
+    {
+      "rule": "cardinality",
+      "subject": "GLOBALCOLORTABLE",
+      "detail": "at most 1 per data stream",
+      "description": "There is exactly one logical screen, so there is at most one Global Color Table.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 or 1",
+      "generation_note": "model as a single optional element, never as a repeated array"
+    },
+    {
+      "rule": "last_element",
+      "subject": "TRAILER",
+      "detail": "the single byte 0x3B must be the final byte of the data stream",
+      "description": "The trailer marks the end of the GIF and is what terminates the top-level data loop.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "exactly one per file",
+      "generation_note": "emit as a fixed 1-byte tail element after the bounded data-block section; the template's while(ReadUByte(FTell()) != 0x3B) loop never exits without it",
+      "evidence": {
+        "line": 102,
+        "snippet": "while (ReadUByte(FTell()) != 0x3B) {"
+      }
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any bytes after TRAILER",
+      "detail": "the data stream ends with the 0x3B byte; trailing bytes are not part of the GIF",
+      "description": "A conforming GIF ends at the trailer, and the template stops parsing there.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "generation_bound": "0 trailing bytes",
+      "generation_note": "stop writing immediately after the trailer byte",
+      "evidence": {
+        "line": 204,
+        "snippet": "} Trailer;"
+      }
+    },
+    {
+      "rule": "cardinality",
+      "subject": "struct DATA (the data-block stream)",
+      "detail": "the GIF89a grammar is <Data>*, i.e. zero or more Graphic Blocks and Special-Purpose Blocks, with no spec maximum; the template loops until it peeks 0x3B",
+      "description": "The whole body of the file is an unbounded repetition of blocks, which is what a generator must bound explicitly.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "2 to 8 data blocks per file, of which at least one is a Table-Based Image. Combined with a cap of 4 sub-blocks of at most 255 bytes each per chain and colour tables of at most 768 bytes, this holds generated files to roughly 10 KB. An unbounded loop over unbounded sub-block chains is the only way this format reaches megabytes.",
+      "generation_note": "replace the while loop with: fixed header, fixed logical screen descriptor, optional global colour table, a bounded array of block elements each choosing one of the six branches, then the fixed trailer",
+      "evidence": {
+        "line": 102,
+        "snippet": "while (ReadUByte(FTell()) != 0x3B) {"
+      }
+    },
+    {
+      "rule": "required",
+      "subject": "IMAGEDESCRIPTOR (a Table-Based Image)",
+      "detail": "the grammar permits zero images, but a GIF with no image renders nothing and is rejected by most decoders",
+      "description": "At least one Table-Based Image should be present for the file to be meaningful, even though <Data>* formally allows none.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "1 to 3 images per file; each image costs an Image Descriptor, an optional colour table of up to 768 bytes and a bounded LZW sub-block chain",
+      "generation_note": "always emit at least one Image Descriptor block in the bounded data array; a generator that emits only extension blocks produces files every decoder discards early"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "IMAGEDESCRIPTOR, LOCALCOLORTABLE, IMAGEDATA",
+      "detail": "a Table-Based Image is the fixed sequence Image Descriptor, then the Local Color Table if and only if LocalColorTableFlag is 1, then the LZW minimum code size byte and its sub-block chain, with nothing in between",
+      "description": "The three parts of a Table-Based Image are located by position, not by markers, so nothing may be interleaved.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one such group per image, at most 3 images",
+      "generation_note": "generate the group as one indivisible element, never as three independently placed blocks",
+      "evidence": {
+        "line": 119,
+        "snippet": "} ImageDescriptor;"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "LOCALCOLORTABLE",
+      "detail": "must immediately follow the Image Descriptor and immediately precede IMAGEDATA.LZWMinimumCodeSize",
+      "condition": "only when IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag is 1",
+      "description": "Like the global table, the local table has no introducer or length prefix and is found purely by position.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "0 or 1 per image; at most 256 entries, i.e. 768 bytes",
+      "generation_note": "emit conditionally on LocalColorTableFlag with exactly 2^(SizeOfLocalColorTable+1) RGB triples",
+      "evidence": {
+        "line": 120,
+        "snippet": "if (ImageDescriptor.PackedFields.LocalColorTableFlag == 1) {"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "GRAPHICCONTROLEXTENSION",
+      "detail": "must immediately precede the Image Descriptor or Plain Text Extension it modifies; no other block may come between them",
+      "description": "The scope of a Graphic Control Extension is exactly the first graphic-rendering block that follows it.",
+      "corruption_risk": "high",
+      "source": "spec",
+      "generation_bound": "0 or 1 per graphic block, so at most 3 per file",
+      "generation_note": "emit as an optional prefix attached to a graphic block element, not as a free-standing member of the bounded block array"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "GRAPHICCONTROLEXTENSION",
+      "detail": "at most one per Graphic Block",
+      "description": "A graphic-rendering block may be modified by only one Graphic Control Extension.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 per graphic block",
+      "generation_note": "attach at most one to each image or plain-text element"
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "IMAGEDESCRIPTOR and PLAINTEXTEXTENTION as the Graphic-Rendering Block",
+      "detail": "a Graphic Block's rendering part is either a Table-Based Image or a Plain Text Extension, never both",
+      "description": "The grammar defines <Graphic-Rendering Block> ::= <Table-Based Image> | Plain Text Extension.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "exactly one of the two per graphic block",
+      "generation_note": "model the graphic block body as a two-way union"
+    },
+    {
+      "rule": "required",
+      "subject": "DATASUBBLOCKS.BlockTerminator",
+      "detail": "every data sub-block chain must end with a single 0x00 byte, including a chain with no sub-blocks at all (which is then just that one byte)",
+      "description": "The zero-length sub-block is the only thing that ends a chain; the five DATASUBBLOCKS instances in this template all depend on it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "at most 4 sub-blocks per chain, each at most 255 bytes, so at most ~1 KB per chain",
+      "generation_note": "emit a bounded array of sub-blocks followed by an unconditional 0x00; never let the sub-block count be unbounded",
+      "evidence": {
+        "line": 52,
+        "snippet": "UBYTE\tBlockTerminator;"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "APPLICATIONEXTENTION with identifier 'NETSCAPE'",
+      "detail": "the NETSCAPE 2.0 looping extension must appear before the first Image Descriptor to take effect",
+      "condition": "only when generating a looping animation",
+      "description": "Animation decoders read the loop count once, before the first frame; a NETSCAPE block placed later is ignored.",
+      "corruption_risk": "low",
+      "source": "spec",
+      "generation_bound": "0 or 1 per file",
+      "generation_note": "if generating an animation, place it in the bounded block array before the first image element"
+    },
+    {
+      "rule": "ordering",
+      "subject": "COMMENTEXTENSION",
+      "detail": "may appear anywhere in the data-block stream, between the Logical Screen Descriptor and the trailer",
+      "description": "The Comment Extension is the only block with no ordering constraint at all.",
+      "corruption_risk": "low",
+      "source": "spec",
+      "generation_bound": "0 to 2 per file, each with a bounded sub-block chain",
+      "generation_note": "safe to place anywhere in the bounded block array; keep the count low so comments do not crowd out structural coverage"
+    },
+    {
+      "rule": "forbidden",
+      "subject": "GRAPHICCONTROLEXTENSION, COMMENTEXTENSION, PLAINTEXTEXTENTION, APPLICATIONEXTENTION",
+      "detail": "no extension block of any kind may appear in a stream whose Header declares version '87a'",
+      "condition": "only when GIFHEADER.Version is '87a'",
+      "description": "Extension blocks were introduced in GIF89a; an 87a stream containing one is out of spec.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 occurrences when the condition holds",
+      "generation_note": "gate every extension branch on the version chosen for the header, or simply always emit '89a'"
+    },
+    {
+      "rule": "requires",
+      "subject": "PLAINTEXTEXTENTION",
+      "detail": "requires a Global Color Table, because its foreground and background indices can only refer to the global table",
+      "description": "A Plain Text Extension has no colour table of its own and cannot be rendered without the global one.",
+      "corruption_risk": "medium",
+      "source": "spec",
+      "generation_bound": "0 or 1 per file",
+      "generation_note": "gate the plain-text branch on GlobalColorTableFlag being 1"
+    },
+    {
+      "rule": "ordering",
+      "subject": "UNDEFINEDDATA",
+      "detail": "occupies the same position as any other extension block, but its Label must avoid 0x01, 0xF9, 0xFE and 0xFF",
+      "description": "The fall-through branch is reached only when the two-byte peek matches none of the four known extensions.",
+      "corruption_risk": "high",
+      "source": "template",
+      "generation_bound": "0 or 1 per file",
+      "generation_note": "emit rarely and always with introducer 0x21 and a label outside the four handled values, so the file round-trips through the template's own dispatch chain",
+      "evidence": {
+        "line": 191,
+        "snippet": "} else {"
+      }
+    },
+    {
+      "rule": "ordering",
+      "subject": "the block introducer byte",
+      "detail": "at every block boundary the next byte must be 0x21 (extension), 0x2C (image separator) or 0x3B (trailer); nothing else is a legal block start",
+      "description": "The entire data-block stream is self-delimiting through these three bytes and one wrong byte desynchronises the rest of the file.",
+      "corruption_risk": "high",
+      "source": "both",
+      "generation_bound": "one introducer per block, at most 8 blocks",
+      "generation_note": "make the block element a tagged union over exactly these three introducers; never emit a random byte at a block boundary",
+      "evidence": {
+        "line": 104,
+        "snippet": "if (ReadUByte(FTell()) == 0x2C) {"
+      }
+    }
+  ],
+  "template_deviations": [
+    {
+      "subject": "GRAPHICCONTROLSUBBLOCK.BlockSize, PLAINTEXTSUBBLOCK.BlockSize, APPLICATIONSUBBLOCK.BlockSize",
+      "line": 142,
+      "issue": "All three block-size bytes are read into a field and then completely ignored: the template reads the following fixed-size fields unconditionally instead of using the size to bound them.",
+      "impact": "A generated file with a wrong block size parses fine under this template but desynchronises in every real decoder, which skips exactly BlockSize bytes.",
+      "action": "Emit 4, 12 and 11 respectively as invariants; never randomise these bytes."
+    },
+    {
+      "subject": "DATASUBBLOCKS.BlockTerminator and GRAPHICCONTROLEXTENSION.BlockTerminator",
+      "line": 52,
+      "issue": "Both terminators are declared as plain UBYTE fields with no check that they are zero. For DATASUBBLOCKS the while condition at line 45 happens to guarantee it; for the Graphic Control Extension nothing does.",
+      "impact": "A non-zero Graphic Control Extension terminator passes this template silently and breaks every conforming decoder.",
+      "action": "Treat both as hard fixed_value 0 during generation."
+    },
+    {
+      "subject": "UNDEFINEDDATA",
+      "line": 191,
+      "issue": "The fall-through branch assumes the next byte is 0x21 without checking. It is entered for ANY byte that is not 0x3B or 0x2C and any word that is not one of the four known extension words - including bytes that are not block introducers at all.",
+      "impact": "On malformed input the template consumes two arbitrary bytes and then misreads the following data as a sub-block chain, losing synchronisation for the rest of the file. For generation it means UNDEFINEDDATA.ExtensionIntroducer must be pinned to 0x21 and its Label must avoid the four handled values, or the file will not round-trip through its own grammar.",
+      "action": "Pin the introducer to 0x21 and exclude labels 0x01, 0xF9, 0xFE, 0xFF."
+    },
+    {
+      "subject": "struct DATA top-level loop",
+      "line": 102,
+      "issue": "while (ReadUByte(FTell()) != 0x3B) has no end-of-file guard. A stream with no trailer byte makes the loop read past the end of the file rather than terminating.",
+      "impact": "The trailer is not merely required by the spec, it is required for the template to terminate at all - which makes it the single highest-value fixed value in this format after the signature.",
+      "action": "Always emit the 0x3B trailer, and never let the evil-bit mechanism touch it."
+    },
+    {
+      "subject": "GIFHEADER.Version",
+      "line": 57,
+      "issue": "The version field is read but never compared, so the template accepts any three bytes and parses 89a-only extension blocks in a stream that declares 87a.",
+      "impact": "A generator that randomises this field produces internally inconsistent files.",
+      "action": "Emit '89a' unless deliberately generating an 87a stream, in which case suppress every extension block and both sort flags."
+    },
+    {
+      "subject": "LOGICALSCREENDESCRIPTOR.Width, LOGICALSCREENDESCRIPTOR.Height, IMAGEDESCRIPTOR.ImageWidth, IMAGEDESCRIPTOR.ImageHeight",
+      "line": 61,
+      "issue": "All four dimensions are unchecked ushorts, and nothing verifies that an image lies inside the logical screen.",
+      "impact": "Uniform random generation yields canvases up to 65535x65535, which makes a decoder allocate up to 4 GB from a 7-byte header, and images that overflow the canvas.",
+      "action": "Bound all four to the generation ranges recorded here and derive the image geometry from the canvas geometry."
+    },
+    {
+      "subject": "IMAGEDATA.LZWMinimumCodeSize",
+      "line": 133,
+      "issue": "Read as a plain UBYTE with no range check, no relationship to the colour table size, and no validation of the LZW stream that follows.",
+      "impact": "Values of 0, 1 or above 8 are structurally impossible to decode; the template accepts them all.",
+      "action": "Constrain to 2-8 and tie it to the active colour table exponent."
+    },
+    {
+      "subject": "DATASUBBLOCK payload semantics",
+      "line": 48,
+      "issue": "The template treats every sub-block chain identically as opaque bytes, so the LZW stream in IMAGEDATA, the ASCII comment text, the plain-text characters and the NETSCAPE loop record all reduce to char[size].",
+      "impact": "Nothing recorded in the template distinguishes a decodable image from random bytes; the LZW structure has to come entirely from the specification.",
+      "action": "For IMAGEDATA, generate a real LZW stream: Clear code, a run of literal codes below the colour table size, then End-of-Information, packed LSB-first at LZWMinimumCodeSize+1 bits."
+    },
+    {
+      "subject": "RGB.R, RGB.G, RGB.B",
+      "line": 33,
+      "issue": "Colour samples are genuinely free-form and carry no constraint of any kind.",
+      "impact": "None - this is noted only to record that their omission from the constraints map is deliberate rather than an oversight.",
+      "action": "Generate uniformly at random; only the entry COUNT is constrained, via the size exponents."
+    }
+  ]
+}

@@ -1,0 +1,3343 @@
+{
+  "meta": {
+    "format": "mp3",
+    "source_template": "templates_originals/mp3-orig.bt",
+    "model": "claude-opus-5",
+    "spec_reference": "ISO/IEC 11172-3:1993 (MPEG-1 Audio) and ISO/IEC 13818-3:1998 (MPEG-2 Audio, low sampling frequency extension) for the frame headers; \"ID3 tag version 2.3.0\" informal standard (3 February 1999) and \"ID3 tag version 2.4.0 - Main Structure / Native Frames\" (1 November 2000) for ID3v2; the \"ID3 made easy\" ID3v1 / ID3v1.1 informal standard for the appended tag; the Xing/LAME and Fraunhofer VBRI conventions for variable-bitrate headers.",
+    "schema_extensions": [
+      {
+        "name": "branch_variants",
+        "where": "constraints entries ID3v1_TAG.comment, ID3v2_FRAME.frame_data, ID3v2_4_FRAME.frame_data",
+        "why": "The schema keys constraints as STRUCT.field, but this template declares the same field name two or three times in mutually exclusive branches of one struct, with different widths and different length expressions each time. A JSON object cannot hold duplicate keys, so a single entry carries an array of variants, each with its own verbatim declaration line, width or length expression, and the condition that selects it. Dropping the extra declarations would have lost the ID3v1.0/1.1 comment width difference and the size-versus-size-minus-one frame payload rule."
+      },
+      {
+        "name": "unnamed_bitfields",
+        "where": "fifth top-level section",
+        "why": "Four anonymous padding bitfields carry a real must-be-zero constraint but have no identifier in the .bt, so no STRUCT.field key can name them without inventing a field name, which the hard rules forbid. They are recorded as a separate array keyed by container struct, bit width and line, preserving the constraint without fabricating a name."
+      },
+      {
+        "name": "lookahead_pools",
+        "where": "sixth top-level section",
+        "why": "This template declares six FormatFuzzer value-pool locals (lines 112, 329, 330, 331, 486, 496). These are precisely the compile-time mined value sets the prompt calls the highest-value entries, but they are file-scope locals rather than fields, so the per-field lookahead key cannot express which pool feeds which call site. The section records each pool's declaration, its values, every consuming site and whether the pooled values are actually productive - two of the six pools are not."
+      },
+      {
+        "name": "template_deviations",
+        "where": "seventh top-level section",
+        "why": "Fifteen places where the template's field layout or arithmetic disagrees with the published specification, including two the template's own header comment documents as bugs. The rewrite step must follow the specification rather than the template for each of these, so they need to be machine-readable rather than buried in description prose."
+      },
+      {
+        "name": "values_pool",
+        "where": "constraints entries MPEG_HEADER.mpeg_id, MPEG_HEADER.protection_bit, MPEG_HEADER.bitrate_index",
+        "why": "Records the <values=...> attribute attached to a field, the pool's declared contents and, where they disagree with the field's legal set, the specific problem. bitrate_index_values in particular pools two values the template itself rejects, which a generator must not inherit."
+      },
+      {
+        "name": "valid_results and valid_results_names",
+        "where": "constraints entry ID3v2_EXTENDED_HEADER.size",
+        "why": "The field is simultaneously a length (so the schema requires calculated_value with algorithm, covers and includes_self) and a two-valued enumeration fixed by the specification. Rather than choosing one type and losing the other fact, the calculated_value entry carries the permitted results alongside."
+      },
+      {
+        "name": "bitfield_layout",
+        "where": "every bitfield entry in FLAGS, FRAME_FLAGS, ID3v2_EXTENDED_HEADER and MPEG_HEADER",
+        "why": "BigEndian() is in effect from line 484 and the whole MPEG header is one uint32 of bitfields, so which physical bit a named flag occupies is decided by declaration order rather than by anything in the field name. A generator writing bytes rather than bitfields needs the mask."
+      },
+      {
+        "name": "byte_layout, array_length_algorithm, array_length_range, known_values, evidence.line and evidence.snippet on spec-sourced entries",
+        "where": "synchsafe_integer.raw; ID3v2_TAG.id3v2_padding; the two frame id entries; spec-sourced entries and dependencies throughout",
+        "why": "byte_layout gives the seven-bit packing of a synchsafe integer; array_length_algorithm and array_length_range let an array carry both a content constraint (all zero) and a separate length rule; known_values lists real-world frame identifiers that constrain nothing formally but strongly affect whether a decoder does anything with the frame. Spec-sourced entries keep a line and snippet in addition to the required note wherever the template does declare the field, so every rule stays anchored to a real location in the file."
+      }
+    ],
+    "structure_note": "An MP3 file has no container, no length prefix at file level and no terminator: it is an optional ID3v2 tag at offset 0, then a bare stream of self-delimiting MPEG audio frames laid end to end, then an optional 128-byte ID3v1 tag anchored to the end of the file. Each frame's length is derived from its own four-byte header, so the only thing marking one frame's end is the next frame's eleven-bit sync pattern appearing exactly there - which makes frame-length arithmetic, not any single magic value, the format's real structural anchor."
+  },
+  "constraints": {
+    "synchsafe_integer.raw": {
+      "type": "range_constraint",
+      "min": 0,
+      "max": 127,
+      "description": "The four bytes of an ID3v2 synchsafe integer; every byte must have its most significant bit clear, so each byte is 0-127 and the four together carry only 28 bits of magnitude.",
+      "corruption_risk": "high",
+      "field_type": "ubyte[4]",
+      "source": "both",
+      "evidence": {
+        "line": 73,
+        "snippet": "if (raw[0] >= 0x80  ||  raw[1] >= 0x80  ||"
+      },
+      "confidence": "high",
+      "endianness": "big",
+      "evil_bit_safe": false,
+      "byte_layout": "raw[0] is the most significant group of 7 bits and raw[3] the least; value = ((((raw[0]<<7)|raw[1])<<7|raw[2])<<7)|raw[3], exactly as computed on lines 65-71.",
+      "generation_range": {
+        "min": 0,
+        "max": 127,
+        "rationale": "Per byte. A synchsafe byte of 0x80 or more is what the template's own warning on line 76 flags; setting the high bit also risks creating a false MPEG frame sync (0xFF followed by >=0xE0) inside the tag header, which is the exact failure unsynchronisation exists to prevent."
+      },
+      "notes": "Used for ID3v2_HEADER.size and for ID3v2_4_FRAME.size. ID3v2.3 frame sizes are NOT synchsafe (plain uint32) - see ID3v2_FRAME.size."
+    },
+    "ID3v1_TAG.id": {
+      "type": "fixed_value",
+      "required_value": "TAG",
+      "required_value_hex": "0x544147",
+      "required_value_ascii": "TAG",
+      "description": "ID3v1 tag signature; the three ASCII bytes 'TAG' that open the final 128 bytes of the file.",
+      "corruption_risk": "high",
+      "field_type": "char[3]",
+      "source": "both",
+      "evidence": {
+        "line": 119,
+        "snippet": "char id[3]; // always must be \"TAG\""
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 505,
+        "values": [
+          21569
+        ],
+        "preferred": [
+          21569
+        ],
+        "note": "0x5441 is 'TA' read big-endian; line 507 then confirms the third byte with ReadUByte(seek_pos+2) == 0x47 ('G')."
+      },
+      "notes": "The main scan loop treats this signature as one of only two ways to leave the sync search (the other being a value >= 0xFFE0). Detected two bytes at a time on line 505 plus one byte on line 507."
+    },
+    "ID3v1_TAG.title": {
+      "type": "pattern_constraint",
+      "pattern": "^[\\x20-\\xFF]{0,30}\\x00*$ - up to 30 ISO-8859-1 characters, right-padded with 0x00 (0x20 is also seen in the wild); no length prefix and no terminator is required when all 30 bytes are used",
+      "description": "Song title, a fixed 30-byte ISO-8859-1 field padded with zero bytes.",
+      "corruption_risk": "low",
+      "field_type": "char[30]",
+      "source": "both",
+      "evidence": {
+        "line": 122,
+        "snippet": "char title[30];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "notes": "ID3v1 has no encoding byte; the charset is fixed at ISO-8859-1 by the specification. Content is free text, but the padding convention and the absence of any escape mean an embedded 0xFF/0xE0 pair here cannot create a false frame sync only because this field sits after all MPEG data."
+    },
+    "ID3v1_TAG.artist": {
+      "type": "pattern_constraint",
+      "pattern": "^[\\x20-\\xFF]{0,30}\\x00*$ - up to 30 ISO-8859-1 characters, zero-padded to exactly 30 bytes",
+      "description": "Performing artist, a fixed 30-byte zero-padded ISO-8859-1 field.",
+      "corruption_risk": "low",
+      "field_type": "char[30]",
+      "source": "both",
+      "evidence": {
+        "line": 125,
+        "snippet": "char artist[30];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true
+    },
+    "ID3v1_TAG.album": {
+      "type": "pattern_constraint",
+      "pattern": "^[\\x20-\\xFF]{0,30}\\x00*$ - up to 30 ISO-8859-1 characters, zero-padded to exactly 30 bytes",
+      "description": "Album title, a fixed 30-byte zero-padded ISO-8859-1 field.",
+      "corruption_risk": "low",
+      "field_type": "char[30]",
+      "source": "both",
+      "evidence": {
+        "line": 128,
+        "snippet": "char album[30];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true
+    },
+    "ID3v1_TAG.year": {
+      "type": "pattern_constraint",
+      "pattern": "^([0-9]{4}|\\x00{4}|\\x20{4})$ - four ASCII decimal digits, or four zero/space bytes when unknown",
+      "description": "Four-character release year; the specification permits only ASCII digits, so a non-digit here is a spec violation the template never checks.",
+      "corruption_risk": "low",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 131,
+        "snippet": "char year[4];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": "1999",
+      "notes": "No century marker and no room for one; this is a literal four-digit year, not an offset."
+    },
+    "ID3v1_TAG.comment": {
+      "type": "pattern_constraint",
+      "pattern": "^[\\x20-\\xFF]*\\x00*$ - ISO-8859-1 text zero-padded to the full field width, which is 30 bytes for ID3v1.0 and 28 bytes for ID3v1.1",
+      "description": "Free comment text whose width depends on the tag version: 28 bytes when an ID3v1.1 track number follows, 30 bytes otherwise.",
+      "corruption_risk": "medium",
+      "field_type": "char[28] or char[30]",
+      "source": "template",
+      "evidence": {
+        "line": 138,
+        "snippet": "char comment[28];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "branch_variants": [
+        {
+          "declaration": {
+            "line": 138,
+            "snippet": "char comment[28];"
+          },
+          "width": 28,
+          "condition": "ReadByte(FTell()+28) == 0 && ReadByte(FTell()+29) != 0 (line 133) - the ID3v1.1 layout"
+        },
+        {
+          "declaration": {
+            "line": 151,
+            "snippet": "char comment[30];"
+          },
+          "width": 30,
+          "condition": "otherwise - the ID3v1.0 layout"
+        }
+      ],
+      "notes": "Two separate declarations of the same field name in mutually exclusive branches of one struct, so a single key covers both; see branch_variants. Choosing the 28-byte form is what makes the track number reachable."
+    },
+    "ID3v1_TAG.zero": {
+      "type": "fixed_value",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "description": "The ID3v1.1 separator byte at offset 125 of the tag; it must be zero, and it is the sole marker distinguishing an ID3v1.1 tag from an ID3v1.0 tag whose comment happens to be 29 characters long.",
+      "corruption_risk": "high",
+      "field_type": "byte",
+      "source": "both",
+      "evidence": {
+        "line": 141,
+        "snippet": "byte zero;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadByte",
+        "call_site_line": 133,
+        "values": [
+          0
+        ],
+        "preferred": [
+          0
+        ],
+        "note": "ReadByte(FTell()+28) == 0 is the test that selects this branch; the byte it inspects is this field."
+      },
+      "notes": "A non-zero byte here silently reinterprets the last three bytes of the tag as comment text, losing the track number."
+    },
+    "ID3v1_TAG.track": {
+      "type": "range_constraint",
+      "min": 1,
+      "max": 255,
+      "description": "ID3v1.1 track number; must be non-zero, because a zero here is exactly the condition that makes the tag an ID3v1.0 tag instead.",
+      "corruption_risk": "high",
+      "field_type": "ubyte",
+      "source": "both",
+      "evidence": {
+        "line": 144,
+        "snippet": "ubyte track;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 1,
+        "max": 30,
+        "rationale": "Real track numbers on an album; values above about 30 are legal but never occur, and 0 is forbidden by the branch condition on line 133."
+      },
+      "lookahead": {
+        "function": "ReadByte",
+        "call_site_line": 133,
+        "values": [
+          0
+        ],
+        "preferred": [
+          1
+        ],
+        "note": "ReadByte(FTell()+29) != 0 inspects this field; the compared literal is 0 and the field must differ from it."
+      },
+      "notes": "This is the second half of the ID3v1.1 discriminator: zero byte at 125 AND non-zero byte at 126."
+    },
+    "ID3v1_TAG.genre": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147
+      ],
+      "value_names": [
+        "Blues",
+        "Classic_Rock",
+        "Country",
+        "Dance",
+        "Disco",
+        "Funk",
+        "Grunge",
+        "Hip_Hop",
+        "Jazz",
+        "Metal",
+        "New_Age",
+        "Oldies",
+        "Other",
+        "Pop",
+        "R_and_B",
+        "Rap",
+        "Reggae",
+        "Rock",
+        "Techno",
+        "Industrial",
+        "Alternative",
+        "Ska",
+        "Death_Metal",
+        "Pranks",
+        "Soundtrack",
+        "Euro_Techno",
+        "Ambient",
+        "Trip_Hop",
+        "Vocal",
+        "Jazz_Funk",
+        "Fusion",
+        "Trance",
+        "Classical",
+        "Instrumental",
+        "Acid",
+        "House",
+        "Game",
+        "Sound_Clip",
+        "Gospel",
+        "Noise",
+        "AlternRock",
+        "Bass",
+        "Soul",
+        "Punk",
+        "Space",
+        "Meditative",
+        "Instrumental_Pop",
+        "Instrumental_Rock",
+        "Ethnic",
+        "Gothic",
+        "Darkwave",
+        "Techno_Industrial",
+        "Electronic",
+        "Pop_Folk",
+        "Eurodance",
+        "Dream",
+        "Southern_Rock",
+        "Comedy",
+        "Cult",
+        "Gangsta",
+        "Top_40",
+        "Christian_Rap",
+        "Pop_Funk",
+        "Jungle",
+        "Native_American",
+        "Cabaret",
+        "New_Wave",
+        "Psychadelic",
+        "Rave",
+        "Showtunes",
+        "Trailer",
+        "Lo_Fi",
+        "Tribal",
+        "Acid_Punk",
+        "Acid_Jazz",
+        "Polka",
+        "Retro",
+        "Musical",
+        "Rock_n_Roll",
+        "Hard_Rock",
+        "Folk",
+        "Folk_Rock",
+        "National_Folk",
+        "Swing",
+        "Fast_Fusion",
+        "Bebob",
+        "Latin",
+        "Revival",
+        "Celtic",
+        "Bluegrass",
+        "Avantgarde",
+        "Gothic_Rock",
+        "Progressive_Rock",
+        "Psychedelic_Rock",
+        "Symphonic_Rock",
+        "Slow_Rock",
+        "Big_Band",
+        "Chorus",
+        "Easy_Listening",
+        "Acoustic",
+        "Humour",
+        "Speech",
+        "Chanson",
+        "Opera",
+        "Chamber_Music",
+        "Sonata",
+        "Symphony",
+        "Booty_Bass",
+        "Primus",
+        "Porn_Groove",
+        "Satire",
+        "Slow_Jam",
+        "Club",
+        "Tango",
+        "Samba",
+        "Folklore",
+        "Ballad",
+        "Power_Ballad",
+        "Rhythmic_Soul",
+        "Freestyle",
+        "Duet",
+        "Punk_Rock",
+        "Drum_Solo",
+        "A_capella",
+        "Euro_House",
+        "Dance_Hall",
+        "Goa",
+        "Drum_and_Bass",
+        "Club_House",
+        "Hardcore",
+        "Terror",
+        "Indie",
+        "BritPop",
+        "Negerpunk",
+        "Polsk_Punk",
+        "Beat",
+        "Christian",
+        "Heavy_Metal",
+        "Black_Metal",
+        "Crossover",
+        "Contemporary",
+        "Christian_Rock",
+        "Merengue",
+        "Salsa",
+        "Thrash_Metal",
+        "Anime",
+        "JPop",
+        "Synthpop"
+      ],
+      "description": "Genre index into the ID3v1 genre table; the template's ID3_GENRES enum defines 0-147 and 255 means 'unset'.",
+      "corruption_risk": "low",
+      "field_type": "ID3_GENRES (ubyte)",
+      "source": "both",
+      "evidence": {
+        "line": 155,
+        "snippet": "ID3_GENRES genre;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": 17,
+      "notes": "Values 0-79 are the original Winamp list; 80-147 are the Winamp extensions the template also carries. 148-254 are undefined and 255 (0xFF) is the conventional 'no genre' marker, neither of which appears in the enum - see the dependency covering 255."
+    },
+    "ID3v2_HEADER.head": {
+      "type": "fixed_value",
+      "required_value": "ID3",
+      "required_value_hex": "0x494433",
+      "required_value_ascii": "ID3",
+      "description": "ID3v2 tag signature; the three ASCII bytes 'ID3' that must sit at file offset 0 for a prepended tag to be recognised.",
+      "corruption_risk": "high",
+      "field_type": "char[3]",
+      "source": "both",
+      "evidence": {
+        "line": 163,
+        "snippet": "char head[3]; // always must be \"ID3\" ($49 44 33)"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 488,
+        "values": [
+          "ID3"
+        ],
+        "preferred": [
+          "ID3"
+        ],
+        "note": "ReadBytes(buf, 0, 3, buf_values) with buf_values declared on line 486 as { \"ID3\" }; the absolute offset 0 in the call is what pins the tag to the start of the file."
+      },
+      "notes": "This is the single highest-value anchor in the format for FormatFuzzer: the value pool on line 486 is a compile-time mined set of exactly one string, and the comparison on line 490 is the only gate on the entire ID3v2 branch."
+    },
+    "ID3v2_HEADER.ver_major": {
+      "type": "enumerated_values",
+      "valid_values": [
+        2,
+        3,
+        4
+      ],
+      "value_names": [
+        "ID3v2.2",
+        "ID3v2.3",
+        "ID3v2.4"
+      ],
+      "description": "ID3v2 major version; the specification defines 2, 3 and 4, this template parses only 3 and 4 structurally, and the value 0xFF is explicitly forbidden.",
+      "corruption_risk": "high",
+      "field_type": "ubyte",
+      "source": "both",
+      "evidence": {
+        "line": 167,
+        "snippet": "ubyte ver_major; // this byte will never be $FF"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 3,
+      "notes": "Line 289 rejects 0xFF outright and line 295 diverts anything other than 3 or 4 into an opaque id3v2_data blob, so generating 2 produces a file the template will not walk into. Version 3 is the most widely supported by real decoders and keeps frame sizes as plain integers."
+    },
+    "ID3v2_HEADER.ver_revision": {
+      "type": "fixed_value",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "description": "ID3v2 minor revision; every published ID3v2 revision is 0, and the template pins the field to 0 with an initial-value list.",
+      "corruption_risk": "medium",
+      "field_type": "ubyte",
+      "source": "both",
+      "evidence": {
+        "line": 168,
+        "snippet": "ubyte ver_revision = { 0 }; // this byte will never be $FF"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "notes": "The '= { 0 }' suffix is a value list, so a generator should emit 0. The specification's only hard rule is that this byte is never 0xFF (line 289 enforces exactly that); values 1-254 are structurally parseable but no such revision exists."
+    },
+    "FLAGS.UNSYNCHRONISATION_USED": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "not unsynchronised",
+        "unsynchronised"
+      ],
+      "description": "Bit 7 of the ID3v2 header flags; when set, every 0xFF byte in the tag body has been followed by an inserted 0x00 so that no false MPEG frame sync can occur inside the tag.",
+      "corruption_risk": "high",
+      "field_type": "ubyte : 1",
+      "source": "both",
+      "evidence": {
+        "line": 171,
+        "snippet": "ubyte UNSYNCHRONISATION_USED  : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Declared first in struct FLAGS, so under BigEndian() it occupies the most significant bit (0x80) of the flags byte.",
+      "notes": "Setting this bit without actually performing the unsynchronisation scheme makes every declared frame size wrong, because the sizes describe the unsynchronised (encoded) bytes. Line 295 makes the template abandon structural parsing when this bit is set, so 0 is the only productive value."
+    },
+    "FLAGS.EXTENDED_HEADER_PRESENT": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "no extended header",
+        "extended header follows"
+      ],
+      "description": "Bit 6 of the ID3v2 header flags; when set, an ID3v2_EXTENDED_HEADER must immediately follow the ten-byte header.",
+      "corruption_risk": "high",
+      "field_type": "ubyte : 1",
+      "source": "both",
+      "evidence": {
+        "line": 172,
+        "snippet": "ubyte EXTENDED_HEADER_PRESENT : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Second bit declared, so mask 0x40 of the flags byte.",
+      "notes": "This is a presence flag, not a hint: setting it with no extended header present shifts every subsequent frame by at least ten bytes."
+    },
+    "FLAGS.EXPERIMENTAL_TAG": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "final",
+        "experimental"
+      ],
+      "description": "Bit 5 of the ID3v2 header flags, marking the tag as an experimental stage tag.",
+      "corruption_risk": "medium",
+      "field_type": "ubyte : 1",
+      "source": "both",
+      "evidence": {
+        "line": 173,
+        "snippet": "ubyte EXPERIMENTAL_TAG        : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": 0,
+      "bitfield_layout": "Third bit declared, so mask 0x20 of the flags byte.",
+      "notes": "Purely advisory in the specification, but line 295 treats it exactly like unsynchronisation and refuses to parse frames, so 0 is required to reach any frame structure."
+    },
+    "ID3v2_HEADER.size": {
+      "type": "calculated_value",
+      "algorithm": "synchsafe 28-bit big-endian byte count: ((((raw[0]<<7)|raw[1])<<7|raw[2])<<7)|raw[3]",
+      "covers": "every byte of the tag after the ten-byte header, that is the extended header if present plus all frames plus all padding, and excluding the header itself and excluding any ID3v2.4 footer",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "ID3v2_EXTENDED_HEADER.size",
+        "ID3v2_FRAME.size",
+        "ID3v2_4_FRAME.size",
+        "ID3v2_EXTENDED_HEADER.padding_sz"
+      ],
+      "description": "Total size of the ID3v2 tag body; equals total tag size minus 10, stored as a synchsafe integer so no byte reaches 0x80.",
+      "corruption_risk": "high",
+      "field_type": "synchsafe_integer",
+      "source": "both",
+      "evidence": {
+        "line": 179,
+        "snippet": "synchsafe_integer size; // Is the size of the complete tag after unsynchronisation,"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 11,
+        "max": 4096,
+        "rationale": "The synchsafe encoding permits up to 2^28-1 (256 MB) of tag body. A tag larger than a few kilobytes is pure padding or embedded artwork and only slows generation; the true maximum stays in the algorithm, this is the practical cap. The minimum of 11 reflects the specification's rule that a tag contains at least one frame and a frame is at least one byte beyond its ten-byte header."
+      },
+      "notes": "Line 282 copies this into the local tag_sz and lines 321 and 324 both use 'tag_sz + sizeof(hdr)', where sizeof(hdr) is 10, to locate the end of the tag. Getting this wrong does not corrupt the tag alone: it relocates where the MPEG frame scan begins."
+    },
+    "ID3v2_EXTENDED_HEADER.size": {
+      "type": "calculated_value",
+      "algorithm": "byte count, plain big-endian uint32 (NOT synchsafe in ID3v2.3)",
+      "covers": "the extended header bytes that follow this field: the two-byte extended flags, the four-byte padding_sz, and the four-byte crc when present; it excludes this size field itself",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "ID3v2_EXTENDED_HEADER.FLAG_CRC_PRESENT"
+      ],
+      "description": "Length of the remainder of the ID3v2.3 extended header; the specification permits exactly two values, 6 without a CRC and 10 with one.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 192,
+        "snippet": "uint32 size; // extended header size, excluding this 'size' field"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "valid_results": [
+        6,
+        10
+      ],
+      "valid_results_names": [
+        "no CRC data",
+        "CRC data present"
+      ],
+      "generation_range": {
+        "min": 6,
+        "max": 10,
+        "rationale": "The only two legal values; any other makes the tag body length disagree with the frames that follow."
+      },
+      "notes": "This is both a length and a two-valued enumeration, which is why valid_results is carried alongside the calculated_value keys. Note that the template reads it as a plain uint32, which is correct for ID3v2.3 but wrong for ID3v2.4, where the extended header size is synchsafe and includes itself."
+    },
+    "ID3v2_EXTENDED_HEADER.FLAG_CRC_PRESENT": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "no CRC",
+        "CRC data present"
+      ],
+      "description": "Bit 15 of the extended header flags word; when set, a four-byte CRC follows padding_sz and the extended header size must be 10.",
+      "corruption_risk": "high",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 194,
+        "snippet": "uint16 FLAG_CRC_PRESENT :  1;   // extended header flags"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Declared first in a uint16 under BigEndian(), so it is the most significant bit of the two-byte flags word, mask 0x8000.",
+      "notes": "Controls both a field's presence (line 199) and the legal value of ID3v2_EXTENDED_HEADER.size; the two must agree or the frame stream starts four bytes off."
+    },
+    "ID3v2_EXTENDED_HEADER.padding_sz": {
+      "type": "calculated_value",
+      "algorithm": "byte count of the zero padding that trails the frames inside the tag",
+      "covers": "the run of 0x00 bytes between the last frame and the end of the tag body, which the template reads as ID3v2_TAG.id3v2_padding",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "ID3v2_HEADER.size",
+        "ID3v2_EXTENDED_HEADER.size",
+        "ID3v2_FRAME.size"
+      ],
+      "description": "Declared number of padding bytes inside the tag; it must equal the actual trailing zero run, and it is counted inside ID3v2_HEADER.size.",
+      "corruption_risk": "medium",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 197,
+        "snippet": "uint32 padding_sz;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 1024,
+        "rationale": "A uint32 nominally reaches 4294967295 and the specification's only bound is that padding fits inside the tag. Real files use a kilobyte or so to allow in-place tag editing; anything larger is dead bytes that inflate every generated file."
+      },
+      "notes": "The specification requires padding to be entirely zero bytes and forbids it after an ID3v2.4 footer. Because the template computes the actual padding length on line 324 from tag_sz rather than from this field, a mismatch here is invisible to the template but breaks conforming readers."
+    },
+    "ID3v2_EXTENDED_HEADER.crc": {
+      "type": "calculated_value",
+      "algorithm": "CRC-32/ISO-HDLC (the ISO 3309 / ITU-T V.42 polynomial 0x04C11DB7, as used by ZIP and PNG)",
+      "covers": "all frames and all padding inside the tag, that is everything between the end of the extended header and the end of the tag body; it excludes the ten-byte header and the whole extended header",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "ID3v2_HEADER.size",
+        "ID3v2_EXTENDED_HEADER.padding_sz"
+      ],
+      "description": "Optional CRC-32 over the tag's frame data and padding, present only when FLAG_CRC_PRESENT is set.",
+      "corruption_risk": "medium",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 202,
+        "snippet": "uint32 crc;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "notes": "No reader is obliged to verify this, which is why the risk is medium rather than high; but a conforming reader that does verify will discard the entire tag on a mismatch. Generating a wrong CRC is a genuinely interesting fuzz input, hence evil_bit_safe true."
+    },
+    "FRAME_FLAGS.TAG_ALTER_PRESERV": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "clear",
+        "set"
+      ],
+      "description": "Tag alter preservation flag; when set, a reader that alters the tag must discard this frame.",
+      "corruption_risk": "medium",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 208,
+        "snippet": "uint16 TAG_ALTER_PRESERV  : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": 0,
+      "bitfield_layout": "Bit 0x8000 of the two-byte ID3v2.3 frame flags word under BigEndian(); the word is %abc00000 %ijk00000 and this is flag a."
+    },
+    "FRAME_FLAGS.FILE_ALTER_PRESERV": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "clear",
+        "set"
+      ],
+      "description": "File alter preservation flag; when set, a reader that alters the audio data must discard this frame.",
+      "corruption_risk": "medium",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 209,
+        "snippet": "uint16 FILE_ALTER_PRESERV : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": 0,
+      "bitfield_layout": "Bit 0x4000 of the two-byte ID3v2.3 frame flags word under BigEndian(); the word is %abc00000 %ijk00000 and this is flag b."
+    },
+    "FRAME_FLAGS.READ_ONLY_FRAME": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "clear",
+        "set"
+      ],
+      "description": "Read-only flag; the frame contents are not intended to be changed.",
+      "corruption_risk": "low",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 210,
+        "snippet": "uint16 READ_ONLY_FRAME    : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": 0,
+      "bitfield_layout": "Bit 0x2000 of the two-byte ID3v2.3 frame flags word under BigEndian(); the word is %abc00000 %ijk00000 and this is flag c."
+    },
+    "FRAME_FLAGS.COMPRESSED_FRAME": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "clear",
+        "set"
+      ],
+      "description": "Compression flag; when set, the frame data is zlib-compressed and is preceded by a four-byte big-endian decompressed size, which the template does not read.",
+      "corruption_risk": "high",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 212,
+        "snippet": "uint16 COMPRESSED_FRAME   : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Bit 0x0080 of the two-byte ID3v2.3 frame flags word under BigEndian(); the word is %abc00000 %ijk00000 and this is flag i.",
+      "notes": "Setting this bit changes the frame's internal layout: the specification prepends a four-byte 'decompressed size' before the compressed bytes, so the template's frame_data array silently swallows it. Generating 1 here without that prefix produces a frame no conforming decoder can read."
+    },
+    "FRAME_FLAGS.ENCRYPTED_FRAME": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "clear",
+        "set"
+      ],
+      "description": "Encryption flag; when set, the frame data is preceded by a one-byte encryption method identifier which the template does not read.",
+      "corruption_risk": "high",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 213,
+        "snippet": "uint16 ENCRYPTED_FRAME    : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Bit 0x0040 of the two-byte ID3v2.3 frame flags word under BigEndian(); the word is %abc00000 %ijk00000 and this is flag j.",
+      "notes": "Like compression, this bit adds a prefix byte the template does not account for. It also requires a matching ENCR frame elsewhere in the tag to define the method."
+    },
+    "FRAME_FLAGS.GROUP_MEMBER_FRAME": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "clear",
+        "set"
+      ],
+      "description": "Grouping flag; when set, the frame data is preceded by a one-byte group identifier which the template does not read.",
+      "corruption_risk": "high",
+      "field_type": "uint16 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 214,
+        "snippet": "uint16 GROUP_MEMBER_FRAME : 1;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Bit 0x0020 of the two-byte ID3v2.3 frame flags word under BigEndian(); the word is %abc00000 %ijk00000 and this is flag k.",
+      "notes": "Requires a matching GRID frame in the same tag to define the group symbol."
+    },
+    "ID3v2_FRAME.id": {
+      "type": "pattern_constraint",
+      "pattern": "^[A-Z0-9]{4}$ - exactly four characters drawn from the capital letters A-Z and the digits 0-9; identifiers beginning with 'X', 'Y' or 'Z' are reserved for experimental use",
+      "description": "Four-character ID3v2.3 frame identifier; the template's comment calls them 'four alpha chars' and the specification restricts them to upper-case letters and digits.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 221,
+        "snippet": "char id[4]; // four alpha chars"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": "TIT2",
+      "known_values": [
+        "TIT2",
+        "TPE1",
+        "TALB",
+        "TYER",
+        "TRCK",
+        "TCON",
+        "TLEN",
+        "TENC",
+        "COMM",
+        "APIC",
+        "PRIV",
+        "TXXX",
+        "USLT",
+        "WXXX",
+        "MCDI",
+        "TSSE"
+      ],
+      "notes": "The template branches on id[0] == 'T' (line 229) alone, so any identifier starting with 'T' is treated as a text frame and given a leading encoding byte. A frame identifier of four zero bytes is how readers detect the start of padding, so all-zero is not a legal identifier but is the conventional end-of-frames signal - see the loop condition on line 321."
+    },
+    "ID3v2_FRAME.size": {
+      "type": "calculated_value",
+      "algorithm": "byte count, plain big-endian uint32 (ID3v2.3 frame sizes are NOT synchsafe)",
+      "covers": "the frame's data bytes only: everything after the ten-byte frame header, excluding the four-byte identifier, this size field and the two flag bytes; when the compression, encryption or grouping flags are set it also covers the extra prefix bytes those flags introduce",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "FRAME_FLAGS.COMPRESSED_FRAME",
+        "FRAME_FLAGS.ENCRYPTED_FRAME",
+        "FRAME_FLAGS.GROUP_MEMBER_FRAME"
+      ],
+      "description": "Size of this frame's data excluding its ten-byte header; the specification requires it to be at least 1.",
+      "corruption_risk": "high",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 225,
+        "snippet": "uint32 size; // frame size without frame header"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 1,
+        "max": 256,
+        "rationale": "The field is a full uint32, so the spec bound is 4294967295 - a single frame could claim four gigabytes. The template allocates frame_data of exactly this length on lines 235, 238 and 243, so an uncapped value produces an enormous array and dominates runtime. Real text frames are tens of bytes; 256 covers everything but embedded artwork. The minimum of 1 is the specification's own rule (see the comment on lines 308-309)."
+      },
+      "notes": "A crucial difference from ID3v2_4_FRAME.size, which is synchsafe. Emitting a v2.3 frame size as synchsafe, or a v2.4 size as plain, shifts every following frame."
+    },
+    "ID3v2_FRAME.id_asciiz_str": {
+      "type": "fixed_value",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "description": "The text-encoding byte at the head of a text frame; the template only takes this branch when the byte is already zero, which is ISO-8859-1.",
+      "corruption_risk": "high",
+      "field_type": "byte",
+      "source": "both",
+      "evidence": {
+        "line": 234,
+        "snippet": "byte id_asciiz_str;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "lookahead": {
+        "function": "ReadByte",
+        "call_site_line": 232,
+        "values": [
+          0
+        ],
+        "preferred": [
+          0
+        ],
+        "note": "ReadByte(FTell()) == 0 && size > 1 is the guard on line 232; the byte it reads is this field."
+      },
+      "notes": "Really the ID3v2.3 text encoding byte, whose legal values are 0 (ISO-8859-1) and 1 (UTF-16 with BOM). The template's branch structure means a value of 1 is parsed as the first character of frame_data instead, so only 0 keeps the template's field layout and the specification's layout in agreement."
+    },
+    "ID3v2_FRAME.frame_data": {
+      "type": "calculated_value",
+      "algorithm": "array length derived from the frame header: size for a non-text frame or a text frame whose first byte is non-zero, and size - 1 for a text frame whose encoding byte was consumed separately",
+      "covers": "the frame payload bytes that follow the ten-byte frame header and, in the text-frame case, the one encoding byte",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "ID3v2_FRAME.size",
+        "ID3v2_FRAME.id",
+        "ID3v2_FRAME.id_asciiz_str"
+      ],
+      "description": "The frame payload; its content is free but its length is fully determined by size and by whether the encoding byte was split off.",
+      "corruption_risk": "high",
+      "field_type": "char[size - 1] / char[size] / ubyte[size]",
+      "source": "template",
+      "evidence": {
+        "line": 235,
+        "snippet": "char frame_data [size - 1];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "branch_variants": [
+        {
+          "declaration": {
+            "line": 235,
+            "snippet": "char frame_data [size - 1];"
+          },
+          "length_expr": "size - 1",
+          "condition": "id[0] == 'T' and the next byte is 0 and size > 1"
+        },
+        {
+          "declaration": {
+            "line": 238,
+            "snippet": "char frame_data [size];"
+          },
+          "length_expr": "size",
+          "condition": "id[0] == 'T' but the next byte is not 0, or size <= 1"
+        },
+        {
+          "declaration": {
+            "line": 243,
+            "snippet": "ubyte frame_data [size];"
+          },
+          "length_expr": "size",
+          "condition": "id[0] != 'T' - a binary frame"
+        }
+      ],
+      "notes": "Three declarations of one field name across mutually exclusive branches of a single struct, so one key covers all three; see branch_variants. Payload content is free-form, but the length identity is not, and it is the identity that keeps the frame stream aligned."
+    },
+    "ID3v2_4_FRAME.id": {
+      "type": "pattern_constraint",
+      "pattern": "^[A-Z0-9]{4}$ - exactly four characters drawn from A-Z and 0-9",
+      "description": "Four-character ID3v2.4 frame identifier, same character set as ID3v2.3 but with a partly different set of defined identifiers.",
+      "corruption_risk": "high",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 250,
+        "snippet": "char id[4]; // four alpha chars"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": "TIT2",
+      "known_values": [
+        "TIT2",
+        "TPE1",
+        "TALB",
+        "TDRC",
+        "TRCK",
+        "TCON",
+        "TLEN",
+        "TENC",
+        "COMM",
+        "APIC",
+        "PRIV",
+        "TXXX",
+        "USLT",
+        "WXXX",
+        "TSSE",
+        "TDRL"
+      ],
+      "notes": "ID3v2.4 replaced TYER/TDAT/TIME with the single TDRC and dropped several v2.3 identifiers; a v2.3-only identifier inside a v2.4 tag is structurally parseable but semantically invalid."
+    },
+    "ID3v2_4_FRAME.size": {
+      "type": "calculated_value",
+      "algorithm": "synchsafe 28-bit big-endian byte count: ((((raw[0]<<7)|raw[1])<<7|raw[2])<<7)|raw[3]",
+      "covers": "the frame's data bytes only, excluding the ten-byte frame header; for a text frame this includes the one-byte encoding field, which is why the template reads size.computed - 1 payload bytes after it",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "ID3v2_4_FRAME.encoding",
+        "FRAME_FLAGS.COMPRESSED_FRAME",
+        "FRAME_FLAGS.ENCRYPTED_FRAME",
+        "FRAME_FLAGS.GROUP_MEMBER_FRAME"
+      ],
+      "description": "Size of this ID3v2.4 frame's data excluding its header, stored as a synchsafe integer so that no byte reaches 0x80.",
+      "corruption_risk": "high",
+      "field_type": "synchsafe_integer",
+      "source": "both",
+      "evidence": {
+        "line": 254,
+        "snippet": "synchsafe_integer size; // frame size without frame header"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "generation_range": {
+        "min": 1,
+        "max": 256,
+        "rationale": "The synchsafe encoding tops out at 2^28-1, so a single frame could claim 256 MB and the template would allocate exactly that on line 268 or 273. Real frames are tens of bytes. The floor of 1 is the specification's minimum frame data size, and for a text frame the encoding byte alone already requires size >= 1."
+      },
+      "notes": "The change from v2.3's plain uint32 to a synchsafe integer is the single most consequential difference between the two frame layouts, and it is why the template needs two separate frame structs at all."
+    },
+    "ID3v2_4_FRAME.encoding": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "ISO_8859_1",
+        "UTF_16_with_BOM",
+        "UTF_16BE_without_BOM",
+        "UTF_8"
+      ],
+      "description": "Text encoding byte that opens every ID3v2.4 text frame; the four values are exactly the encodings ID3v2.4 defines.",
+      "corruption_risk": "high",
+      "field_type": "enum <ubyte> (anonymous)",
+      "source": "both",
+      "evidence": {
+        "line": 266,
+        "snippet": "} encoding;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "notes": "Values 4-255 are undefined and cause conforming readers to reject the frame. ISO-8859-1 is preferred because it needs no BOM and one byte per character, so the frame data has no further internal structure to satisfy. Note ID3v2.3 defines only values 0 and 1; encodings 2 and 3 are new in v2.4."
+    },
+    "ID3v2_4_FRAME.frame_data": {
+      "type": "calculated_value",
+      "algorithm": "array length derived from the synchsafe frame size: size.computed - 1 for a text frame, whose one encoding byte has already been consumed, and size.computed for a binary frame",
+      "covers": "the frame payload bytes that follow the ten-byte frame header and, for a text frame, the encoding byte",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "ID3v2_4_FRAME.size",
+        "ID3v2_4_FRAME.id",
+        "ID3v2_4_FRAME.encoding"
+      ],
+      "description": "The ID3v2.4 frame payload; free content, but a length wholly determined by the synchsafe size field and the frame's text/binary branch.",
+      "corruption_risk": "high",
+      "field_type": "char[size.computed - 1] / ubyte[size.computed]",
+      "source": "template",
+      "evidence": {
+        "line": 268,
+        "snippet": "char frame_data [size.computed - 1];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "branch_variants": [
+        {
+          "declaration": {
+            "line": 268,
+            "snippet": "char frame_data [size.computed - 1];"
+          },
+          "length_expr": "size.computed - 1",
+          "condition": "id[0] == 'T' - a text frame, after the encoding byte"
+        },
+        {
+          "declaration": {
+            "line": 273,
+            "snippet": "ubyte frame_data [size.computed];"
+          },
+          "length_expr": "size.computed",
+          "condition": "id[0] != 'T' - a binary frame"
+        }
+      ],
+      "notes": "Unlike the ID3v2.3 branch, this one has no 'size > 1' guard, so a text frame declaring size 0 makes the template request an array of length -1."
+    },
+    "ID3v2_TAG.id3v2_data": {
+      "type": "calculated_value",
+      "algorithm": "array length equal to the tag body size taken verbatim from the header's synchsafe size field",
+      "covers": "the entire tag body of an ID3v2 version the template will not walk into: everything after the ten-byte header, read as opaque bytes",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "ID3v2_HEADER.size",
+        "ID3v2_HEADER.ver_major",
+        "FLAGS.UNSYNCHRONISATION_USED",
+        "FLAGS.EXPERIMENTAL_TAG"
+      ],
+      "description": "Opaque fallback array covering a whole tag body whenever the version is not 3 or 4, or unsynchronisation or the experimental flag is set.",
+      "corruption_risk": "high",
+      "field_type": "ubyte[tag_sz]",
+      "source": "template",
+      "evidence": {
+        "line": 300,
+        "snippet": "ubyte id3v2_data[tag_sz];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 0,
+        "max": 4096,
+        "rationale": "Inherits the practical cap on ID3v2_HEADER.size; the array is allocated at exactly that length."
+      },
+      "notes": "Reaching this branch means no frame structure is generated at all, which is why ver_major 3 or 4 with clear unsynchronisation and experimental flags is strongly preferred."
+    },
+    "ID3v2_TAG.id3v2_padding": {
+      "type": "fixed_value",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "description": "Zero padding filling the gap between the last frame and the end of the tag body; the specification requires every padding byte to be 0x00.",
+      "corruption_risk": "medium",
+      "field_type": "ubyte[tag_sz + sizeof(hdr) - FTell()]",
+      "source": "both",
+      "evidence": {
+        "line": 324,
+        "snippet": "ubyte id3v2_padding [ tag_sz + sizeof(hdr) - FTell() ];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "array_length_algorithm": "tag_sz + sizeof(hdr) - FTell(), where tag_sz is ID3v2_HEADER.size.computed and sizeof(hdr) is 10; that is, whatever is left of the declared tag body after the frames have been read",
+      "array_length_range": {
+        "min": 0,
+        "max": 4294967295
+      },
+      "generation_range": {
+        "min": 0,
+        "max": 1024,
+        "rationale": "The declared tag size can leave an arbitrarily large padding run. A kilobyte matches real files that reserve room for later tag edits; larger runs are dead weight in every generated file. Note the expression is unsigned, so if the frames overshoot the declared tag size this length underflows to a near-4GB array."
+      },
+      "notes": "A non-zero byte here is what stops a conforming reader early: padding is defined as a run of zeroes, and the first non-zero byte is taken as the start of a frame identifier. This is the same rule the template's own loop exit on line 321 relies on."
+    },
+    "MPEG_HEADER.frame_sync": {
+      "type": "enumerated_values",
+      "valid_values": [
+        4094,
+        4095
+      ],
+      "value_names": [
+        "0xFFE - MPEG 2.5 or reserved version",
+        "0xFFF - MPEG-2 or MPEG-1"
+      ],
+      "description": "The template's twelve-bit sync field: the eleven mandatory frame-sync bits, which must all be 1, plus the high bit of the two-bit MPEG version field that follows them.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 12",
+      "source": "both",
+      "evidence": {
+        "line": 342,
+        "snippet": "uint32 frame_sync        : 12;   // A"
+      },
+      "confidence": "high",
+      "endianness": "big",
+      "evil_bit_safe": false,
+      "preferred_value": 4095,
+      "bitfield_layout": "Declared first in a uint32 under BigEndian(), so it occupies the top twelve bits of the four header bytes: all eight bits of byte 0 and the top four bits of byte 1. The header as a whole is AAAAAAAA AAABBCCD EEEEFFGH IIJJKLMM (comment on line 334), where A is the eleven-bit sync and BB the version; this field is AAAAAAAAAAA plus the first B.",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 505,
+        "values": [
+          21569
+        ],
+        "preferred": [
+          65535
+        ],
+        "note": "The scan loop reads a big-endian ushort and accepts the frame when data >= 0xFFE0 (lines 510, 518, 520). The declared value pool on line 496 contains only 0x5441, the ID3v1 'TA' signature, so FormatFuzzer mines no sync value from this call site at all - the >= 0xFFE0 threshold is a range test, not an equality, and never contributes a literal."
+      },
+      "generation_range": {
+        "min": 4095,
+        "max": 4095,
+        "rationale": "0xFFE means the two-bit version is 00 or 01, that is MPEG 2.5 or the reserved version. The template does not support MPEG 2.5 at all (TODO on line 29) and the reserved version is invalid outright, so only 0xFFF yields a frame both the template and a real decoder will accept."
+      },
+      "notes": "This is the anchor that makes a file an MP3 at all, and the one bit pattern a generator must never perturb. A 'sync' of 0xFFE0 or greater is all this parser demands, but the specification requires eleven set bits followed by a version that is not 01."
+    },
+    "MPEG_HEADER.mpeg_id": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "MPEG-2 (when frame_sync is 0xFFF) or MPEG 2.5 (when 0xFFE)",
+        "MPEG-1 (when frame_sync is 0xFFF) or reserved (when 0xFFE)"
+      ],
+      "description": "The low bit of the two-bit MPEG version field; combined with the low bit of frame_sync it gives version 00 = MPEG 2.5, 01 = reserved, 10 = MPEG-2, 11 = MPEG-1.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 346,
+        "snippet": "uint32 mpeg_id           :  1<values=mpeg_id_values>;   // B"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 1,
+      "bitfield_layout": "Bit B (the second of the two version bits) at mask 0x00080000 of the big-endian header word.",
+      "values_pool": {
+        "local": "mpeg_id_values",
+        "line": 329,
+        "declared_values": [
+          1,
+          2
+        ],
+        "problem": "The pool declares 2, which a one-bit field cannot hold; only the value 1 in that pool is reachable."
+      },
+      "notes": "Selects the sampling-frequency table (line 442 doubles the frequency for MPEG-1) and, for Layer III, the whole bitrate table (lines 402 and 408). MPEG-1 is preferred because it is what every decoder supports and what the template's frame-size arithmetic is tuned for."
+    },
+    "MPEG_HEADER.layer_id": {
+      "type": "enumerated_values",
+      "valid_values": [
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "Layer III",
+        "Layer II",
+        "Layer I"
+      ],
+      "description": "Two-bit layer selector; 0 is reserved and rejected by the template's own sanity check, 1 is Layer III, 2 is Layer II and 3 is Layer I.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 2",
+      "source": "both",
+      "evidence": {
+        "line": 347,
+        "snippet": "uint32 layer_id          :  2;   // C"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 1,
+      "bitfield_layout": "Bits CC at mask 0x00060000 of the big-endian header word.",
+      "notes": "Line 375 rejects layer_id == 0 explicitly. Layer III is preferred: it is what the .mp3 extension means, and it is the branch the template's most-developed bitrate arithmetic covers (lines 402-428). Note the encoding is inverted relative to the layer number - layer 3 in the field means Layer I."
+    },
+    "MPEG_HEADER.protection_bit": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "CRC protected - a 16-bit checksum follows the header",
+        "no CRC"
+      ],
+      "description": "Protection bit; the sense is inverted, so 0 means a CRC-16 checksum follows the four header bytes and 1 means no checksum.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 348,
+        "snippet": "uint32 protection_bit    :  1<values=protection_bit_values>;   // D"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 1,
+      "bitfield_layout": "Bit D at mask 0x00010000 of the big-endian header word.",
+      "values_pool": {
+        "local": "protection_bit_values",
+        "line": 330,
+        "declared_values": [
+          0,
+          1
+        ],
+        "problem": null
+      },
+      "notes": "A presence flag, not a hint: it decides whether MPEG_HEADER.checksum exists (line 359) and it shifts every frame-size computation by two bytes (lines 380, 450, 452). Value 1 is preferred because it removes the need to compute a correct CRC-16 over the header and side information."
+    },
+    "MPEG_HEADER.bitrate_index": {
+      "type": "enumerated_values",
+      "valid_values": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
+      "value_names": [
+        "index 1",
+        "index 2",
+        "index 3",
+        "index 4",
+        "index 5",
+        "index 6",
+        "index 7",
+        "index 8",
+        "index 9",
+        "index 10",
+        "index 11",
+        "index 12",
+        "index 13",
+        "index 14"
+      ],
+      "description": "Four-bit index into the bitrate table selected by version and layer; 0 means 'free format' and 15 is defined as invalid, and the template rejects both.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 4",
+      "source": "both",
+      "evidence": {
+        "line": 349,
+        "snippet": "uint32 bitrate_index     :  4<values=bitrate_index_values>;   // E"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 9,
+      "bitfield_layout": "Bits EEEE at mask 0x0000F000 of the big-endian header word.",
+      "values_pool": {
+        "local": "bitrate_index_values",
+        "line": 331,
+        "declared_values": [
+          0,
+          1,
+          15
+        ],
+        "problem": "Two of the three pooled values, 0 and 15, are exactly the two the sanity check on line 376 rejects; a generator seeded from this pool produces an invalid header two times in three."
+      },
+      "generation_range": {
+        "min": 1,
+        "max": 14,
+        "rationale": "Not a size cap but a validity cap: index 0 selects free-format, where the bitrate is not in the header at all and the frame length must be inferred from the next sync, which the template cannot do (it computes bitrate = 0 and then skips the frame body entirely). Index 15 is the reserved 'bad' value."
+      },
+      "notes": "Index 9 is 128 kbit/s for MPEG-1 Layer III, the most common real-world value; it gives an integral frame size of 417 or 418 bytes at 44.1 kHz. The whole of lines 387-431 is the version-and-layer-dependent decode of this index."
+    },
+    "MPEG_HEADER.frequency_index": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1,
+        2
+      ],
+      "value_names": [
+        "44100 Hz for MPEG-1, 22050 Hz for MPEG-2",
+        "48000 Hz for MPEG-1, 24000 Hz for MPEG-2",
+        "32000 Hz for MPEG-1, 16000 Hz for MPEG-2"
+      ],
+      "description": "Two-bit sampling-frequency index; value 3 is reserved and is rejected by the template's sanity check.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 2",
+      "source": "both",
+      "evidence": {
+        "line": 350,
+        "snippet": "uint32 frequency_index   :  2;   // F"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Bits FF at mask 0x00000C00 of the big-endian header word.",
+      "notes": "Line 377 rejects value 3, and line 440 would index one past the end of the three-element freq[] table if it did not. The stored table on lines 436-438 holds the frequencies divided by ten; line 443 doubles them for MPEG-1."
+    },
+    "MPEG_HEADER.padding_bit": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "no padding slot",
+        "one extra padding slot"
+      ],
+      "description": "Padding bit; when set the frame carries one extra slot so that the average bitrate is met exactly - one byte for Layers II and III, four bytes for Layer I.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 1",
+      "source": "both",
+      "evidence": {
+        "line": 351,
+        "snippet": "uint32 padding_bit       :  1;   // G"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Bit G at mask 0x00000200 of the big-endian header word.",
+      "notes": "Directly changes the frame length (line 450 subtracts it), so it is a length input, not a flag a decoder may ignore. Note the template adds exactly one byte for a set padding bit regardless of layer, which is wrong for Layer I."
+    },
+    "MPEG_HEADER.channel_mode": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "stereo",
+        "joint stereo",
+        "dual channel",
+        "mono"
+      ],
+      "description": "Two-bit channel mode; all four values are legal, but mono halves the frame size and constrains which bitrates Layer II may use.",
+      "corruption_risk": "high",
+      "field_type": "uint32 : 2",
+      "source": "both",
+      "evidence": {
+        "line": 353,
+        "snippet": "uint32 channel_mode      :  2;   // I"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": 0,
+      "bitfield_layout": "Bits II at mask 0x000000C0 of the big-endian header word.",
+      "notes": "Line 447 halves frame_size when this is 3 (mono), which is the source of the template's own documented bug for MPEG-1 Layer III mono at low bitrates (lines 33-35). The name mapping is confirmed by the Printf on lines 545-547."
+    },
+    "MPEG_HEADER.mode_extension": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "Layers I/II: subbands 4-31; Layer III: intensity off, MS off",
+        "Layers I/II: subbands 8-31; Layer III: intensity on, MS off",
+        "Layers I/II: subbands 12-31; Layer III: intensity off, MS on",
+        "Layers I/II: subbands 16-31; Layer III: intensity on, MS on"
+      ],
+      "description": "Two-bit joint-stereo mode extension; meaningful only when channel_mode is 1 (joint stereo), and its meaning differs between Layer III and Layers I/II.",
+      "corruption_risk": "medium",
+      "field_type": "uint32 : 2",
+      "source": "both",
+      "evidence": {
+        "line": 354,
+        "snippet": "uint32 mode_extension    :  2;   // J"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "preferred_value": 0,
+      "bitfield_layout": "Bits JJ at mask 0x00000030 of the big-endian header word.",
+      "notes": "The specification requires this field to be 0 when channel_mode is not joint stereo. The template never reads it, so a non-zero value in a stereo or mono frame is invisible here but is a conformance error a real decoder may act on."
+    },
+    "MPEG_HEADER.emphasis": {
+      "type": "enumerated_values",
+      "valid_values": [
+        0,
+        1,
+        3
+      ],
+      "value_names": [
+        "none",
+        "50/15 ms",
+        "CCIT J.17"
+      ],
+      "description": "Two-bit de-emphasis selector; value 2 is reserved and must not appear.",
+      "corruption_risk": "medium",
+      "field_type": "uint32 : 2",
+      "source": "both",
+      "evidence": {
+        "line": 357,
+        "snippet": "uint32 emphasis          :  2;   // M"
+      },
+      "confidence": "high",
+      "evil_bit_safe": false,
+      "preferred_value": 0,
+      "bitfield_layout": "Bits MM at mask 0x00000003 of the big-endian header word, the last two bits of the fourth header byte.",
+      "notes": "The template's sanity check on lines 375-377 does not test emphasis, so the reserved value 2 passes unchallenged here while conforming decoders reject it. This is a pure spec-over-parser constraint."
+    },
+    "MPEG_HEADER.checksum": {
+      "type": "calculated_value",
+      "algorithm": "CRC-16 with polynomial x^16 + x^15 + x^2 + 1 (0x8005), initial value 0xFFFF, no final XOR",
+      "covers": "the last two bytes of the four-byte frame header, that is bytes 2 and 3 holding bitrate_index through emphasis, followed by the side-information bytes at the start of the frame data; it excludes the first two header bytes carrying the sync, version, layer and protection bit, and excludes the checksum itself",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "MPEG_HEADER.protection_bit",
+        "MPEG_HEADER.mpeg_id",
+        "MPEG_HEADER.layer_id",
+        "MPEG_HEADER.channel_mode"
+      ],
+      "description": "Optional CRC-16 over the header tail and side information, present only when protection_bit is 0.",
+      "corruption_risk": "medium",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 362,
+        "snippet": "uint16 checksum;"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "notes": "The number of side-information bytes covered depends on version and channel mode: for Layer III it is 17 bytes for MPEG-1 mono, 32 for MPEG-1 non-mono, 9 for MPEG-2 mono and 17 for MPEG-2 non-mono. Most decoders skip verification and play the frame regardless, which is why the risk is medium; setting protection_bit to 1 removes the field and the obligation entirely."
+    },
+    "MPEG_FRAME.mpeg_frame_data": {
+      "type": "calculated_value",
+      "algorithm": "frame_size = (bitrate * 14400) / sampling_freq, halved when channel_mode is 3, then reduced by 4 header bytes plus 2 more when a checksum is present, then increased by the padding bit; sampling_freq is the tenth-of-a-hertz table value from lines 436-438, doubled for MPEG-1",
+      "covers": "the audio payload of one MPEG frame: everything after the four header bytes and the optional two checksum bytes, up to the start of the next frame's sync word",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MPEG_HEADER.bitrate_index",
+        "MPEG_HEADER.frequency_index",
+        "MPEG_HEADER.mpeg_id",
+        "MPEG_HEADER.layer_id",
+        "MPEG_HEADER.channel_mode",
+        "MPEG_HEADER.padding_bit",
+        "MPEG_HEADER.protection_bit"
+      ],
+      "description": "One frame's audio data; its content is free, but its length is fully determined by the header fields and must place the next frame's sync word exactly at its end.",
+      "corruption_risk": "high",
+      "field_type": "ubyte[frame_size]",
+      "source": "both",
+      "evidence": {
+        "line": 471,
+        "snippet": "ubyte mpeg_frame_data [ frame_size ];"
+      },
+      "confidence": "high",
+      "evil_bit_safe": true,
+      "generation_range": {
+        "min": 20,
+        "max": 1440,
+        "rationale": "Not a free choice - the length is derived - but the derived value must stay bounded, and it is bounded by the bitrate and frequency chosen. The extremes of the legal table are roughly 24 bytes (8 kbit/s MPEG-2 at 24 kHz) and 1440 bytes (320 kbit/s MPEG-1 Layer III at 32 kHz); a generator should keep the bitrate and frequency indices in ranges that land inside this window rather than emitting an arbitrary array length."
+      },
+      "notes": "The canonical formula for MPEG-1 Layer III is 144 * bitrate / samplerate + padding; the template's (bitrate * 14400) / sampling_freq is the same identity with the frequency held in tenths of a hertz. The mono halving on line 448 is the documented bug from lines 33-35 - it is not part of the specification and makes the template's own idea of the frame length wrong for MPEG-1 Layer III mono. Line 455 aborts parsing when the computed length would run past end of file, so the final frame must fit entirely inside the file."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "MPEG_HEADER.frame_sync",
+        "equals": 4094
+      },
+      "then": {
+        "field": "MPEG_HEADER.mpeg_id",
+        "type": "enumerated_values",
+        "valid_values": [
+          0
+        ],
+        "value_names": [
+          "MPEG 2.5"
+        ]
+      },
+      "description": "The two version bits are split across two template fields: the low bit of frame_sync and mpeg_id. When frame_sync is 0xFFE the version high bit is 0, so mpeg_id 1 would encode version 01, which the specification marks reserved and every decoder rejects.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 342,
+        "snippet": "uint32 frame_sync        : 12;   // A"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.frame_sync",
+        "equals": 4094
+      },
+      "then": {
+        "section": "MPEG_FRAME",
+        "requires": "MPEG 2.5 support, which this template does not implement"
+      },
+      "description": "A frame_sync of 0xFFE with mpeg_id 0 is MPEG 2.5, listed as an unimplemented TODO on line 29; the template's frequency table and bitrate arithmetic have no MPEG 2.5 branch, so it will compute the wrong frame length.",
+      "source": "template",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 29,
+        "snippet": "//   1) MPEG 2.5 support"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.mpeg_id",
+        "equals": 1
+      },
+      "then": {
+        "field": "MPEG_HEADER.frequency_index",
+        "type": "enumerated_values",
+        "valid_values": [
+          0,
+          1,
+          2
+        ],
+        "value_names": [
+          "44100 Hz",
+          "48000 Hz",
+          "32000 Hz"
+        ]
+      },
+      "description": "MPEG-1 uses the full-rate sampling frequency table; the template implements this by doubling the stored tenth-hertz value on line 443.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 442,
+        "snippet": "if (mpeg_hdr.mpeg_id == 1) // if MPEG-1"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.mpeg_id",
+        "equals": 0
+      },
+      "then": {
+        "field": "MPEG_HEADER.frequency_index",
+        "type": "enumerated_values",
+        "valid_values": [
+          0,
+          1,
+          2
+        ],
+        "value_names": [
+          "22050 Hz",
+          "24000 Hz",
+          "16000 Hz"
+        ]
+      },
+      "description": "MPEG-2 halves every sampling frequency relative to MPEG-1; the same two-bit index therefore names a different frequency.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 440,
+        "snippet": "sampling_freq = freq[mpeg_hdr.frequency_index];"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.mpeg_id",
+        "equals": 0
+      },
+      "then": {
+        "field": "MPEG_HEADER.bitrate_index",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "value_names": [
+          "8",
+          "16",
+          "24",
+          "32",
+          "40",
+          "48",
+          "56",
+          "64",
+          "80",
+          "96",
+          "112",
+          "128",
+          "144",
+          "160"
+        ],
+        "unit": "kbit/s, for MPEG-2 Layer III"
+      },
+      "description": "MPEG-2 Layer III uses an entirely different bitrate table from MPEG-1, topping out at 160 kbit/s rather than 320; the template encodes it in the arithmetic on lines 410-427.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 410,
+        "snippet": "bitrate = (uint32)mpeg_hdr.bitrate_index<4 ?"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.mpeg_id",
+        "equals": 1
+      },
+      "then": {
+        "field": "MPEG_HEADER.bitrate_index",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "value_names": [
+          "32",
+          "40",
+          "48",
+          "56",
+          "64",
+          "80",
+          "96",
+          "112",
+          "128",
+          "160",
+          "192",
+          "224",
+          "256",
+          "320"
+        ],
+        "unit": "kbit/s, for MPEG-1 Layer III"
+      },
+      "description": "MPEG-1 Layer III bitrates run 32 to 320 kbit/s; the template reproduces this table with the shift arithmetic on lines 404-406.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 404,
+        "snippet": "bitrate = (1 << 5+((uint32)mpeg_hdr.bitrate_index-1)/4) +"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.layer_id",
+        "equals": 0
+      },
+      "then": {
+        "section": "MPEG_FRAME",
+        "forbidden": true
+      },
+      "description": "Layer value 00 is reserved by the specification and the template's sanity check rejects it, reseeking two bytes back to hunt for a real sync instead of parsing a frame.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 375,
+        "snippet": "if (mpeg_hdr.frame_sync < 0xFFE  ||  mpeg_hdr.layer_id == 0  ||"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.frequency_index",
+        "equals": 3
+      },
+      "then": {
+        "section": "MPEG_FRAME",
+        "forbidden": true
+      },
+      "description": "Sampling-frequency index 3 is reserved; the template rejects it on line 377, and were it accepted line 440 would read one element past the end of the three-entry freq[] table.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 377,
+        "snippet": "mpeg_hdr.frequency_index == 3)"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.bitrate_index",
+        "in": [
+          0,
+          15
+        ]
+      },
+      "then": {
+        "section": "MPEG_FRAME",
+        "forbidden": true
+      },
+      "description": "Index 0 selects free format, where the frame length is not derivable from the header, and index 15 is the reserved bad value; the template rejects both on line 376 and would otherwise leave bitrate at 0 and read no frame body at all.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 376,
+        "snippet": "mpeg_hdr.bitrate_index == 0  ||  mpeg_hdr.bitrate_index == 15  ||"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.emphasis",
+        "equals": 2
+      },
+      "then": {
+        "section": "MPEG_FRAME",
+        "forbidden": true
+      },
+      "description": "Emphasis value 10 is reserved by ISO/IEC 11172-3. The template's sanity check never looks at this field, so it is a rule only the specification imposes.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "note": "ISO/IEC 11172-3 Table: emphasis 00 none, 01 50/15 microseconds, 10 reserved, 11 CCITT J.17.",
+        "line": 357,
+        "snippet": "uint32 emphasis          :  2;   // M"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.protection_bit",
+        "equals": 0
+      },
+      "then": {
+        "field": "MPEG_HEADER.checksum",
+        "present": true
+      },
+      "description": "The protection bit is inverted: a zero means a sixteen-bit CRC follows the four header bytes, and the template declares the field only under that condition.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 359,
+        "snippet": "if (protection_bit == 0)"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.protection_bit",
+        "equals": 1
+      },
+      "then": {
+        "field": "MPEG_HEADER.checksum",
+        "absent": true
+      },
+      "description": "With the protection bit set there is no checksum field, and the frame body begins immediately after the four header bytes; the frame-size arithmetic on lines 450 and 452 accounts for the two-byte difference.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 450,
+        "snippet": "frame_size -= 4 + (mpeg_hdr.protection_bit==0 ? 2:0) - mpeg_hdr.padding_bit;"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.channel_mode",
+        "in": [
+          0,
+          2,
+          3
+        ]
+      },
+      "then": {
+        "field": "MPEG_HEADER.mode_extension",
+        "type": "fixed_value",
+        "required_value": 0
+      },
+      "description": "Mode extension only carries meaning in joint stereo; in stereo, dual channel and mono frames the specification requires it to be zero. The template reads the bits but never checks them.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "note": "ISO/IEC 11172-3: the mode_extension field is used only when mode is joint stereo (01); it is set to 0 otherwise.",
+        "line": 354,
+        "snippet": "uint32 mode_extension    :  2;   // J"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.channel_mode",
+        "equals": 1
+      },
+      "then": {
+        "field": "MPEG_HEADER.mode_extension",
+        "type": "enumerated_values",
+        "valid_values": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "value_names": [
+          "intensity off / MS off",
+          "intensity on / MS off",
+          "intensity off / MS on",
+          "intensity on / MS on"
+        ],
+        "applies_to": "Layer III only; in Layers I and II the same four values select the subband range 4-31, 8-31, 12-31 or 16-31"
+      },
+      "description": "In joint stereo the two mode-extension bits are meaningful, but they mean different things in Layer III than in Layers I and II, so the layer must be known before the field can be interpreted.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "note": "ISO/IEC 11172-3: for Layer III the mode_extension bits select intensity_stereo and ms_stereo independently; for Layers I and II they select the lowest subband subject to joint coding.",
+        "line": 354,
+        "snippet": "uint32 mode_extension    :  2;   // J"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.layer_id",
+        "equals": 2
+      },
+      "then": {
+        "field": "MPEG_HEADER.bitrate_index",
+        "type": "enumerated_values",
+        "valid_values": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "condition_detail": "for MPEG-1 Layer II, index 1 (32 kbit/s) and indexes 2-4 are permitted only in single-channel mode, while indexes 11-14 are forbidden in single-channel mode"
+      },
+      "description": "MPEG-1 Layer II restricts which bitrate and channel-mode combinations may appear at all - the only place in the MPEG header where two fields' legal sets are genuinely interlocked.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "note": "ISO/IEC 11172-3 Table: for Layer II the allowed bitrate/mode combinations are restricted; 32, 48, 56 and 80 kbit/s are single_channel only, and 224, 256, 320 and 384 kbit/s are not allowed for single_channel.",
+        "line": 393,
+        "snippet": "if (mpeg_hdr.layer_id == 2)  // MPEG-1,2 Layer 2"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.channel_mode",
+        "equals": 3
+      },
+      "then": {
+        "field": "MPEG_HEADER.bitrate_index",
+        "type": "enumerated_values",
+        "valid_values": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "condition_detail": "applies when layer_id is 2 (Layer II) and mpeg_id is 1 (MPEG-1)"
+      },
+      "description": "In MPEG-1 Layer II single-channel mode the four highest bitrates are prohibited by the standard's own combination table.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "note": "ISO/IEC 11172-3: bitrates 224, 256, 320 and 384 kbit/s are not allowed for single_channel mode in Layer II.",
+        "line": 447,
+        "snippet": "if (mpeg_hdr.channel_mode == 3)"
+      }
+    },
+    {
+      "when": {
+        "field": "MPEG_HEADER.padding_bit",
+        "equals": 1
+      },
+      "then": {
+        "field": "MPEG_FRAME.mpeg_frame_data",
+        "type": "calculated_value",
+        "adjustment": "+1 byte for Layers II and III, +4 bytes for Layer I"
+      },
+      "description": "The padding slot size is a function of the layer, because a Layer I slot is four bytes and a Layer II or III slot is one. The template adds exactly one byte regardless of layer.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 450,
+        "snippet": "frame_size -= 4 + (mpeg_hdr.protection_bit==0 ? 2:0) - mpeg_hdr.padding_bit;"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_HEADER.ver_major",
+        "equals": 3
+      },
+      "then": {
+        "section": "ID3v2_FRAME",
+        "required": true,
+        "detail": "frames use the ID3v2.3 layout, whose size field is a plain big-endian uint32"
+      },
+      "description": "The frame struct is chosen by major version at line 315; version 3 selects the layout whose size field is an ordinary integer.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 315,
+        "snippet": "if (hdr.ver_major == 3)"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_HEADER.ver_major",
+        "equals": 4
+      },
+      "then": {
+        "section": "ID3v2_4_FRAME",
+        "required": true,
+        "detail": "frames use the ID3v2.4 layout, whose size field is a synchsafe integer"
+      },
+      "description": "Version 4 selects the frame struct with a synchsafe size; mixing the two layouts inside one tag shifts every frame after the first mismatch.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 318,
+        "snippet": "ID3v2_4_FRAME tf;"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_HEADER.ver_major",
+        "in": [
+          0,
+          1,
+          2,
+          5,
+          6,
+          7,
+          8,
+          9,
+          255
+        ]
+      },
+      "then": {
+        "section": "ID3v2_TAG.id3v2_data",
+        "required": true,
+        "detail": "the whole tag body is read as one opaque array and no frame structure is produced"
+      },
+      "description": "Any major version other than 3 or 4 diverts the parse into a flat byte blob, so a generated file with such a version exercises no frame code at all.",
+      "source": "template",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 295,
+        "snippet": "if ( !(hdr.ver_major == 3 || hdr.ver_major == 4)  ||  hdr.flags.UNSYNCHRONISATION_USED  ||  hdr.flags.EXPERIMENTAL_TAG)"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_HEADER.ver_major",
+        "equals": 255
+      },
+      "then": {
+        "section": "ID3v2_TAG",
+        "forbidden": true
+      },
+      "description": "The specification's own tag-detection pattern is $49 44 33 yy yy xx zz zz zz zz where yy is less than $FF; a version byte of 0xFF means this is not an ID3v2 tag header at all, and the template says so on lines 285-289.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 289,
+        "snippet": "if (hdr.ver_major == 0xFF  ||  hdr.ver_revision == 0xFF)"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_HEADER.ver_revision",
+        "equals": 255
+      },
+      "then": {
+        "section": "ID3v2_TAG",
+        "forbidden": true
+      },
+      "description": "The same detection pattern forbids 0xFF in the revision byte; the reason is that 0xFF here could combine with the preceding bytes to look like a frame sync.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 289,
+        "snippet": "if (hdr.ver_major == 0xFF  ||  hdr.ver_revision == 0xFF)"
+      }
+    },
+    {
+      "when": {
+        "field": "FLAGS.UNSYNCHRONISATION_USED",
+        "equals": 1
+      },
+      "then": {
+        "section": "ID3v2_TAG.id3v2_data",
+        "required": true,
+        "detail": "the template abandons frame parsing and reads the body as opaque bytes"
+      },
+      "description": "Unsynchronisation rewrites the tag body so that no 0xFF is followed by a byte of 0xE0 or more, inserting a 0x00 after each 0xFF. The template does not reverse this, so it cannot parse frames from an unsynchronised body.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 295,
+        "snippet": "if ( !(hdr.ver_major == 3 || hdr.ver_major == 4)  ||  hdr.flags.UNSYNCHRONISATION_USED  ||  hdr.flags.EXPERIMENTAL_TAG)"
+      }
+    },
+    {
+      "when": {
+        "field": "FLAGS.UNSYNCHRONISATION_USED",
+        "equals": 1
+      },
+      "then": {
+        "section": "ID3v2 tag body bytes",
+        "pattern_constraint": "no 0xFF byte may be followed by a byte >= 0xE0, and no 0xFF may be followed by 0x00 unless that 0x00 was inserted by the unsynchronisation scheme"
+      },
+      "description": "This is the substantive content rule the flag asserts, and it is a whole-section byte-pattern constraint rather than a per-field one; declaring the flag without applying the transformation is a silent conformance failure.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "note": "ID3v2.3 section 5: the unsynchronisation scheme replaces every $FF 00 or $FF Ex sequence with $FF 00 Ex so that no false frame sync appears inside the tag.",
+        "line": 171,
+        "snippet": "ubyte UNSYNCHRONISATION_USED  : 1;"
+      }
+    },
+    {
+      "when": {
+        "field": "FLAGS.EXPERIMENTAL_TAG",
+        "equals": 1
+      },
+      "then": {
+        "section": "ID3v2_TAG.id3v2_data",
+        "required": true,
+        "detail": "the template treats the experimental flag exactly like unsynchronisation and refuses to walk the frames"
+      },
+      "description": "A specification-legal advisory flag that this parser turns into a hard structural fork; a generator that sets it loses all frame coverage.",
+      "source": "template",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "line": 295,
+        "snippet": "if ( !(hdr.ver_major == 3 || hdr.ver_major == 4)  ||  hdr.flags.UNSYNCHRONISATION_USED  ||  hdr.flags.EXPERIMENTAL_TAG)"
+      }
+    },
+    {
+      "when": {
+        "field": "FLAGS.EXTENDED_HEADER_PRESENT",
+        "equals": 1
+      },
+      "then": {
+        "section": "ID3v2_EXTENDED_HEADER",
+        "required": true,
+        "detail": "must immediately follow the ten-byte header, before the first frame"
+      },
+      "description": "The flag is the sole signal that the extended header exists; there is no other marker distinguishing it from the first frame's identifier.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 304,
+        "snippet": "if ( hdr.flags.EXTENDED_HEADER_PRESENT )"
+      }
+    },
+    {
+      "when": {
+        "field": "FLAGS.EXTENDED_HEADER_PRESENT",
+        "equals": 0
+      },
+      "then": {
+        "section": "ID3v2_EXTENDED_HEADER",
+        "forbidden": true
+      },
+      "description": "With the flag clear the first bytes after the header must be a frame identifier; an extended header present anyway is read as a frame with identifier equal to its first four size bytes.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 304,
+        "snippet": "if ( hdr.flags.EXTENDED_HEADER_PRESENT )"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_EXTENDED_HEADER.FLAG_CRC_PRESENT",
+        "equals": 1
+      },
+      "then": {
+        "field": "ID3v2_EXTENDED_HEADER.size",
+        "type": "calculated_value",
+        "fixed_result": 10
+      },
+      "description": "With the CRC flag set the extended header carries two flag bytes, four padding-size bytes and four CRC bytes, so its declared size is exactly 10.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 199,
+        "snippet": "if (FLAG_CRC_PRESENT)"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_EXTENDED_HEADER.FLAG_CRC_PRESENT",
+        "equals": 0
+      },
+      "then": {
+        "field": "ID3v2_EXTENDED_HEADER.size",
+        "type": "calculated_value",
+        "fixed_result": 6
+      },
+      "description": "Without the CRC the extended header is two flag bytes plus four padding-size bytes, so its declared size is exactly 6.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 192,
+        "snippet": "uint32 size; // extended header size, excluding this 'size' field"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_EXTENDED_HEADER.FLAG_CRC_PRESENT",
+        "equals": 1
+      },
+      "then": {
+        "field": "ID3v2_EXTENDED_HEADER.crc",
+        "present": true
+      },
+      "description": "The four CRC bytes exist only under this flag; the template declares them inside the guard on line 199.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 202,
+        "snippet": "uint32 crc;"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_EXTENDED_HEADER.padding_sz",
+        "min": 1
+      },
+      "then": {
+        "section": "ID3v2_TAG.id3v2_padding",
+        "required": true,
+        "detail": "exactly padding_sz zero bytes must trail the last frame, and they are counted inside ID3v2_HEADER.size"
+      },
+      "description": "The declared padding size and the actual trailing zero run must agree; the template computes the run from the tag size instead, so a disagreement is invisible to it and fatal to a conforming reader.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 324,
+        "snippet": "ubyte id3v2_padding [ tag_sz + sizeof(hdr) - FTell() ];"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_FRAME.id",
+        "pattern": "^T.{3}$"
+      },
+      "then": {
+        "field": "ID3v2_FRAME.id_asciiz_str",
+        "present": true,
+        "detail": "conditional in the template: present only when the byte is already 0 and size > 1"
+      },
+      "description": "Every ID3v2.3 identifier beginning with 'T' is a text information frame and must open with a text encoding byte; the template only splits that byte off when it happens to be zero.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 232,
+        "snippet": "if ( ReadByte(FTell()) == 0  &&  size > 1)"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_4_FRAME.id",
+        "pattern": "^T.{3}$"
+      },
+      "then": {
+        "field": "ID3v2_4_FRAME.encoding",
+        "present": true,
+        "type": "enumerated_values",
+        "valid_values": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "description": "ID3v2.4 text frames always begin with an encoding byte, and unlike the v2.3 branch the template declares it unconditionally.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 261,
+        "snippet": "enum <ubyte> {"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_4_FRAME.encoding",
+        "equals": 1
+      },
+      "then": {
+        "field": "ID3v2_4_FRAME.frame_data",
+        "pattern_constraint": "must begin with a UTF-16 byte order mark, either 0xFF 0xFE or 0xFE 0xFF, and its length after the BOM must be even"
+      },
+      "description": "Encoding 1 is UTF-16 with BOM, and the BOM is mandatory - it is the only thing that tells a reader the byte order of the text that follows.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "note": "ID3v2.4 section 4: $01 is UTF-16 encoded Unicode with BOM; all strings in the same frame use the same encoding, and the BOM is required.",
+        "line": 263,
+        "snippet": "UTF_16_with_BOM,"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_4_FRAME.encoding",
+        "in": [
+          1,
+          2
+        ]
+      },
+      "then": {
+        "field": "ID3v2_4_FRAME.size",
+        "type": "calculated_value",
+        "parity": "size.computed - 1 must be even, because UTF-16 code units are two bytes"
+      },
+      "description": "A UTF-16 payload of odd length cannot be decoded; this length parity rule is entirely invisible to the template, which allocates whatever the size says.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "medium",
+      "evidence": {
+        "note": "ID3v2.4 section 4: UTF-16 and UTF-16BE strings consist of two-byte code units, so the payload byte count is always even.",
+        "line": 268,
+        "snippet": "char frame_data [size.computed - 1];"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_4_FRAME.id",
+        "pattern": "^T.{3}$"
+      },
+      "then": {
+        "field": "ID3v2_4_FRAME.size",
+        "min": 1
+      },
+      "description": "A text frame's payload must hold at least the encoding byte; the template computes frame_data as size.computed - 1 with no lower guard, so a size of 0 yields a negative array length.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 268,
+        "snippet": "char frame_data [size.computed - 1];"
+      }
+    },
+    {
+      "when": {
+        "field": "FRAME_FLAGS.COMPRESSED_FRAME",
+        "equals": 1
+      },
+      "then": {
+        "field": "ID3v2_FRAME.frame_data",
+        "detail": "the first four payload bytes are a big-endian uint32 giving the decompressed size, followed by zlib-deflated data; the template reads all of it as opaque payload"
+      },
+      "description": "The compression flag adds a length prefix inside the payload that neither frame struct declares, so the template's field boundaries and the specification's diverge as soon as the bit is set.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "note": "ID3v2.3 section 3.3.1: if the compression bit is set, four bytes holding the decompressed size are added to the frame header and the data is zlib-compressed.",
+        "line": 212,
+        "snippet": "uint16 COMPRESSED_FRAME   : 1;"
+      }
+    },
+    {
+      "when": {
+        "field": "FRAME_FLAGS.ENCRYPTED_FRAME",
+        "equals": 1
+      },
+      "then": {
+        "section": "ID3v2 tag",
+        "requires": "an ENCR frame earlier in the same tag defining the encryption method symbol used by the one prefix byte"
+      },
+      "description": "An encrypted frame is meaningless without the ENCR frame that registers its method byte, which makes this a cross-frame ordering requirement, not a per-field one.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "note": "ID3v2.3 section 3.3.1: if the encryption bit is set, one byte indicating the encryption method is added, and a corresponding ENCR frame must appear in the tag.",
+        "line": 213,
+        "snippet": "uint16 ENCRYPTED_FRAME    : 1;"
+      }
+    },
+    {
+      "when": {
+        "field": "FRAME_FLAGS.GROUP_MEMBER_FRAME",
+        "equals": 1
+      },
+      "then": {
+        "section": "ID3v2 tag",
+        "requires": "a GRID frame earlier in the same tag defining the group symbol used by the one prefix byte"
+      },
+      "description": "Grouping likewise adds a prefix byte whose meaning is registered by another frame, so the two frames must both be present and in that order.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "note": "ID3v2.3 section 3.3.1: if the grouping bit is set, one byte containing the group identifier is added, and a corresponding GRID frame must appear in the tag.",
+        "line": 214,
+        "snippet": "uint16 GROUP_MEMBER_FRAME : 1;"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v1_TAG.zero",
+        "equals": 0
+      },
+      "then": {
+        "field": "ID3v1_TAG.track",
+        "present": true,
+        "detail": "and the comment field is 28 bytes rather than 30"
+      },
+      "description": "The ID3v1.1 layout is signalled only by a zero byte at tag offset 125 followed by a non-zero byte at 126; both conditions are required, and the template tests both on line 133.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 133,
+        "snippet": "if ( ReadByte(FTell()+28) == 0  &&  ReadByte(FTell()+29) != 0 )"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v1_TAG.track",
+        "equals": 0
+      },
+      "then": {
+        "field": "ID3v1_TAG.comment",
+        "type": "pattern_constraint",
+        "detail": "the field is 30 bytes and there is no track number - this is an ID3v1.0 tag"
+      },
+      "description": "A zero track byte collapses the tag back to ID3v1.0, because a track number of zero is indistinguishable from comment padding.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 151,
+        "snippet": "char comment[30];"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v1_TAG.genre",
+        "equals": 255
+      },
+      "then": {
+        "field": "ID3v1_TAG.genre",
+        "type": "fixed_value",
+        "required_value": 255,
+        "detail": "0xFF is the conventional 'unset' marker and lies outside the ID3_GENRES enum, whose highest defined value is 147"
+      },
+      "description": "The genre byte has a defined out-of-table value that the template's enum does not name; a generator restricted to the enum will never emit the 'no genre' encoding that most real tags use.",
+      "source": "spec",
+      "confidence": "high",
+      "corruption_risk": "low",
+      "evidence": {
+        "note": "ID3v1 informal standard: genre 255 means the genre is not set; values 148-254 are undefined.",
+        "line": 155,
+        "snippet": "ID3_GENRES genre;"
+      }
+    },
+    {
+      "when": {
+        "section": "ID3v1_TAG",
+        "present": true
+      },
+      "then": {
+        "section": "ID3v1_TAG",
+        "detail": "the tag must occupy exactly the final 128 bytes of the file, with nothing after it"
+      },
+      "description": "ID3v1 is defined by position, not by a length field: it is found by seeking 128 bytes from the end. The template reaches it by scanning forward instead, and warns on line 559 if anything follows.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 558,
+        "snippet": "if ( !FEof() )"
+      }
+    },
+    {
+      "when": {
+        "section": "ID3v2_TAG",
+        "present": true
+      },
+      "then": {
+        "section": "ID3v2_TAG",
+        "detail": "the tag must begin at file offset 0"
+      },
+      "description": "The template's only test for an ID3v2 tag reads three bytes at the absolute offset 0, so a prepended tag anywhere else is invisible; the specification likewise defines the tag as prepended to the audio data.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 488,
+        "snippet": "ReadBytes(buf, 0, 3, buf_values);"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_HEADER.size",
+        "min": 1
+      },
+      "then": {
+        "section": "ID3v2_FRAME",
+        "required": true,
+        "detail": "at least one frame, since a tag must contain at least one frame and a frame is at least one byte beyond its ten-byte header"
+      },
+      "description": "The template states the rule in its own comment on lines 308-309 and then implements it as a do-while, which guarantees one frame is read whatever the sizes say.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 308,
+        "snippet": "// A tag must contain at least one frame. A frame must be"
+      }
+    },
+    {
+      "when": {
+        "field": "ID3v2_HEADER.size",
+        "min": 1
+      },
+      "then": {
+        "section": "MPEG_FRAME",
+        "detail": "the first MPEG frame's sync word must lie at file offset ID3v2_HEADER.size.computed + 10"
+      },
+      "description": "The tag size is what positions the audio; a size that disagrees with the actual tag length makes the scan loop on lines 498-518 hunt through audio bytes for a sync, which is the single most common way a generated MP3 becomes unplayable.",
+      "source": "both",
+      "confidence": "high",
+      "corruption_risk": "high",
+      "evidence": {
+        "line": 321,
+        "snippet": "while ( FTell() < tag_sz + sizeof(hdr)  &&  ReadByte(FTell()) != 0 );"
+      }
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "ID3v2_TAG",
+      "detail": "must start at file offset 0 when present; nothing may precede it",
+      "condition": "only when the first three bytes are 'ID3'",
+      "description": "An ID3v2 tag is prepended to the audio, and the template only looks for it at absolute offset 0.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 488,
+        "snippet": "ReadBytes(buf, 0, 3, buf_values);"
+      },
+      "generation_bound": "at most one ID3v2 tag per file",
+      "generation_note": "emit the ten-byte header, then the optional extended header, then a bounded frame array, then a zero padding run, and only then begin the audio"
+    },
+    {
+      "rule": "first_element",
+      "subject": "MPEG_HEADER.frame_sync",
+      "detail": "when no ID3v2 tag is present, the file must open with a frame sync: byte 0 is 0xFF and byte 1 is at least 0xE0",
+      "condition": "only when no ID3v2 tag is present",
+      "description": "One of exactly two ways an MP3 file may begin. The scan loop accepts a leading value of 0xFFE0 or greater as the start of audio.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 520,
+        "snippet": "if ( data >= 0xFFE0  ||  id3v1_tag_found )"
+      },
+      "generation_bound": "n/a - a single fixed head element",
+      "generation_note": "emit the four header bytes as a fixed anchor; never let the evil-value path touch the sync bits"
+    },
+    {
+      "rule": "required",
+      "subject": "MPEG_FRAME",
+      "detail": "at least one valid MPEG frame must be present for the file to be audio",
+      "description": "A file with tags but no frames parses without error here - the template just reports zero frames found - but it is not playable audio.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 536,
+        "snippet": "MPEG_FRAME mf;"
+      },
+      "generation_bound": "4 to 64 frames. Each frame is roughly 100 to 1400 bytes, so 64 frames keeps a generated file under 100 KB while still exercising the multi-frame scan loop, the sync search and the cross-frame consistency rules.",
+      "generation_note": "emit a bounded repeated array of frames whose headers all agree; do not re-randomise version, layer, bitrate and frequency per frame"
+    },
+    {
+      "rule": "last_element",
+      "subject": "ID3v1_TAG",
+      "detail": "must occupy exactly the final 128 bytes of the file when present, and no bytes may follow it",
+      "condition": "only when an ID3v1 tag is present",
+      "description": "ID3v1 is located by position from end of file. Line 558 warns about any trailing data, and a real reader that seeks to filesize-128 will read garbage if anything follows.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "evidence": {
+        "line": 558,
+        "snippet": "if ( !FEof() )"
+      },
+      "generation_bound": "at most one ID3v1 tag per file",
+      "generation_note": "emit as a fixed 128-byte tail after the last audio frame; the tail is the only structure in this format anchored to end of file rather than to a preceding length"
+    },
+    {
+      "rule": "ordering",
+      "subject": "ID3v2_TAG, then MPEG_FRAME stream, then ID3v1_TAG",
+      "detail": "the three top-level sections may only appear in this order",
+      "description": "The file is a prepended tag, an audio stream and an appended tag; the main loop at lines 498-550 encodes exactly this order and cannot recover from any other.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 498,
+        "snippet": "while ( !FEof()  &&  !id3v1_tag_found )"
+      },
+      "generation_bound": "one instance of each optional tag, one bounded frame array between them",
+      "generation_note": "generate as a fixed optional head, a bounded body array and a fixed optional tail"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "ID3v2_TAG",
+      "detail": "zero or one; the template checks for a tag only once, before the loop begins",
+      "description": "There is no provision for a second prepended tag; a second 'ID3' signature inside the audio would be scanned as audio bytes.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "evidence": {
+        "line": 490,
+        "snippet": "if ( ! Strcmp(buf, \"ID3\") )"
+      },
+      "generation_bound": "0 or 1",
+      "generation_note": "present it about half the time to exercise both entry paths at line 490"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "ID3v1_TAG",
+      "detail": "zero or one; discovery ends the main loop immediately",
+      "description": "The id3v1_tag_found flag is one-way: once set it terminates the frame loop on line 498 and no further audio is parsed.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "evidence": {
+        "line": 498,
+        "snippet": "while ( !FEof()  &&  !id3v1_tag_found )"
+      },
+      "generation_bound": "0 or 1",
+      "generation_note": "if present it must be the last thing in the file"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "ID3v2_FRAME",
+      "detail": "at least one frame per ID3v2 tag; no specification maximum",
+      "condition": "only inside an ID3v2 tag whose version is 3 or 4 with clear unsynchronisation and experimental flags",
+      "description": "The template's own comment on lines 308-309 states the rule, and the do-while on lines 312-321 guarantees one frame is read even when the tag size says otherwise.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 308,
+        "snippet": "// A tag must contain at least one frame. A frame must be"
+      },
+      "generation_bound": "1 to 12 frames. Text frames are tens of bytes each, so a dozen covers the common tag shapes without inflating the tag size; the frame loop's exit test is checked only after the first frame, so a single frame is always well-formed.",
+      "generation_note": "emit at least one frame, then optional further frames, then padding; the padding's first byte being zero is what ends the loop"
+    },
+    {
+      "rule": "required",
+      "subject": "ID3v2_HEADER",
+      "detail": "must be the first ten bytes of any ID3v2 tag",
+      "description": "The tag struct reads its header unconditionally at line 279 and every subsequent offset in the tag is computed from it.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 279,
+        "snippet": "ID3v2_HEADER hdr;"
+      },
+      "generation_bound": "exactly one per tag",
+      "generation_note": "fixed-size head element of the tag"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "ID3v2_EXTENDED_HEADER",
+      "detail": "must immediately follow the ten-byte header, with no gap, and must precede every frame",
+      "condition": "only when FLAGS.EXTENDED_HEADER_PRESENT is 1",
+      "description": "There is no marker for the extended header; it is identified purely by position and by the header flag bit.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 305,
+        "snippet": "ID3v2_EXTENDED_HEADER ext_hdr;"
+      },
+      "generation_bound": "exactly one when the flag is set, zero otherwise",
+      "generation_note": "emit immediately after the header, then start frames"
+    },
+    {
+      "rule": "last_element",
+      "subject": "ID3v2_TAG.id3v2_padding",
+      "detail": "the padding run, if any, is the final content of the tag and must reach exactly to the end of the declared tag body",
+      "description": "Padding is defined as a trailing run of zero bytes; a frame may not follow it, because the first zero byte where a frame identifier is expected ends the frame stream.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "evidence": {
+        "line": 324,
+        "snippet": "ubyte id3v2_padding [ tag_sz + sizeof(hdr) - FTell() ];"
+      },
+      "generation_bound": "0 to 1024 bytes of zeroes",
+      "generation_note": "compute as tag size minus the bytes actually consumed by the extended header and frames, then emit that many zeroes"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "MPEG_FRAME",
+      "detail": "consecutive frames must abut exactly: the next frame's sync word begins at the first byte after the previous frame's data",
+      "description": "The whole format has no frame length field and no separator; a frame's extent is derived from its own header, so any gap or overlap desynchronises every following frame.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 471,
+        "snippet": "ubyte mpeg_frame_data [ frame_size ];"
+      },
+      "generation_bound": "see the MPEG_FRAME cardinality bound",
+      "generation_note": "lay frames end to end with no filler; this is the single most important structural invariant in the audio portion"
+    },
+    {
+      "rule": "required",
+      "subject": "MPEG_HEADER",
+      "detail": "must be the first four bytes of every MPEG_FRAME",
+      "description": "The frame struct reads its header first at line 369 and derives the body length from it; there is no other order possible.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 369,
+        "snippet": "MPEG_HEADER mpeg_hdr;"
+      },
+      "generation_bound": "exactly one per frame",
+      "generation_note": "fixed four-byte head, then two optional checksum bytes, then the derived-length body"
+    },
+    {
+      "rule": "requires",
+      "subject": "ID3v1_TAG.track",
+      "detail": "requires ID3v1_TAG.zero to be 0 and the comment field to be 28 bytes",
+      "condition": "ID3v1.1 tags only",
+      "description": "The track number exists only in the ID3v1.1 layout, which is signalled by the zero separator; the three fields stand or fall together.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 133,
+        "snippet": "if ( ReadByte(FTell()+28) == 0  &&  ReadByte(FTell()+29) != 0 )"
+      },
+      "generation_bound": "n/a - a single byte",
+      "generation_note": "choose the tag version first, then emit the matching comment width, separator and track triple as one unit"
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "ID3v2_FRAME and ID3v2_4_FRAME",
+      "detail": "a single tag uses one frame layout throughout; the choice is fixed by ID3v2_HEADER.ver_major for the whole tag",
+      "description": "The branch at line 315 is evaluated inside the loop but reads the same header field every time, so mixing layouts within one tag is impossible to express and would be unparseable if it were.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 315,
+        "snippet": "if (hdr.ver_major == 3)"
+      },
+      "generation_bound": "one layout per tag",
+      "generation_note": "pick the version once, then generate every frame in that layout"
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "ID3v2_TAG.id3v2_data and the ID3v2 frame stream",
+      "detail": "a tag body is either an opaque blob or a frame stream, never both",
+      "description": "The unsupported-version and unsupported-flags branch at line 300 consumes the entire tag body, leaving nothing for frames.",
+      "corruption_risk": "high",
+      "source": "template",
+      "evidence": {
+        "line": 300,
+        "snippet": "ubyte id3v2_data[tag_sz];"
+      },
+      "generation_bound": "one branch per tag",
+      "generation_note": "prefer the frame branch; the blob branch produces no structural coverage"
+    },
+    {
+      "rule": "forbidden",
+      "subject": "trailing data after ID3v1_TAG",
+      "detail": "no bytes may follow the 128-byte ID3v1 tag",
+      "condition": "only when an ID3v1 tag is present",
+      "description": "Line 559 warns about exactly this, and a reader that locates the tag by seeking 128 bytes from end of file will miss it entirely if anything follows.",
+      "corruption_risk": "medium",
+      "source": "both",
+      "evidence": {
+        "line": 559,
+        "snippet": "Printf(\"MP3: warning: there is some unknown extra-data after ID3v1 tag at end of file\\n\");"
+      },
+      "generation_bound": "n/a",
+      "generation_note": "end the file immediately after the genre byte"
+    },
+    {
+      "rule": "required",
+      "subject": "MPEG_FRAME.mpeg_frame_data",
+      "detail": "the final frame must fit entirely within the file; a frame whose derived length runs past end of file aborts the parse",
+      "description": "Line 455 tests FTell() + frame_size against FileSize() and returns -1 on overshoot, so a truncated final frame ends parsing rather than being tolerated.",
+      "corruption_risk": "high",
+      "source": "both",
+      "evidence": {
+        "line": 455,
+        "snippet": "if ( FTell() + frame_size  >  FileSize() )"
+      },
+      "generation_bound": "n/a - a placement rule on the last frame",
+      "generation_note": "size the file so the last frame's derived length lands exactly at the start of the ID3v1 tag, or at end of file when there is none"
+    },
+    {
+      "rule": "ordering",
+      "subject": "Xing, Info or VBRI header inside the first MPEG_FRAME.mpeg_frame_data",
+      "detail": "for a variable-bitrate file the first frame's payload carries a Xing/Info header at a version-and-channel-dependent offset (17, 21 or 32 bytes past the header), or a VBRI header 32 bytes past it",
+      "condition": "variable bitrate files only",
+      "description": "A convention rather than part of ISO/IEC 11172-3, but it is what makes VBR files seekable, and the template has no field for it - the bytes fall inside mpeg_frame_data.",
+      "corruption_risk": "low",
+      "source": "spec",
+      "evidence": {
+        "note": "Xing/LAME convention: the first frame of a VBR stream is a silent frame whose side-information area is followed by the ASCII tag 'Xing' or 'Info'; VBRI places 'VBRI' at a fixed offset of 32 bytes.",
+        "line": 471,
+        "snippet": "ubyte mpeg_frame_data [ frame_size ];"
+      },
+      "generation_bound": "at most one, in the first frame only",
+      "generation_note": "only relevant if generating VBR; for constant-bitrate output omit it entirely and keep every frame's bitrate_index identical"
+    }
+  ],
+  "unnamed_bitfields": [
+    {
+      "container": "FLAGS",
+      "width_bits": 5,
+      "required_value": 0,
+      "field_type": "ubyte : 5",
+      "evidence": {
+        "line": 174,
+        "snippet": "ubyte                         : 5;"
+      },
+      "mask": "0x1F of the ID3v2 header flags byte",
+      "description": "The low five bits of the ID3v2.3 header flags byte are reserved and must be cleared; the specification says a tag with any of them set should be discarded.",
+      "source": "both",
+      "corruption_risk": "high",
+      "confidence": "high"
+    },
+    {
+      "container": "ID3v2_EXTENDED_HEADER",
+      "width_bits": 15,
+      "required_value": 0,
+      "field_type": "uint16 : 15",
+      "evidence": {
+        "line": 195,
+        "snippet": "uint16                  : 15;   //"
+      },
+      "mask": "0x7FFF of the two-byte extended header flags word",
+      "description": "All extended-header flag bits other than the CRC bit are reserved and must be zero.",
+      "source": "both",
+      "corruption_risk": "medium",
+      "confidence": "high"
+    },
+    {
+      "container": "FRAME_FLAGS",
+      "width_bits": 5,
+      "required_value": 0,
+      "field_type": "uint16 : 5",
+      "evidence": {
+        "line": 211,
+        "snippet": "uint16                    : 5;"
+      },
+      "mask": "0x1F00 of the frame flags word - the low five bits of the first flags byte",
+      "description": "Reserved bits of the ID3v2.3 frame status flags byte; the specification requires them cleared.",
+      "source": "both",
+      "corruption_risk": "medium",
+      "confidence": "high"
+    },
+    {
+      "container": "FRAME_FLAGS",
+      "width_bits": 5,
+      "required_value": 0,
+      "field_type": "uint16 : 5",
+      "evidence": {
+        "line": 215,
+        "snippet": "uint16                    : 5;"
+      },
+      "mask": "0x001F of the frame flags word - the low five bits of the second flags byte",
+      "description": "Reserved bits of the ID3v2.3 frame format flags byte; the specification requires them cleared.",
+      "source": "both",
+      "corruption_risk": "medium",
+      "confidence": "high"
+    }
+  ],
+  "lookahead_pools": [
+    {
+      "local": "ReadByteInitValues",
+      "declaration": {
+        "line": 112,
+        "snippet": "const local BYTE ReadByteInitValues[] = { 0, 1 };"
+      },
+      "values": [
+        0,
+        1
+      ],
+      "consumed_by": [
+        {
+          "call": "ReadByte(FTell()+28)",
+          "line": 133,
+          "decides": "ID3v1_TAG.zero - selects the ID3v1.1 branch"
+        },
+        {
+          "call": "ReadByte(FTell()+29)",
+          "line": 133,
+          "decides": "ID3v1_TAG.track - must be non-zero"
+        },
+        {
+          "call": "ReadByte(FTell())",
+          "line": 232,
+          "decides": "ID3v2_FRAME.id_asciiz_str - the text encoding byte"
+        },
+        {
+          "call": "ReadByte(FTell())",
+          "line": 321,
+          "decides": "whether another ID3v2 frame follows or padding begins"
+        }
+      ],
+      "note": "A const global pool naming the two values every ReadByte site in this template compares against. Both are productive: 0 drives the ID3v1.1 and padding branches, 1 the alternatives."
+    },
+    {
+      "local": "buf_values",
+      "declaration": {
+        "line": 486,
+        "snippet": "local string buf_values[] = { \"ID3\" };"
+      },
+      "values": [
+        "ID3"
+      ],
+      "consumed_by": [
+        {
+          "call": "ReadBytes(buf, 0, 3, buf_values)",
+          "line": 488,
+          "decides": "ID3v2_HEADER.head - whether an ID3v2 tag is parsed at all"
+        }
+      ],
+      "note": "The single highest-value mined literal in the file: the whole ID3v2 branch hangs on this three-byte comparison at absolute offset 0."
+    },
+    {
+      "local": "data_values",
+      "declaration": {
+        "line": 496,
+        "snippet": "local ushort data_values[] = { 0x5441 };"
+      },
+      "values": [
+        21569
+      ],
+      "consumed_by": [
+        {
+          "call": "ReadUShort(seek_pos, data_values)",
+          "line": 505,
+          "decides": "ID3v1_TAG.id - 0x5441 is 'TA', confirmed as 'TAG' by the ReadUByte on line 507"
+        }
+      ],
+      "note": "This pool contains only the ID3v1 signature. Crucially it does NOT contain any MPEG sync value, because the sync test on lines 510/518/520 is a >= 0xFFE0 threshold rather than an equality - so no sync literal is mined here, and a generator seeded only from this pool will never produce a frame sync. This is the most consequential gap in the template's mineable value sets."
+    },
+    {
+      "local": "mpeg_id_values",
+      "declaration": {
+        "line": 329,
+        "snippet": "local uint32 mpeg_id_values[] = { 1, 2 };"
+      },
+      "values": [
+        1,
+        2
+      ],
+      "consumed_by": [
+        {
+          "attribute": "<values=mpeg_id_values>",
+          "line": 346,
+          "decides": "MPEG_HEADER.mpeg_id"
+        }
+      ],
+      "note": "Attached to a one-bit field, so the value 2 is unrepresentable; only 1 is usable and 0 (MPEG-2) is absent from the pool."
+    },
+    {
+      "local": "protection_bit_values",
+      "declaration": {
+        "line": 330,
+        "snippet": "local uint32 protection_bit_values[] = { 0, 1 };"
+      },
+      "values": [
+        0,
+        1
+      ],
+      "consumed_by": [
+        {
+          "attribute": "<values=protection_bit_values>",
+          "line": 348,
+          "decides": "MPEG_HEADER.protection_bit"
+        }
+      ],
+      "note": "Correct and complete for a one-bit field."
+    },
+    {
+      "local": "bitrate_index_values",
+      "declaration": {
+        "line": 331,
+        "snippet": "local uint32 bitrate_index_values[] = { 0, 1, 15 };"
+      },
+      "values": [
+        0,
+        1,
+        15
+      ],
+      "consumed_by": [
+        {
+          "attribute": "<values=bitrate_index_values>",
+          "line": 349,
+          "decides": "MPEG_HEADER.bitrate_index"
+        }
+      ],
+      "note": "Actively harmful as a generation pool: 0 is free format and 15 is the reserved bad value, both rejected by the template's own check on line 376, so two of three pooled values guarantee an invalid frame."
+    }
+  ],
+  "template_deviations": [
+    {
+      "deviation": "frame_sync is declared as twelve bits, not eleven",
+      "evidence": {
+        "line": 342,
+        "snippet": "uint32 frame_sync        : 12;   // A"
+      },
+      "detail": "The MPEG frame sync is eleven bits. The template's twelve-bit field absorbs the high bit of the two-bit version field, which is why the sanity check compares against 0xFFE rather than 0x7FF and why mpeg_id is only one bit wide.",
+      "consequence": "A generator that treats frame_sync as an opaque twelve-bit value and mpeg_id as a full version selector will produce version 01, the reserved encoding, whenever frame_sync is 0xFFE and mpeg_id is 1.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "mpeg_id_values contains a value the field cannot hold",
+      "evidence": {
+        "line": 329,
+        "snippet": "local uint32 mpeg_id_values[] = { 1, 2 };"
+      },
+      "detail": "The pool is { 1, 2 } but the field is one bit wide.",
+      "consequence": "Value 2 is unreachable and value 0, meaning MPEG-2, is never suggested; the pool contributes exactly one usable literal.",
+      "corruption_risk": "medium"
+    },
+    {
+      "deviation": "bitrate_index_values pools two invalid values",
+      "evidence": {
+        "line": 331,
+        "snippet": "local uint32 bitrate_index_values[] = { 0, 1, 15 };"
+      },
+      "detail": "The pool is { 0, 1, 15 }; the template's own sanity check on line 376 rejects 0 and 15.",
+      "consequence": "Seeding generation from this pool yields an invalid MPEG header two times in three; the correct generative set is 1 through 14.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "no MPEG sync value is ever compared against a literal",
+      "evidence": {
+        "line": 510,
+        "snippet": "if ( !was_bad_sync  &&  data < 0xFFE0  &&  !id3v1_tag_found )"
+      },
+      "detail": "The sync test is the threshold data < 0xFFE0 rather than an equality, so no sync constant appears in any value pool.",
+      "consequence": "FormatFuzzer mines no frame-sync literal from this template at all; the sync must come from the specification, which is why MPEG_HEADER.frame_sync carries an explicit generation_range pinned to 0xFFF.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "frame size is halved for mono",
+      "evidence": {
+        "line": 448,
+        "snippet": "frame_size >>= 1;"
+      },
+      "detail": "Line 447 halves frame_size when channel_mode is 3. No such rule exists in ISO/IEC 11172-3: the frame length depends on bitrate and sampling frequency only, not on channel count.",
+      "consequence": "The template's own header comment on lines 33-35 documents this as a known bug for MPEG-1 Layer III mono. A generator that copies the template's arithmetic will place the next sync word at half the correct distance.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "the padding slot is always one byte",
+      "evidence": {
+        "line": 450,
+        "snippet": "frame_size -= 4 + (mpeg_hdr.protection_bit==0 ? 2:0) - mpeg_hdr.padding_bit;"
+      },
+      "detail": "Line 450 adds mpeg_hdr.padding_bit to the length regardless of layer; a Layer I padding slot is four bytes.",
+      "consequence": "Layer I frames with the padding bit set are three bytes short.",
+      "corruption_risk": "medium"
+    },
+    {
+      "deviation": "the ID3v2.4 frame flag layout is not implemented",
+      "evidence": {
+        "line": 256,
+        "snippet": "FRAME_FLAGS flags;"
+      },
+      "detail": "ID3v2_4_FRAME reuses FRAME_FLAGS, which encodes the ID3v2.3 layout %abc00000 %ijk00000. ID3v2.4 uses %0abc0000 %0h00kmnp, with every flag shifted one bit and new unsynchronisation and data-length-indicator flags added.",
+      "consequence": "Every ID3v2.4 frame flag this template reports is one bit out of position, and the v2.4 data-length-indicator flag - which adds four bytes before the payload - is invisible.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "the ID3v2.4 extended header layout is not implemented",
+      "evidence": {
+        "line": 192,
+        "snippet": "uint32 size; // extended header size, excluding this 'size' field"
+      },
+      "detail": "ID3v2_EXTENDED_HEADER reads a plain uint32 size, two flag bytes and a four-byte padding size. In ID3v2.4 the extended header size is synchsafe and includes itself, there is a flag-byte count, and padding_sz does not exist.",
+      "consequence": "A version 4 tag with an extended header is parsed with version 3 field widths and every frame after it is misaligned.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "the ID3v2.4 footer is not supported",
+      "evidence": {
+        "line": 295,
+        "snippet": "if ( !(hdr.ver_major == 3 || hdr.ver_major == 4)  ||  hdr.flags.UNSYNCHRONISATION_USED  ||  hdr.flags.EXPERIMENTAL_TAG)"
+      },
+      "detail": "ID3v2.4 defines an optional ten-byte footer with the signature '3DI', flagged by bit 4 of the header flags byte - a bit the FLAGS struct folds into its anonymous five-bit remainder.",
+      "consequence": "A footer is neither generated nor accounted for in the tag size, and its bytes would be scanned as audio.",
+      "corruption_risk": "medium"
+    },
+    {
+      "deviation": "unsynchronisation is never reversed",
+      "evidence": {
+        "line": 295,
+        "snippet": "if ( !(hdr.ver_major == 3 || hdr.ver_major == 4)  ||  hdr.flags.UNSYNCHRONISATION_USED  ||  hdr.flags.EXPERIMENTAL_TAG)"
+      },
+      "detail": "Rather than undoing the $FF $00 insertions, the template abandons frame parsing whenever the flag is set.",
+      "consequence": "No unsynchronised tag ever exercises the frame structs, so setting that flag costs all frame coverage.",
+      "corruption_risk": "medium"
+    },
+    {
+      "deviation": "the ID3v1.1 discriminator is read from inside the comment field",
+      "evidence": {
+        "line": 133,
+        "snippet": "if ( ReadByte(FTell()+28) == 0  &&  ReadByte(FTell()+29) != 0 )"
+      },
+      "detail": "The lookahead at line 133 reads FTell()+28 and FTell()+29 while positioned at the start of the comment, so it inspects bytes that the ID3v1.0 branch would treat as comment text.",
+      "consequence": "An ID3v1.0 comment whose 29th byte is zero and 30th is non-zero is misparsed as ID3v1.1; this is inherent to the format, not a template error, but a generator must choose the layout deliberately rather than letting comment bytes decide it.",
+      "corruption_risk": "medium"
+    },
+    {
+      "deviation": "the ID3v2 frame loop is a do-while",
+      "evidence": {
+        "line": 312,
+        "snippet": "do"
+      },
+      "detail": "The exit test on line 321 runs only after a frame has been read, so at least one frame is always parsed even when tag_sz is 0.",
+      "consequence": "A tag declaring size 0 still consumes at least ten bytes of what should be audio, and line 324 then computes a padding length of 0 minus that, which underflows an unsigned expression.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "no bounds check on ID3v2_4_FRAME text frames",
+      "evidence": {
+        "line": 268,
+        "snippet": "char frame_data [size.computed - 1];"
+      },
+      "detail": "The v2.3 branch guards its size - 1 subtraction with 'size > 1' on line 232; the v2.4 branch has no equivalent guard.",
+      "consequence": "A v2.4 text frame declaring size 0 requests an array of length -1.",
+      "corruption_risk": "medium"
+    },
+    {
+      "deviation": "MPEG 2.5 is unimplemented",
+      "evidence": {
+        "line": 29,
+        "snippet": "//   1) MPEG 2.5 support"
+      },
+      "detail": "Listed as TODO item 1 in the template header. MPEG 2.5 uses version bits 00 and sampling frequencies of 11025, 12000 and 8000 Hz.",
+      "consequence": "A frame_sync of 0xFFE with mpeg_id 0 is accepted by the sanity check but decoded with the wrong frequency table and the wrong frame-length divisor.",
+      "corruption_risk": "high"
+    },
+    {
+      "deviation": "the sync search resynchronises by only two bytes",
+      "evidence": {
+        "line": 383,
+        "snippet": "FSeek( FTell() - 2 );"
+      },
+      "detail": "On a failed sanity check the template seeks back to FTell() - 2 rather than to the byte after the false sync.",
+      "consequence": "Recovery behaviour differs from a real decoder's byte-by-byte resync; a generated file with a near-miss sync will be walked differently by the template than by a player.",
+      "corruption_risk": "low"
+    }
+  ]
+}
