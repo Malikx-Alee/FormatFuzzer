@@ -1,0 +1,1817 @@
+//------------------------------------------------
+//--- 010 Editor v8.0 Binary Template
+//
+//      File: MP4.bt
+//   Authors: Alexey Lyashko, Andrew Molyneux, Marian Denes, SweetScape, Marko Musa
+//   Version: 3.3
+//   Purpose: Defines a template for parsing MP4 and MOV video files.
+//  Category: Video
+// File Mask: *.mp4,*.mov,*.m4v
+//  ID Bytes: [+4] 66 74 79 70, [+4] 6D 6F 6F 76, [+4] 6D 64 61 74
+//   History:
+//   3.3   2019-08-08 M. Musa: Modified box logic to respect box size in header.
+//   3.2   2019-02-03 A. Lyashko: Added support for fragmented MP4 files.
+//   3.1   2018-06-17 A. Lyashko: Added support for sample table atoms.
+//   3.0   2017-10-03 A Molyneux: Total rewrite, more complete and robust.
+//   2.2   2016-01-29 SweetScape: Updated header for repository submission.
+//   2.1   2015-06-04 M Denes: Public release.
+//------------------------------------------------
+
+BigEndian();
+
+struct fp16;
+struct fp32;
+struct fp32uvw;
+struct matrix;
+struct fourcc;
+struct boxheader;
+struct compatible_brand;
+struct mp4box;
+struct mp4time;
+struct mp4lang;
+struct qtopcolor;
+struct elst_entry;
+struct tkhd_flags;
+struct vmhd_flags;
+
+// QuickTime language codes from https://developer.apple.com/library/content/documentation/QuickTime/QTFF/QTFFChap4/qtff4.html#//apple_ref/doc/uid/TP40000939-CH206-34353
+enum qtlang
+{
+    qtlEnglish            = 0,
+    qtlFrench             = 1,
+    qtlGerman             = 2,
+    qtlItalian            = 3,
+    qtlDutch              = 4,
+    qtlSwedish            = 5,
+    qtlSpanish            = 6,
+    qtlDanish             = 7,
+    qtlPortuguese         = 8,
+    qtlNorwegian          = 9,
+    qtlHebrew             = 10,
+    qtlJapanese           = 11,
+    qtlArabic             = 12,
+    qtlFinnish            = 13,
+    qtlGreek              = 14,
+    qtlIcelandic          = 15,
+    qtlMaltese            = 16,
+    qtlTurkish            = 17,
+    qtlCroatian           = 18,
+    qtlChineseTraditional = 19,
+    qtlUrdu               = 20,
+    qtlHindi              = 21,
+    qtlThai               = 22,
+    qtlKorean             = 23,
+    qtlLithuanian         = 24,
+    qtlPolish             = 25,
+    qtlHungarian          = 26,
+    qtlEstonian           = 27,
+    qtlLettish            = 28,
+    qtlLatvian            = 28,
+    qtlSaami              = 29,
+    qtlSami               = 29,
+    qtlFaroese            = 30,
+    qtlFarsi              = 31,
+    qtlRussian            = 32,
+    qtlChineseSimplified  = 33,
+    qtlFlemish            = 34,
+    qtlIrish              = 35,
+    qtlAlbanian           = 36,
+    qtlRomanian           = 37,
+    qtlCzech              = 38,
+    qtlSlovak             = 39,
+    qtlSlovenian          = 40,
+    qtlYiddish            = 41,
+    qtlSerbian            = 42,
+    qtlMacedonian         = 43,
+    qtlBulgarian          = 44,
+    qtlUkrainian          = 45,
+    qtlBelarusian         = 46,
+    qtlUzbek              = 47,
+    qtlKazakh             = 48,
+    qtlAzerbaijani        = 49,
+    qtlAzerbaijanAr       = 50,
+    qtlArmenian           = 51,
+    qtlGeorgian           = 52,
+    qtlMoldavian          = 53,
+    qtlKirghiz            = 54,
+    qtlTajiki             = 55,
+    qtlTurkmen            = 56,
+    qtlMongolian          = 57,
+    qtlMongolianCyr       = 58,
+    qtlPashto             = 59,
+    qtlKurdish            = 60,
+    qtlKashmiri           = 61,
+    qtlSindhi             = 62,
+    qtlTibetan            = 63,
+    qtlNepali             = 64,
+    qtlSanskrit           = 65,
+    qtlMarathi            = 66,
+    qtlBengali            = 67,
+    qtlAssamese           = 68,
+    qtlGujarati           = 69,
+    qtlPunjabi            = 70,
+    qtlOriya              = 71,
+    qtlMalayalam          = 72,
+    qtlKannada            = 73,
+    qtlTamil              = 74,
+    qtlTelugu             = 75,
+    qtlSinhala            = 76,
+    qtlBurmese            = 77,
+    qtlKhmer              = 78,
+    qtlLao                = 79,
+    qtlVietnamese         = 80,
+    qtlIndonesian         = 81,
+    qtlTagalog            = 82,
+    qtlMalayRoman         = 83,
+    qtlMalayArabic        = 84,
+    qtlAmharic            = 85,
+    qtlGalla              = 87,
+    qtlOromo              = 87,
+    qtlSomali             = 88,
+    qtlSwahili            = 89,
+    qtlKinyarwanda        = 90,
+    qtlRundi              = 91,
+    qtlNyanja             = 92,
+    qtlMalagasy           = 93,
+    qtlEsperanto          = 94,
+    qtlWelsh              = 128,
+    qtlBasque             = 129,
+    qtlCatalan            = 130,
+    qtlLatin              = 131,
+    qtlQuechua            = 132,
+    qtlGuarani            = 133,
+    qtlAymara             = 134,
+    qtlTatar              = 135,
+    qtlUighur             = 136,
+    qtlDzongkha           = 137,
+    qtlJavaneseRom        = 138,
+    qtlUnspecified        = 32767
+};
+
+// QuickTime graphics modes from https://developer.apple.com/library/content/documentation/QuickTime/QTFF/QTFFChap4/qtff4.html#//apple_ref/doc/uid/TP40000939-CH206-18741
+enum <uint16> qtgfxmode
+{
+    qtgCopy               = 0x000,
+    qtgDitherCopy         = 0x040,
+    qtgBlend              = 0x020,
+    qtgTransparent        = 0x024,
+    qtgStraightAlpha      = 0x100,
+    qtgPremulWhiteAlpha   = 0x101,
+    qtgPremulBlackAlpha   = 0x102,
+    qtgStraightAlphaBlend = 0x104,
+    qtgComposition        = 0x103
+};
+
+//------------------------------------------------------------------
+// Generation plan
+//
+// Every box states its own byte count in its first four bytes, so nothing in
+// an MP4 can be written until everything inside it has been measured.  The
+// parse direction discovers the tree; the generate direction has to decide it
+// first.  mp4BuildPlan() lays the whole tree out in one pass and records, for
+// every box in the order the parser will meet it, the bytes that have to be
+// exact.  mp4PlantHead() and mp4PlantBody() write those bytes just ahead of the
+// read position as each box is entered, so every size, count, offset and
+// cross-reference is already right the first time the parser looks at it - no
+// FSeek backpatch and no SetEvilBit(false) anywhere in this file.
+//
+// A plant is a lookahead ReadBytes whose preferred and possible sets are both
+// one computed image, with p = 1.0: 255 times in 256 the image is written with
+// the evil bit suppressed for that call, and the remaining time the same set is
+// redrawn with evil restored, so the net escape rate is about 1/32768 per plant.
+// The same call with a multi-entry menu picks uniformly from it AND plants the
+// choice, which is where the generator gets its structural entropy.
+//
+// The plan runs in BOTH directions, and deliberately so.  Gating it on
+// IsParsing() would make the two directions draw different numbers of random
+// decisions, and FormatFuzzer's round trip - generate, parse, re-generate from
+// the parsed decisions, compare - only holds when the decision streams line up.
+// In the parse direction a plant simply reads the bytes that are there: when
+// they are the ones the plan expected, which is exactly the case for a file this
+// template generated, the reads cost the same decisions the writes did and the
+// file re-generates byte for byte.  When they are not - any real MP4 - the read
+// falls through to a free read of the actual bytes and the plan is ignored from
+// there on.  The one thing that must not happen is a plant reaching past the end
+// of a box, so the body plant is emitted only once the box header the parser
+// actually read matches the size the plan laid down for it.
+//------------------------------------------------------------------
+
+const local string ReadBytesInitValues[0];   // per-call-site menus beat mined values
+
+local char   mp4Peek[128];                   // scratch for every lookahead
+local string mp4One[1];                      // single-entry menu for a computed plant
+
+// enumerated_values boxheader.type, and the schema_extension `comparison_sites`:
+// the four-character codes the parse switch at line 469 and the display switch
+// at line 203 name between them.  "raw " and "sowt" extend the set with the two
+// uncompressed sample-entry codes this generator emits; the notes on that entry
+// record that the registry is deliberately open.
+local string mp4BoxTypes[] = {
+    "ftyp", "moov", "mvhd", "trak", "tkhd", "edts", "elst", "mdia", "mdhd",
+    "hdlr", "minf", "vmhd", "smhd", "dinf", "dref", "stbl", "stsd", "stts",
+    "stsc", "stsz", "stco", "co64", "stss", "udta", "mdat", "free", "skip",
+    "moof", "mfhd", "traf", "tfhd", "trun", "mvex", "mehd", "trex", "sidx",
+    "saiz", "saio", "senc", "pssh", "sinf", "schi", "schm", "frma", "tenc",
+    "enca", "raw ", "sowt" };
+
+// The plan.  hdr is the eight header bytes, planted before the header is read;
+// img is the content prefix and img2 a second exact run at off2 bytes into the
+// box, both planted after the header, and only when it came back the size the
+// plan expected.  Every byte the three images do not cover is left to the field
+// declarations to draw from their own value sets, which is where the file's
+// variety comes from.  96 slots covers the widest shape this generator builds.
+local string mp4PlanHdr [96];
+local string mp4PlanImg [96];
+local string mp4PlanImg2[96];
+local int    mp4PlanOff2[96];
+local int    mp4PlanSize[96];
+local int    mp4PlanN = 0;
+local int    mp4PlanI = 0;
+
+// structure rule 4: the format has no terminator - the file ends when the last
+// box's size reaches the end of it - so the generator has to say when to stop.
+// FEof's probability argument is the only lever: -1.0 puts the threshold at 510
+// and can never fire, 1.0 puts it at 0 and always fires, and 0.0 makes the test
+// exact in the parse direction.  Only this one variable is gated on the
+// direction, and setting it draws no decisions.
+local double mp4EofP = 0.0;
+
+// The two structural menus, both planted on bytes inside the ftyp box whose
+// value is free: the box size, which structure rule 20 makes the only statement
+// of the compatible-brand count, and the minor_version, which ISO/IEC 14496-12
+// 4.3.3 calls informative.
+local string mp4FtypMenu[8];
+local string mp4ProfMenu[16];
+
+local int   mp4Brands;                       // 1..8 compatible brands
+local int   mp4Prof;                         // 0..15 shape selector
+local int   mp4Frag;                         // fragmented (moof/mdat) or progressive
+local int   mp4NTrak;
+local int   mp4Extra;                        // edts + stss + a trailing free box
+local int   mp4Uniform;                      // stsz uniform size or per-sample table
+local int   mp4Cenc;                         // saiz + saio + senc inside the traf
+local int   mp4Pssh;
+local int   mp4Sidx;
+local int   mp4NFrag;
+local int   mp4CW;                           // coded sample width  (not tkhd width)
+local int   mp4CH;                           // coded sample height (not tkhd height)
+local int64 mp4Ctime;
+local int64 mp4Mtime;
+local int   mp4MvDur;
+
+local int   mp4TKind [2];                    // 0 = video 'raw ', 1 = audio 'sowt'
+local int   mp4TSamp [2];
+local int   mp4TSSize[2];
+local int   mp4TScale[2];
+local int   mp4TDelta[2];
+local int   mp4TDur  [2];
+local int   mp4TkDur [2];
+local int   mp4TChunk[2];
+local int   mp4SzEnt [2];
+local int   mp4SzMh  [2];
+local int   mp4SzStsd[2];
+local int   mp4SzStts[2];
+local int   mp4SzStsc[2];
+local int   mp4SzStsz[2];
+local int   mp4SzStco[2];
+local int   mp4SzStss[2];
+local int   mp4SzStbl[2];
+local int   mp4SzMinf[2];
+local int   mp4SzMdia[2];
+local int   mp4SzEdts[2];
+local int   mp4SzTrak[2];
+
+local int   mp4SzFtyp;
+local int   mp4SzMoov;
+local int   mp4SzMvex;
+local int   mp4SzPssh;
+local int   mp4SzMdat;
+local int   mp4SzSidx;
+local int   mp4SzMoof;
+local int   mp4SzTraf;
+local int   mp4SzTrun;
+local int   mp4SzSaiz;
+local int   mp4SzSaio;
+local int   mp4SzSenc;
+local int   mp4SzFrMdat;
+local int   mp4DeltaTab[4];
+
+// Bit value sets for the two flag bitfield structs; a bitfield cannot carry an
+// init list, and file_integer refuses a bitfield lookahead, so <values=> is the
+// only way to constrain these four bits.
+local byte  mp4Bit0 [] = { 0 };
+local byte  mp4Bit1 [] = { 1 };
+local byte  mp4Bit01[] = { 0, 1 };
+
+//------------------------------------------------------------------
+// Byte-image helpers.  SPrintf assigns through std::string = const char*, which
+// stops at the first NUL, so a zero byte has to be handed over as a literal.
+//------------------------------------------------------------------
+string mp4Chr( int b )
+{
+    local string r;
+    if( b == 0 )
+        r = "\x00";
+    else
+        SPrintf( r, "%c", b );
+    return r;
+}
+
+string mp4BE16( int v )
+{
+    return mp4Chr( (v >> 8) & 0xff ) + mp4Chr( v & 0xff );
+}
+
+string mp4BE32( int64 v )
+{
+    return mp4Chr( (v >> 24) & 0xff ) + mp4Chr( (v >> 16) & 0xff ) + mp4Chr( (v >> 8) & 0xff ) + mp4Chr( v & 0xff );
+}
+
+string mp4Zero( int n )
+{
+    local string r;
+    local int i;
+    r = "";
+    for( i = 0; i < n; i++ )
+        r = r + mp4Chr( 0 );
+    return r;
+}
+
+// fixed_value matrix.a .. matrix.w: the unity matrix of ISO/IEC 14496-12 6.2.2,
+// { 0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000 } in the template's
+// member order a b u c d v x y w.  The six fp32 members scale by 65536 and the
+// three fp32uvw members by 2^30, which is why the last word is 0x40000000.
+string mp4Matrix()
+{
+    return mp4BE32( 65536 ) + mp4Zero( 12 ) + mp4BE32( 65536 ) + mp4Zero( 12 ) + mp4BE32( 1073741824 );
+}
+
+void mp4Plant( int64 pos, string img )
+{
+    mp4One[0] = img;
+    ReadBytes( mp4Peek, pos, Strlen( img ), mp4One, mp4One, 1.0 );
+}
+
+int mp4Val32( string s )
+{
+    return (s[0] & 0xff) * 16777216 + (s[1] & 0xff) * 65536 + (s[2] & 0xff) * 256 + (s[3] & 0xff);
+}
+
+void mp4PushBox( int size, string type, string content, int off2, string img2 )
+{
+    mp4PlanSize[ mp4PlanN ] = size;
+    mp4PlanHdr [ mp4PlanN ] = mp4BE32( size ) + type;
+    mp4PlanImg [ mp4PlanN ] = content;
+    mp4PlanOff2[ mp4PlanN ] = off2;
+    mp4PlanImg2[ mp4PlanN ] = img2;
+    mp4PlanN = mp4PlanN + 1;
+}
+
+void mp4Push( int size, string type, string content )
+{
+    mp4PushBox( size, type, content, 0, "" );
+}
+
+//------------------------------------------------------------------
+// One track: the trak/mdia/minf/stbl chain of structure rule 10, innermost
+// sizes first, pushed in the pre-order the parser walks it in.
+//------------------------------------------------------------------
+void mp4PlanTrack( int t )
+{
+    local int i;
+    local int vol;
+    local string s;
+    local string nm;
+
+    mp4Push( mp4SzTrak[t], "trak", "" );
+
+    // tkhd: version 0 only - template_deviation 2, the version-1 header widens
+    // three fields to 64 bits that this template still reads at 32.  The flags
+    // byte at offset 11 is a bitfield and cannot be planted (file_integer
+    // refuses a bitfield lookahead), so it is left to the four <values=> sets in
+    // tkhd_flags, and the plan resumes at the creation time.
+    vol = 0;                                          // fixed_value mp4box.volume:
+    if( mp4TKind[t] )                                 // 1.0 for a sound track,
+        vol = 256;                                    // 0 for a purely visual one
+    mp4PushBox( 92, "tkhd", mp4Chr( 0 ) + mp4Zero( 2 ), 12,
+                mp4BE32( mp4Ctime ) + mp4BE32( mp4Mtime ) + mp4BE32( t + 1 ) + mp4Zero( 4 )
+              + mp4BE32( mp4TkDur[t] ) + mp4Zero( 8 ) + mp4Zero( 4 )
+              + mp4BE16( vol ) + mp4Zero( 2 ) + mp4Matrix() );
+
+    if( mp4SzEdts[t] )
+    {
+        // elst: one edit covering the whole track.  fixed_value
+        // elst_entry.media_rate = 0x00010000, and media_time 0 rather than the
+        // 0xFFFFFFFF empty-edit sentinel of dependency 30.
+        mp4Push( 36, "edts", "" );
+        mp4Push( 28, "elst", mp4Zero( 4 ) + mp4BE32( 1 )
+               + mp4BE32( mp4TkDur[t] ) + mp4BE32( 0 ) + mp4BE32( 65536 ) );
+    }
+
+    mp4Push( mp4SzMdia[t], "mdia", "" );
+
+    // mdhd: create/modify planted because the range_constraint on mp4time.value
+    // starts at 3082844800, which will not fit the int that carries a <min=>.
+    mp4Push( 32, "mdhd", mp4Zero( 4 ) + mp4BE32( mp4Ctime ) + mp4BE32( mp4Mtime )
+           + mp4BE32( mp4TScale[t] ) + mp4BE32( mp4TDur[t] ) );
+
+    // hdlr: structure rule 21.  enumerated_values mp4box.type is the four zero
+    // bytes ISO/IEC 14496-12 8.4.3 requires; mp4box.subtype picks the track kind
+    // and dependencies 38/39 tie it to the media header emitted below.
+    s  = "vide";
+    nm = "VideoHandler";
+    if( mp4TKind[t] )
+    {
+        s  = "soun";
+        nm = "SoundHandler";
+    }
+    mp4PushBox( 45, "hdlr", mp4Zero( 8 ) + s, 28, mp4Zero( 4 ) + nm + mp4Chr( 0 ) );
+
+    mp4Push( mp4SzMinf[t], "minf", "" );
+    if( mp4TKind[t] == 0 )
+        mp4Push( 20, "vmhd", mp4Chr( 0 ) + mp4Zero( 2 ) );
+    else
+        mp4Push( 16, "smhd", mp4Zero( 4 ) + mp4Zero( 2 ) );
+
+    // dinf/dref: the switch has no case for dref, so the default arm skips it
+    // wholesale (dependency 5) and its bytes have to be planted outright.
+    mp4Push( 36, "dinf", "" );
+    mp4Push( 28, "dref", mp4Zero( 4 ) + mp4BE32( 1 )
+           + mp4BE32( 12 ) + "url " + mp4Chr( 0 ) + mp4Zero( 2 ) + mp4Chr( 1 ) );
+
+    mp4Push( mp4SzStbl[t], "stbl", "" );
+
+    // stsd: structure rule 11, exactly one entry.  The entry is a whole nested
+    // box (dependency 47), and its type is not one the switch names, so the
+    // default arm skips it and its fields are planted.
+    mp4Push( mp4SzStsd[t], "stsd", mp4Zero( 4 ) + mp4BE32( 1 ) );
+    if( mp4TKind[t] == 0 )
+        mp4Push( 86, "raw ", mp4Zero( 6 ) + mp4BE16( 1 ) + mp4Zero( 16 )
+               + mp4BE16( mp4CW ) + mp4BE16( mp4CH )
+               + mp4BE32( 4718592 ) + mp4BE32( 4718592 )
+               + mp4Zero( 4 ) + mp4BE16( 1 ) + mp4Zero( 32 ) + mp4BE16( 24 ) + mp4BE16( 65535 ) );
+    else
+        mp4Push( 36, "sowt", mp4Zero( 6 ) + mp4BE16( 1 ) + mp4Zero( 8 )
+               + mp4BE16( 1 ) + mp4BE16( 16 ) + mp4Zero( 4 ) + mp4BE32( 524288000 ) );
+
+    if( mp4Frag )
+    {
+        // A fragmented track carries its samples in the trun boxes, so all four
+        // sample tables are present and empty - structure rule 12 still wants
+        // one of each.
+        mp4Push( 16, "stts", mp4Zero( 4 ) + mp4BE32( 0 ) );
+        mp4Push( 16, "stsc", mp4Zero( 4 ) + mp4BE32( 0 ) );
+        mp4Push( 20, "stsz", mp4Zero( 4 ) + mp4BE32( 0 ) + mp4BE32( 0 ) );
+        mp4Push( 16, "stco", mp4Zero( 4 ) + mp4BE32( 0 ) );
+        return;
+    }
+
+    // The four sample tables of structure rule 12, generated from one list of
+    // samples so the counts agree: stts runs sum to the sample count
+    // (dependency 31), stsc maps every sample into the one chunk (dependency 32)
+    // and stco locates that chunk in the file (dependency 43).
+    mp4Push( 24, "stts", mp4Zero( 4 ) + mp4BE32( 1 )
+           + mp4BE32( mp4TSamp[t] ) + mp4BE32( mp4TDelta[t] ) );
+    mp4Push( 28, "stsc", mp4Zero( 4 ) + mp4BE32( 1 )
+           + mp4BE32( 1 ) + mp4BE32( mp4TSamp[t] ) + mp4BE32( 1 ) );
+
+    s = mp4Zero( 4 );
+    if( mp4SzStsz[t] == 20 )
+    {
+        // dependency 29: a non-zero uniform size removes the table entirely
+        s = s + mp4BE32( mp4TSSize[t] ) + mp4BE32( mp4TSamp[t] );
+    }
+    else
+    {
+        // dependency 28: sample_size 0 is the sentinel that adds the table
+        s = s + mp4BE32( 0 ) + mp4BE32( mp4TSamp[t] );
+        for( i = 0; i < mp4TSamp[t]; i++ )
+            s = s + mp4BE32( mp4TSSize[t] );
+    }
+    mp4Push( mp4SzStsz[t], "stsz", s );
+
+    // structure rule 13: stco or co64, never both, and a bounded file never
+    // needs the 64-bit form.
+    mp4Push( 20, "stco", mp4Zero( 4 ) + mp4BE32( 1 ) + mp4BE32( mp4TChunk[t] ) );
+
+    if( mp4SzStss[t] )
+    {
+        // Every uncompressed frame is a random access point, so the sync sample
+        // numbers are 1..n, strictly increasing as dependency 35 requires.
+        s = mp4Zero( 4 ) + mp4BE32( mp4TSamp[t] );
+        for( i = 0; i < mp4TSamp[t]; i++ )
+            s = s + mp4BE32( i + 1 );
+        mp4Push( mp4SzStss[t], "stss", s );
+    }
+}
+
+//------------------------------------------------------------------
+// Choose the file's shape, measure every box in it, and record the plan.
+//------------------------------------------------------------------
+void mp4BuildPlan( int64 base )
+{
+    local int i;
+    local int t;
+    local int f;
+    local int nb;
+    local int moofOff;
+    local int sencOff;
+    local string s;
+
+    for( i = 0; i < 8; i++ )
+        mp4FtypMenu[i] = mp4BE32( 20 + 4 * i ) + "ftyp";
+    for( i = 0; i < 16; i++ )
+        mp4ProfMenu[i] = mp4BE32( i );
+
+    mp4DeltaTab[0] = 1000;
+    mp4DeltaTab[1] =  500;
+    mp4DeltaTab[2] =  200;
+    mp4DeltaTab[3] =  100;
+
+    // structure rules 0 and 3: ftyp is the first box and its type bytes are the
+    // file's only signature, so they go down before anything else.  The size
+    // picked here is also the brand count, because structure rule 20 makes the
+    // list run to the end of the box with no count field.
+    ReadBytes( mp4Peek, base, 8, mp4FtypMenu, mp4FtypMenu, 1.0 );
+    mp4SzFtyp = mp4Val32( mp4Peek );
+    nb = (mp4SzFtyp - 16) / 4;
+    if( nb < 1 || nb > 8 )
+    {
+        nb = 1;                                  // a plant escape, or a real file
+        mp4SzFtyp = 20;                          // whose ftyp is a different size
+    }
+    mp4Brands = nb;
+
+    ReadBytes( mp4Peek, base + 12, 4, mp4ProfMenu, mp4ProfMenu, 1.0 );
+    mp4Prof = mp4Val32( mp4Peek ) & 15;
+
+    mp4Frag    =  mp4Prof       & 1;
+    mp4NTrak   = ((mp4Prof >> 1) & 1) + 1;
+    mp4Extra   =  (mp4Prof >> 3) & 1;
+    mp4Uniform =   nb            & 1;
+    mp4Pssh    = ((nb - 1) >> 2) & 1;
+    mp4TKind[0] = (mp4Prof >> 2) & 1;
+    mp4TKind[1] = 1 - mp4TKind[0];
+
+    mp4NFrag = 0;
+    mp4Cenc  = 0;
+    mp4Sidx  = 0;
+    if( mp4Frag )
+    {
+        // structure rules 14/15/16: one track, an mvex before any fragment, and
+        // each moof immediately followed by the media data its trun points at.
+        mp4NTrak    = 1;
+        mp4TKind[0] = 0;
+        mp4NFrag    = ((nb - 1) & 1) + 1;
+        mp4Cenc     = mp4Extra;
+        mp4Sidx     = (mp4Prof >> 2) & 1;
+    }
+
+    // range_constraint mp4time.value: the read function subtracts 2082844800 to
+    // reach the POSIX epoch, so these are dates in the 2000s.
+    mp4Ctime = 3082844800 + mp4Prof * 1000000 + nb * 100000;
+    mp4Mtime = mp4Ctime + 3600;                  // 8.2.2: never before the creation time
+
+    for( t = 0; t < mp4NTrak; t++ )
+    {
+        if( mp4TKind[t] == 0 )
+        {
+            // The coded frame is uncompressed RGB.  It is deliberately far below
+            // the generation_range on mp4box.width - that range is the track's
+            // presentation size, which ISO/IEC 14496-12 8.3.2 says need not be
+            // the sample size, and a 320x240 frame would be 230 KB of mdat.
+            mp4CW = 8 + 8 * ((nb - 1) % 4);
+            mp4CH = 8 + 8 * ((nb - 1) / 2);
+            mp4TSSize[t] = mp4CW * mp4CH * 3;
+            mp4TSamp [t] = ((nb - 1) % 4) + 1;
+            mp4TScale[t] = 1000;
+            mp4TDelta[t] = mp4DeltaTab[ (nb - 1) % 4 ];
+        }
+        else
+        {
+            mp4TSSize[t] = 2;                    // one 16-bit PCM frame
+            mp4TSamp [t] = 400;
+            mp4TScale[t] = 8000;
+            mp4TDelta[t] = 1;
+        }
+        mp4TDur [t] = mp4TSamp[t] * mp4TDelta[t];
+        mp4TkDur[t] = mp4TDur[t] * 1000 / mp4TScale[t];
+        if( mp4Frag )
+            mp4TkDur[t] = 0;                     // a fragmented movie declares no duration here
+    }
+
+    // dependency 41: the movie duration is the longest track's, in movie units
+    mp4MvDur = mp4TkDur[0];
+    if( mp4NTrak > 1 && mp4TkDur[1] > mp4MvDur )
+        mp4MvDur = mp4TkDur[1];
+
+    for( t = 0; t < mp4NTrak; t++ )
+    {
+        if( mp4TKind[t] == 0 )
+        {
+            mp4SzEnt[t] = 86;                    // a bare VisualSampleEntry
+            mp4SzMh [t] = 20;                    // dependency 38: vmhd for 'vide'
+        }
+        else
+        {
+            mp4SzEnt[t] = 36;                    // a bare AudioSampleEntry
+            mp4SzMh [t] = 16;                    // dependency 39: smhd for 'soun'
+        }
+        mp4SzStsd[t] = 16 + mp4SzEnt[t];
+        mp4SzStss[t] = 0;
+        if( mp4Frag )
+        {
+            mp4SzStts[t] = 16;
+            mp4SzStsc[t] = 16;
+            mp4SzStsz[t] = 20;
+            mp4SzStco[t] = 16;
+        }
+        else
+        {
+            mp4SzStts[t] = 24;
+            mp4SzStsc[t] = 28;
+            mp4SzStsz[t] = 20;
+            if( mp4Uniform == 0 && mp4TKind[t] == 0 )
+                mp4SzStsz[t] = 20 + 4 * mp4TSamp[t];
+            mp4SzStco[t] = 20;
+            if( mp4Extra && mp4TKind[t] == 0 )
+                mp4SzStss[t] = 16 + 4 * mp4TSamp[t];
+        }
+        mp4SzStbl[t] = 8 + mp4SzStsd[t] + mp4SzStts[t] + mp4SzStsc[t] + mp4SzStsz[t]
+                     + mp4SzStco[t] + mp4SzStss[t];
+        mp4SzMinf[t] = 8 + mp4SzMh[t] + 36 + mp4SzStbl[t];
+        mp4SzMdia[t] = 8 + 32 + 45 + mp4SzMinf[t];
+        mp4SzEdts[t] = 0;
+        if( mp4Extra && mp4Frag == 0 )
+            mp4SzEdts[t] = 36;
+        mp4SzTrak[t] = 8 + 92 + mp4SzEdts[t] + mp4SzMdia[t];
+    }
+
+    mp4SzMvex = 0;
+    if( mp4Frag )
+        mp4SzMvex = 8 + 16 + 32 * mp4NTrak;      // mvex + mehd + one trex per track
+    mp4SzPssh = 0;
+    if( mp4Pssh )
+        mp4SzPssh = 48;                          // version 0, no key list, 16 bytes of data
+    mp4SzMoov = 8 + 108 + mp4SzMvex + mp4SzPssh;
+    for( t = 0; t < mp4NTrak; t++ )
+        mp4SzMoov = mp4SzMoov + mp4SzTrak[t];
+
+    mp4SzMdat   = 0;
+    mp4SzSidx   = 0;
+    mp4SzMoof   = 0;
+    mp4SzFrMdat = 0;
+    if( mp4Frag == 0 )
+    {
+        // structure rule 2: one mdat holding every track's single chunk, placed
+        // after the moov so a reader that cannot seek still finds the metadata.
+        mp4SzMdat = 8;
+        for( t = 0; t < mp4NTrak; t++ )
+            mp4SzMdat = mp4SzMdat + mp4TSamp[t] * mp4TSSize[t];
+        mp4TChunk[0] = base + mp4SzFtyp + mp4SzMoov + 8;
+        if( mp4NTrak > 1 )
+            mp4TChunk[1] = mp4TChunk[0] + mp4TSamp[0] * mp4TSSize[0];
+    }
+    else
+    {
+        // 8 header + version + flags + sample_count + data_offset, then 8 bytes
+        // per entry.  Eight rather than four is deliberate: ffcompile gives the
+        // trun arm's anonymous per-sample struct the same class as the senc
+        // arm's, because both are anonymous structs whose instance is named
+        // `entry` and pfp derives the class name from that instance alone.  The
+        // compiled trun therefore reads senc's fields - an 8-byte per_sample_IV
+        // and a subsample table when flag[2] is 2 - instead of its own four
+        // conditional ones.  The original has the identical collision, so
+        // renaming would be a behaviour change rather than an optimization;
+        // instead the plan chooses trun flags 0x000601, which makes a real entry
+        // (a 4-byte sample_size and a 4-byte sample_flags) exactly the 8 bytes
+        // the compiled arm consumes, with flag[2] set to 1 so senc's subsample
+        // branch stays shut.  The file is then right for a real demuxer AND
+        // self-consistent for this template.
+        mp4SzTrun = 20 + 8 * mp4TSamp[0];
+        mp4SzSaiz = 0;
+        mp4SzSaio = 0;
+        mp4SzSenc = 0;
+        if( mp4Cenc )
+        {
+            mp4SzSaiz = 17 + mp4TSamp[0];        // dependency 27: the per-sample table
+            mp4SzSaio = 20;
+            mp4SzSenc = 16 + 8 * mp4TSamp[0];    // template_deviation 3: an 8-byte IV
+        }
+        mp4SzTraf   = 8 + 24 + mp4SzTrun + mp4SzSaiz + mp4SzSaio + mp4SzSenc;
+        mp4SzMoof   = 8 + 16 + mp4SzTraf;
+        mp4SzFrMdat = 8 + mp4TSamp[0] * mp4TSSize[0];
+        if( mp4Sidx )
+            mp4SzSidx = 44;                      // 8 header + 36 content + one 12-byte reference
+    }
+
+    //-------------------------------------------------------------- the plan
+    mp4PlanN = 0;
+    mp4PlanI = 0;
+
+    mp4Push( mp4SzFtyp, "ftyp", "" );
+    mp4PlanHdr[0] = "";                          // the menu above already planted it
+
+    mp4Push( mp4SzMoov, "moov", "" );
+
+    // mvhd, structure rule 8.  Everything after the duration is either a
+    // fixed_value or a pre_defined region ISO/IEC 14496-12 8.2.2 requires to be
+    // zero, so the whole tail is one image: rate 1.0, volume 1.0, the reserved
+    // ten, the unity matrix, the six pre_defined words and next_track_id, which
+    // dependency 37 makes one past the largest track_id.
+    mp4PushBox( 108, "mvhd", mp4Zero( 4 )
+              + mp4BE32( mp4Ctime ) + mp4BE32( mp4Mtime )
+              + mp4BE32( 1000 ) + mp4BE32( mp4MvDur ), 28,
+                mp4BE32( 65536 ) + mp4BE16( 256 ) + mp4Zero( 10 ) + mp4Matrix()
+              + mp4Zero( 24 ) + mp4BE32( mp4NTrak + 1 ) );
+
+    // structure rule 9: at least one trak, each with a unique non-zero track_id
+    for( t = 0; t < mp4NTrak; t++ )
+        mp4PlanTrack( t );
+
+    if( mp4Frag )
+    {
+        // structure rule 15: the mvex warns the reader the file is fragmented
+        // and the trex carries the presentation-wide per-sample defaults.
+        mp4Push( mp4SzMvex, "mvex", "" );
+        mp4Push( 16, "mehd", mp4Zero( 4 ) + mp4BE32( mp4NFrag * mp4TSamp[0] * mp4TDelta[0] ) );
+        for( t = 0; t < mp4NTrak; t++ )
+            mp4Push( 32, "trex", mp4Zero( 4 ) + mp4BE32( t + 1 )
+                   + mp4BE32( 1 ) + mp4BE32( mp4TDelta[t] ) + mp4BE32( mp4TSSize[t] )
+                   + mp4BE32( 33554432 ) );
+    }
+
+    if( mp4Pssh )
+    {
+        // pssh version 0, so dependency 11's key-identifier list is absent.  The
+        // system ID is the Widevine UUID named as the preferred value.
+        mp4Push( 48, "pssh", mp4Zero( 4 )
+               + mp4BE32( 3991747497 ) + mp4BE32( 2043266766 )
+               + mp4BE32( 2747115484 ) + mp4BE32( 3575758829 )
+               + mp4BE32( 16 ) + mp4Zero( 16 ) );
+    }
+
+    if( mp4Frag == 0 )
+    {
+        mp4Push( mp4SzMdat, "mdat", "" );
+    }
+    else
+    {
+        if( mp4Sidx )
+        {
+            // sidx version 0: one reference covering the first moof/mdat pair,
+            // reference_type 0 and a SAP of type 1 at delta 0.
+            mp4Push( mp4SzSidx, "sidx", mp4Zero( 4 ) + mp4BE32( 1 ) + mp4BE32( 90000 )
+                   + mp4BE32( 0 ) + mp4BE32( 0 ) + mp4Zero( 2 ) + mp4BE16( 1 )
+                   + mp4BE32( mp4SzMoof + mp4SzFrMdat )
+                   + mp4BE32( mp4TSamp[0] * mp4TDelta[0] ) + mp4BE32( 2415919104 ) );
+        }
+        for( f = 0; f < mp4NFrag; f++ )
+        {
+            moofOff = base + mp4SzFtyp + mp4SzMoov + mp4SzSidx + f * (mp4SzMoof + mp4SzFrMdat);
+            mp4Push( mp4SzMoof, "moof", "" );
+            // the fragments are numbered from 1 and increase by one
+            mp4Push( 16, "mfhd", mp4Zero( 4 ) + mp4BE32( f + 1 ) );
+            mp4Push( mp4SzTraf, "traf", "" );
+            // tfhd flags 0x020018: default-base-is-moof, plus dependencies 16
+            // and 17 - a default sample duration and a default sample size.
+            mp4Push( 24, "tfhd", mp4Chr( 0 ) + mp4Chr( 2 ) + mp4Chr( 0 ) + mp4Chr( 24 )
+                   + mp4BE32( 1 ) + mp4BE32( mp4TDelta[0] ) + mp4BE32( mp4TSSize[0] ) );
+            // trun flags 0x000601: dependency 12's data_offset, measured from
+            // the moof, plus dependency 20's per-sample size and dependency 21's
+            // per-sample flags, which together make the entry the 8 bytes the
+            // compiled arm reads (see the size note above).  bitmask_constraint
+            // mp4box.entry.sample_flags 0x02000000 marks every sample a sync
+            // sample, which every uncompressed frame is.
+            s = mp4Chr( 0 ) + mp4Chr( 0 ) + mp4Chr( 6 ) + mp4Chr( 1 )
+              + mp4BE32( mp4TSamp[0] ) + mp4BE32( mp4SzMoof + 8 );
+            for( i = 0; i < mp4TSamp[0]; i++ )
+                s = s + mp4BE32( mp4TSSize[0] ) + mp4BE32( 33554432 );
+            mp4Push( mp4SzTrun, "trun", s );
+            if( mp4Cenc )
+            {
+                sencOff = moofOff + 8 + 16 + 8 + 24 + mp4SzTrun + mp4SzSaiz + mp4SzSaio + 16;
+                // saiz with a zero default size, so dependency 27's per-sample
+                // table follows; every entry is the 8-byte IV senc writes.
+                s = mp4Zero( 4 ) + mp4Chr( 0 ) + mp4BE32( mp4TSamp[0] );
+                for( i = 0; i < mp4TSamp[0]; i++ )
+                    s = s + mp4Chr( 8 );
+                mp4Push( mp4SzSaiz, "saiz", s );
+                // saio version 0: one 32-bit absolute offset to that auxiliary
+                // information, which is where the senc initialization vectors are
+                mp4Push( 20, "saio", mp4Zero( 4 ) + mp4BE32( 1 ) + mp4BE32( sencOff ) );
+                // senc with flag[2] 0, so template_deviation 4's equality test is
+                // false and no subsample table follows any entry
+                s = mp4Zero( 4 ) + mp4BE32( mp4TSamp[0] );
+                for( i = 0; i < mp4TSamp[0]; i++ )
+                    s = s + mp4Zero( 8 );
+                mp4Push( mp4SzSenc, "senc", s );
+            }
+            mp4Push( mp4SzFrMdat, "mdat", "" );
+        }
+    }
+
+    if( mp4Extra )
+        mp4Push( 16, "free", "" );               // last, so no chunk offset moves
+}
+
+//------------------------------------------------------------------
+// The eight header bytes, planted before the header is read.  A box is never
+// smaller than its header, so this read is exactly as safe as the header read
+// the parser is about to perform.
+//------------------------------------------------------------------
+void mp4PlantHead( int64 pos )
+{
+    if( mp4PlanN == 0 )
+        mp4BuildPlan( pos );
+    if( mp4PlanI >= mp4PlanN )
+        return;                                  // more boxes than the plan holds
+    if( Strlen( mp4PlanHdr[ mp4PlanI ] ) != 0 )
+        mp4Plant( pos, mp4PlanHdr[ mp4PlanI ] );
+}
+
+//------------------------------------------------------------------
+// The rest of the box's exact bytes, planted only once the header has come back
+// the size the plan laid down - which is always true of a file this template
+// generated and almost never true of anything else, so a plant can never reach
+// past the box it belongs to.
+//------------------------------------------------------------------
+void mp4PlantBody( int64 pos, int64 span )
+{
+    if( mp4PlanI >= mp4PlanN )
+        return;
+    if( span == mp4PlanSize[ mp4PlanI ] )
+    {
+        if( Strlen( mp4PlanImg[ mp4PlanI ] ) != 0 )
+            mp4Plant( pos + 8, mp4PlanImg[ mp4PlanI ] );
+        if( Strlen( mp4PlanImg2[ mp4PlanI ] ) != 0 )
+            mp4Plant( pos + mp4PlanOff2[ mp4PlanI ], mp4PlanImg2[ mp4PlanI ] );
+    }
+    mp4PlanI = mp4PlanI + 1;
+    if( IsParsing() == 0 && mp4PlanI >= mp4PlanN )
+        mp4EofP = 1.0;                           // the last planned box ends the file
+}
+
+uint64 ContentSize(boxheader& bh)
+{
+    return (exists(bh.size64) ? bh.size64 : bh.size) - sizeof(bh);
+}
+
+uint64 BoxSize(boxheader& bh)
+{
+    return (exists(bh.size64) ? bh.size64 : bh.size);
+}
+
+string ReadFP16(fp16& f)
+{
+    local string buf;
+    SPrintf(buf, "%lf", (double)f.value / (double)0x100);
+    return buf;
+}
+
+string ReadFP32(fp32& f)
+{
+    local string buf;
+    SPrintf(buf, "%lf", (double)f.value / (double)0x10000);
+    return buf;
+}
+
+string ReadFP32uvw(fp32uvw& f)
+{
+    local string buf;
+    SPrintf(buf, "%lf", (double)f.value / (double)0x40000000);
+    return buf;
+}
+
+wstring ReadBox(mp4box& box)
+{
+    return box.hdr.type.value;
+}
+
+string BoxComment(mp4box& box)
+{
+    switch (box.hdr.type.value)
+    {
+        case "dinf": return "Data Information Box";
+        case "dref": return "Data Reference Box";
+        case "edts": return "Edit Box";
+        case "elst": return "Edit List Box";
+        case "free": return "Free Space Box";
+        case "ftyp": return "File Type Box";
+        case "hdlr": return "Handler Reference Box";
+        case "mdat": return "Media Data Box";
+        case "mdhd": return "Media Header Box";
+        case "mdia": return "Media Box";
+        case "minf": return "Media Information Box";
+        case "moov": return "Movie Box";
+        case "mvhd": return "Movie Header Box";
+        case "stbl": return "Sample Table Box";
+        case "tkhd": return "Track Header Box";
+        case "trak": return "Track Box";
+        case "udta": return "User Data Box";
+        case "vmhd": return "Video Media Information Header Box";
+        // Added mvex
+        case "mvex": return "Movie Extends Box";
+        case "mehd": return "Movie Extends Header Box";
+        case "trex": return "Track Extends Box";
+        case "sidx": return "Segment Index Box";
+        case "moof": return "Movie Fragment Box";
+        case "mfhd": return "Movie Fragment Header Box";
+        case "traf": return "Track Fragment Box";
+        case "trun": return "Track Fragment Run Box";
+        case "saiz": return "Sample auxiliary information sizes";
+        case "saio": return "Sample auxiliary information offsets";
+        case "senc": return "Sample encryption";
+        case "pssh": return "Protection System Specific Header Box";
+        // Added the following to support stbl child atoms
+        case "stss": return "Sync Sample Box";
+        case "stsz": return "Sample Size Box";
+        case "stco": return "Chunk Offset Box";
+        case "co64": return "Chunk Large Offset Box";
+        case "stsc": return "Sample To Chunk Box";
+        case "stts": return "Time To Sample Box";
+        case "stsd": return "Sample Description Box";
+        default: return "Unknown box type";
+    }
+}
+
+wstring ReadFourCC(fourcc& f)
+{
+    return f.value;
+}
+
+wstring ReadBoxHeader(boxheader& bh)
+{
+    local string s;
+    SPrintf(s, "[size=%Lu]", ContentSize(bh));
+    return bh.type.value + " " + s;
+}
+
+string ReadCompatibleBrand(compatible_brand& b)
+{
+    return b.brand.value;
+}
+
+string ReadTime(mp4time& t)
+{
+    // Magic number 2082844800 is the difference in seconds between the
+    // classic Mac OS epoch (midnight on January 1st 1904) and the POSIX
+    // epoch (midnight on January 1st 1970).
+    local quad value = (quad)t.value - 2082844800;
+    return TimeTToString(value, "yyyy-MM-dd hh:mm:ss");
+}
+
+string ReadLang(mp4lang& lang)
+{
+    if (lang.value < 0x0400 || lang.value == qtlUnspecified)
+    {
+        local qtlang v = lang.value;
+        return EnumToString(v);
+    }
+    local char iso[4];
+    iso[0] = ((lang.value & 0x7c00) >> 10) + 0x60;
+    iso[1] = ((lang.value & 0x03e0) >> 5) + 0x60;
+    iso[2] = (lang.value & 0x001f) + 0x60;
+    iso[3] = '\0';
+    return iso;
+}
+
+string ReadOpcolor(qtopcolor& c)
+{
+    local string result;
+    SPrintf(result, "r=%d, g=%d, b=%d", c.red, c.green, c.blue);
+    return result;
+}
+
+string PipeConcat(string s1, string s2)
+{
+    if (Strlen(s1) > 0)
+    {
+        return s1 + " | " + s2;
+    }
+    return s2;
+}
+
+string ReadTkhdFlags(tkhd_flags& f)
+{
+    local string result;
+    if (f.track_enabled)
+    {
+        result = "Track enabled";
+    }
+    if (f.track_in_movie)
+    {
+        result = PipeConcat(result, "Track in movie");
+    }
+    if (f.track_in_preview)
+    {
+        result = PipeConcat(result, "Track in preview");
+    }
+    if (f.track_in_poster)
+    {
+        result = PipeConcat(result, "Track in poster");
+    }
+    return result;
+}
+
+string ReadVmhdFlags(vmhd_flags& f)
+{
+    local string result;
+    if (f.no_lean_ahead)
+    {
+        result = "No lean ahead";
+    }
+    return result;
+}
+
+typedef struct
+{
+    // range_constraint fp16.value: every use of the 8.8 type in this format is a
+    // volume or a balance, whose meaningful span is 0.0 (0) to 1.0 (0x0100)
+    int16 value <min=0, max=256>;
+} fp16 <read=ReadFP16, open=suppress>;
+
+typedef struct
+{
+    // range_constraint fp32.value.  ffcompile registers an integer range on one
+    // global object per identifier, and fp32.value and fp32uvw.value share it
+    // (same name, same width), so this one attribute has to serve both.  Every
+    // fp32 the plan does not plant is a tkhd width or height, so the tighter
+    // range_constraint from mp4box.width is the one that belongs here: 0x00010000
+    // is one pixel and 0x07800000 is 1920.  fp32.value's own generation_range
+    // would reach 10240.0, which no real track declares.
+    int32 value <min=65536, max=125829120>;
+} fp32 <read=ReadFP32, open=suppress>;
+
+typedef struct
+{
+    // fixed_value matrix.u / matrix.v / matrix.w: the projective row is
+    // restricted to { 0, 0, 0x40000000 }, so every instance of this type is
+    // inside the planted unity matrix and no range attribute can reach it - see
+    // the note on fp32.value for why it could not carry its own anyway.
+    int32 value;
+} fp32uvw <read=ReadFP32uvw, open=suppress>;
+
+typedef struct
+{
+    fp32 a <name="a">;
+    fp32 b <name="b">;
+    fp32uvw u <name="u">;
+    fp32 c <name="c">;
+    fp32 d <name="d">;
+    fp32uvw v <name="v">;
+    fp32 x <name="x">;
+    fp32 y <name="y">;
+    fp32uvw w <name="w">;
+} matrix <open=suppress>;
+
+typedef struct
+{
+    // pattern_constraint fourcc.value: four printable ASCII bytes, space-padded.
+    // This one declaration serves every four-character code in the format, so
+    // the value set has to be the one the unplanted instances need - the ftyp
+    // major_brand and its compatible-brands list, which is enumerated_values
+    // mp4box.major_brand unioned with compatible_brand.brand.  boxheader.type
+    // and the two hdlr codes are planted from the plan instead, and a planted
+    // byte filters this list down to itself.
+    char value[4] = { "isom", "iso2", "iso4", "iso5", "iso6", "avc1", "mp41",
+                      "mp42", "mp71", "M4A ", "M4V ", "M4P ", "qt  ", "3gp4",
+                      "3gp5", "3gp6", "3g2a", "dash", "msdh", "msix", "mmp4",
+                      "cmfc" } <open=suppress>;
+} fourcc <read=ReadFourCC, open=suppress>;
+
+typedef struct
+{
+    // calculated_value boxheader.size: the byte count of the whole box, this
+    // field included.  It cannot be declared - it is only knowable once the box
+    // content exists - so the plan measures the tree first and plants it here.
+    // Structure rule 17 and 18 are what make that unavoidable rather than merely
+    // tidy: a size of 0 is the legal extends-to-end-of-file escape that makes
+    // BoxSize() return 0 and both walks spin without progress, and a size of 2
+    // to 7 underflows ContentSize() to a value near 2^64 that the default arm
+    // then FSkips.  The plan never emits either.
+    uint32 size;
+    // enumerated_values boxheader.type, via the schema_extension comparison_sites
+    // set.  In the generate direction the type is already planted, so
+    // file_string filters this menu down to the one compatible entry rather than
+    // drawing a second, conflicting value.
+    ReadBytes( mp4Peek, FTell(), 4, mp4BoxTypes, mp4BoxTypes, 1.0 );
+    fourcc type;
+    if (size == 1)
+    {
+        // dependency 0: the escape value 1 moves the size into this 64-bit
+        // field and makes the header 16 bytes, which ContentSize() accounts for
+        // through sizeof(bh).  calculated_value boxheader.size64, planted for
+        // the same reason as size; the plan never chooses the escape, because it
+        // exists only for boxes above 4 GB.
+        uint64 size64;
+    }
+} boxheader <read=ReadBoxHeader, open=suppress>;
+
+typedef struct
+{
+    fourcc brand;
+} compatible_brand <read=ReadCompatibleBrand, open=suppress>;
+
+typedef struct
+{
+    // range_constraint mp4time.value: seconds since the 1904 Mac OS epoch, so
+    // the generation range starts at 3082844800.  That will not fit the int that
+    // carries a <min=> attribute through file_accessor's integer_ranges table,
+    // so every creation and modification time is planted from the plan instead.
+    uint32 value;
+} mp4time <read=ReadTime, open=suppress>;
+
+typedef struct
+{
+    // bitmask_constraint mp4lang.value: bit 15 must be 0 and the three five-bit
+    // fields each hold an ISO 639-2 letter, so an arbitrary 16-bit draw is
+    // almost never a language.  0x55C4 is 'und', and the other two are the
+    // QuickTime readings dependency 53 selects below 0x0400.
+    uint16 value = { 0x55C4, 0, 32767 };
+} mp4lang <read=ReadLang, open=suppress>;
+
+typedef struct
+{
+    // range_constraint qtopcolor.red / green / blue, and dependency 51:
+    // ISO/IEC 14496-12 12.1.2 requires the video media header's opcolor to be
+    // { 0, 0, 0 } together with a graphicsmode of 0.
+    uint16 red = { 0 };
+    uint16 green = { 0 };
+    uint16 blue = { 0 };
+} qtopcolor <read=ReadOpcolor, open=suppress>;
+
+typedef struct
+{
+    // calculated_value elst_entry.duration and .media_time.  The generation
+    // ranges are attached here because this is the first declaration of each
+    // identifier in the file and ffcompile registers an integer range once per
+    // identifier; mp4box.duration shares the same range, which is what its own
+    // generation_range asks for.  Both fields are planted from the plan so the
+    // edit covers exactly the track, and media_time stays clear of the
+    // 0xFFFFFFFF empty-edit sentinel of dependency 30.
+    uint32 duration <min=0, max=600000, name="Duration", comment="Duration of this edit segment in movie time scale units (specified in mvhd box)">;
+    uint32 media_time <min=0, max=600000, name="Media Time", comment="Start time of this edit segment in media time scale units (specified in mdhd box)">;
+    // fixed_value elst_entry.media_rate: 0x00010000, or 0 for a dwell
+    fp32 media_rate <name="Media Rate", comment="Relative rate at which to play this edit segment">;
+} elst_entry;
+
+typedef struct
+{
+    // fixed_value tkhd_flags.dummy: the upper two FullBox flag bytes are
+    // reserved and must be zero.  A byte array takes no init list, so the plan
+    // plants these two; the bit fields below cannot be planted at all -
+    // file_integer refuses a bitfield lookahead - so they carry <values=> sets.
+    byte dummy[2] <open=suppress>;
+    byte dummy2 : 4 <values=mp4Bit0>;                                       // fixed_value, bits 7-4 of the low flag byte
+    byte track_in_poster : 1 <values=mp4Bit01, name="Track in poster">;     // mask 0x08
+    byte track_in_preview : 1 <values=mp4Bit01, name="Track in preview">;   // mask 0x04
+    byte track_in_movie : 1 <values=mp4Bit1, name="Track in movie">;        // mask 0x02
+    // enumerated_values tkhd_flags.track_enabled, the one bit whose corruption
+    // risk is high: a track with it clear is treated as if it were not present.
+    byte track_enabled : 1 <values=mp4Bit1, name="Track enabled">;          // mask 0x01
+} tkhd_flags <read=ReadTkhdFlags, open=suppress>;
+
+typedef struct
+{
+    // dependency 50 and fixed_value vmhd_flags.no_lean_ahead: the video media
+    // header is the one FullBox in the format whose flags word must be non-zero -
+    // ISO/IEC 14496-12 12.1.2 requires it to be exactly 1.
+    byte dummy[2];
+    byte dummy2 : 7 <values=mp4Bit0>;
+    byte no_lean_ahead : 1 <values=mp4Bit1>;
+} vmhd_flags <read=ReadVmhdFlags, open=suppress>;
+
+// The following three structs are used with sample table atoms
+typedef struct
+{
+    // calculated_value str_stsc.first_chunk / .samples_per_chunk: one-based and
+    // strictly increasing, and the runs must multiply out to exactly the stsz
+    // sample count (dependency 32).  The plan emits a single run, so both are
+    // planted; the ranges bound what a mutator may put here afterwards.
+    uint32 first_chunk <min=1, max=64>;
+    uint32 samples_per_chunk <min=1, max=64>;
+    // range_constraint str_stsc.sample_description_index, dependency 34: a
+    // one-based index into a stsd table that structure rule 11 gives one entry.
+    uint32 sample_description_index = { 1 };
+}str_stsc;
+
+typedef struct
+{
+    // calculated_value str_stts.sample_count: the first declaration of this
+    // identifier in the file, so its range attribute is the one ffcompile
+    // registers for all five - senc, saiz, trun and stsz declare the same name.
+    // 256 is mp4box.sample_count's generation bound, the tighter of the two.
+    uint32 sample_count <min=1, max=256>;
+    // calculated_value str_stts.sample_delta: media time scale units per sample
+    uint32 sample_delta <min=1, max=600000>;
+}str_stts;
+
+typedef struct
+{
+    // calculated_value str_stsd.contentSize.  schema_extension
+    // unused_in_parse_flow: this struct is dead - the line that would have
+    // instantiated it is commented out below and replaced by a recursive
+    // mp4box array, which is the more correct reading since a sample entry is a
+    // box.  The bound is recorded so the array length stays sane if it is ever
+    // wired up; the subtraction on the next line has no lower guard.
+    uint32 contentSize <min=4, max=4096>;
+    byte   content[contentSize - 4];
+    /*local quad so = FTell();
+    while(FTell() < so + contentSize - 4)
+    {
+        mp4box box <name="Box">;
+    }*/
+}str_stsd;
+
+typedef struct
+{
+    // bitmask_constraint str_sidx.reference_size31_type1: bit 31 is the
+    // reference type and bits 30-0 the referenced byte count, so the word is not
+    // a free integer - the plan writes type 0 and the real size of the
+    // moof/mdat pair it points at.
+    uint32 reference_size31_type1;
+    // calculated_value str_sidx.subsegment_duration, in the sidx timescale
+    uint32 subsegment_duration <min=1, max=600000>;
+    // bitmask_constraint str_sidx.SAP_delta_time28_type3_starts_with1: bit 31
+    // starts_with_SAP, bits 30-28 the SAP type and bits 27-0 the delta, which
+    // must be 0 whenever the flag is set.  0x90000000 is a closed-GOP random
+    // access point; the plan plants it rather than drawing 32 free bits.
+    uint32 SAP_delta_time28_type3_starts_with1;
+}str_sidx;
+
+typedef struct
+{
+    // Seperated box start/end logic as box sizes being larger than content of the box caused issues
+    // For example 120 bit sized mvhd; it's wrong as it should be a fixed size, but it happens. 
+    local uint64 startOffset = FTell();
+
+    // Lay this box's header down just ahead of the read position, so its size
+    // and type are already right when the declaration below reads them.  Both
+    // directions run it: see the plan header for why.
+    mp4PlantHead( startOffset );
+
+    boxheader hdr;
+    
+    local uint64 endOffset = startOffset + BoxSize(hdr);
+    local uint64 contentsize = ContentSize(hdr);
+
+    // And now the rest of this box's exact bytes - every count, offset and
+    // cross-reference in it - guarded by the header having come back the size
+    // the plan expected.
+    mp4PlantBody( startOffset, endOffset - startOffset );
+    
+    switch (hdr.type.value)
+    {
+        // These box types are all just containers for other boxes
+        case "dinf":
+        case "edts":
+        case "mdia":
+        case "minf":
+        case "moov":
+        case "moof":
+        case "stbl":
+        case "trak":
+        case "udta":
+        case "traf":
+        case "mvex":
+        case "sinf":
+        case "schi":
+
+            while (FTell() < endOffset)
+            {
+                mp4box box <name="Box">;
+
+                // Warn about fixed sizes boxes having content size in header set to larger value.
+                if(FTell() != box.endOffset) {
+                    Printf("%s at %d larger then expected. Expected end: %d, Actual: %d\n",
+                                box.hdr.type.value,box.startOffset, FTell(), box.endOffset );
+                }
+                FSeek(box.endOffset);
+            }
+            break;
+        // Added mehd, trex, sidx, traf, tfhd, trun, saiz, saio, senc, pssh
+        case "frma":
+            // enumerated_values mp4box.codingName: the original four-character
+            // format of an encrypted sample entry, carried as a big-endian
+            // integer because template_deviation 9 declares it uint32 rather
+            // than fourcc.  'avc1', 'mp4a', 'hvc1', 'avc3', 'ac-3', 'ec-3'.
+            uint32 codingName = { 1635148593, 1836069985, 1752589105, 1635148595, 1633889587, 1700998451 };
+            break;
+        case "tenc":
+            // enumerated_values mp4box.version: every FullBox in the format
+            // opens with a version byte and three flag bytes.
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">; 
+            byte reserved1 = { 0 };                                     // fixed_value, ISO/IEC 23001-7 8.2.2
+            // dependency 10: the fifth byte is a second reserved byte in a
+            // version-0 box and the packed crypt/skip nibbles otherwise.
+            if(version == 0) byte reserved2 = { 0 };                    // fixed_value
+            // bitmask_constraint, dependency 49: bits 7-4 crypt block count and
+            // bits 3-0 skip block count, both zero for 'cenc' and 'cbc1' and
+            // 0x19 for the 'cbcs' pattern.
+            // (the third listed value, 0x91 for crypt 9 / skip 1, cannot be
+            // written here: ffcompile maps `byte` to a signed char and 145
+            // does not narrow into it)
+            else byte default_crypt_skip_byte_block = { 0, 0x19 };
+            // enumerated_values, dependency 48: marking samples protected
+            // obliges the box to supply an IV one way or the other.
+            byte default_is_protected = { 0, 1 };
+            // enumerated_values: 0, 8 or 16 only.  template_deviation 3 hard-
+            // codes the senc IV at 8, so a generated file must pair the two.
+            byte default_per_sample_IV_size = { 0, 8, 16 };
+            byte default_KID[16];                                       // fixed_result 16 - a UUID
+            // dependency 25: a zero per-sample IV size is the sentinel that
+            // adds a constant IV to the box.
+            if(0 == default_per_sample_IV_size)
+            {
+                byte default_constant_IV_size = { 8, 16 };              // enumerated_values
+                byte default_constant_IV[default_constant_IV_size];
+            }
+            break;
+        case "schm":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">; 
+            // enumerated_values mp4box.scheme_type: the four common encryption
+            // schemes 'cenc', 'cbc1', 'cens' and 'cbcs', again as integers
+            // (template_deviation 9).
+            uint32 scheme_type = { 1667591779, 1667392305, 1667591795, 1667392371 };
+            uint32 scheme_version = { 65536 };                          // fixed_value 0x00010000
+
+            break;
+        case "pssh":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">; 
+            byte systemID[16];                                          // fixed_result 16 - a DRM system UUID
+            // dependency 11: version 1 or later adds a key-identifier list
+            // between the system ID and the data blob.
+            if(version > 0)
+            {
+                // calculated_value mp4box.KID_count: used straight as an array
+                // bound with no check, and each element is 16 bytes.
+                uint32 KID_count <min=0, max=4>;
+                struct
+                {
+                    byte entry[16];                                     // fixed_result 16
+                }KID[KID_count];
+            }
+            // calculated_value mp4box.DataSize: likewise an unchecked array
+            // bound; real pssh payloads are a few hundred bytes.
+            uint32 DataSize <min=0, max=1024>;
+            byte Data[DataSize];
+            break;
+        case "senc":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 sample_count;
+            struct
+            {
+                // template_deviation 3 / dependency 26: the IV length is fixed
+                // at 8 here but the specification makes it the tenc box's
+                // default_per_sample_IV_size, so a generated file has to pair
+                // the two.  The plan writes 8-byte IVs and never a tenc box.
+                byte per_sample_IV[8];                                  // fixed_result 8
+                // dependency 24 / template_deviation 4: this is an equality
+                // test, not a bit test, so a flags word of 3 - which also has
+                // the subsample bit set - would be missed.  The plan writes
+                // flag[2] as exactly 2 or exactly 0.
+                if(flag[2] == 2)
+                {
+                    // calculated_value: an unchecked bound, 6 bytes per element,
+                    // multiplied by the sample count.
+                    uint16 subsample_count <min=0, max=16>;
+                    struct
+                    {   
+                        // calculated_value: the clear and protected runs of one
+                        // subsample must sum to that sample's size.
+                        uint16 bytes_of_clear_data <min=0, max=1024>;
+                        uint32 bytes_of_protected_data <min=0, max=65536>;
+                    }subsample_data[subsample_count];
+                }
+            }entry[sample_count];
+            break;
+        case "saio":
+            // dependency 6: version 0 makes the offset table 32-bit and
+            // version 1 makes it 64-bit.
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // dependency 23: bit 0 of the low flag byte adds the two aux-info
+            // type fields before the entry count.
+            if((flag[2] & 1) != 0)
+            {
+                // enumerated_values: the scheme's four-character code
+                uint32 aux_info_type = { 1667591779, 1667392305, 1667591795, 1667392371 };
+                // range_constraint; template_deviation 7 spells this 'aud' here
+                // and 'aux' in the saiz arm for the same format field.
+                uint32 aud_info_type_parameter = { 0 };
+            }
+            // calculated_value mp4box.entry_count: declared in eight arms and
+            // used straight as an array bound in all of them with no check.
+            // This is the first of the eight, so its range is the one ffcompile
+            // registers for the identifier.
+            uint32 entry_count <min=0, max=256>;
+            // calculated_value mp4box.offset: absolute file offsets that must
+            // land on real auxiliary information, so the plan back-computes them
+            // from the measured fragment layout.
+            if(version == 0)
+                uint32 offset[entry_count];
+            else
+                uint64 offset[entry_count];
+            break;
+        case "saiz":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            if((flag[2] & 1) != 0)                                      // dependency 23
+            {
+                uint32 aux_info_type = { 1667591779, 1667392305, 1667591795, 1667392371 };
+                uint32 aux_info_type_parameter = { 0 };                 // range_constraint
+            }
+            // calculated_value mp4box.default_sample_info_size: 0 is a sentinel
+            // meaning the sizes vary; 8 is the size of the IV senc writes.
+            byte   default_sample_info_size = { 0, 8 };
+            uint32 sample_count;
+            // dependency 27: the zero sentinel adds a byte-per-sample table
+            if(default_sample_info_size == 0)
+            {
+                byte entry[sample_count];
+            }
+            break;
+        case "trun":
+            local int i;
+            // dependency 9: the version changes the composition offset's
+            // signedness rather than its width - the only place in the template
+            // where it does.
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 sample_count;
+            // dependency 12 / 13: bits 0x01 and 0x04 of the low flag byte each
+            // add one field, so the box's length depends on the flags word.
+            // calculated_value mp4box.data_offset: measured from the enclosing
+            // moof unless a tfhd base_data_offset overrides it (dependency 44),
+            // so the plan writes the distance from the moof to its mdat payload.
+            if((flag[2] & 1) != 0)          uint32 data_offset;
+            // bitmask_constraint mp4box.first_sample_flags: 0x02000000 is
+            // sample_depends_on 2, an I-frame, which is the whole point of the
+            // field - marking the run's first sample a random access point.
+            if((flag[2] & 4) != 0)          uint32 first_sample_flags = { 33554432, 16842752 };
+            for(i = 0; i < sample_count; i++)
+            {
+                struct
+                {
+                    // dependencies 19-22: each bit of the middle flag byte adds
+                    // four bytes to EVERY entry, so a mismatch shifts every
+                    // entry after the first.
+                    if((flag[1] & 1) != 0)  uint32 sample_duration <min=1, max=600000>;
+                    if((flag[1] & 2) != 0)  uint32 sample_size <min=0, max=65536>;
+                    if((flag[1] & 4) != 0)  uint32 sample_flags = { 33554432, 16842752 };
+                    if((flag[1] & 8) != 0)
+                    {
+                        // 0 means composition order equals decoding order,
+                        // which is what a stream with no B-frames writes.
+                        if(version == 0)
+                            uint32 sample_composition_time_offset = { 0 };
+                        else
+                            int32  sample_composition_time_offset = { 0 };
+                    }
+                }entry;
+            }
+            break;
+        case "tfhd":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // range_constraint mp4box.trackID, dependency 36: it must equal the
+            // track_id of a tkhd that exists in the moov, and 0 is forbidden.
+            uint32 trackID <min=1, max=8>;
+            // dependencies 14-18: each bit of the low flag byte adds one field.
+            // calculated_value mp4box.base_data_offset: a raw 64-bit file offset
+            // with no bounds check.  Leaving the bit clear, so offsets default to
+            // the enclosing moof, is what most fragmented files do and is the
+            // only form a generator can satisfy without back-patching.
+            if(0 != (flag[2] & 1))  uint64 base_data_offset;
+            if(0 != (flag[2] & 2))  uint32 sample_description_index = { 1 };
+            if(0 != (flag[2] & 8))  uint32 default_sample_duration <min=1, max=600000>;
+            if(0 != (flag[2] & 0x10))   uint32 default_sample_size <min=0, max=65536>;
+            if(0 != (flag[2] & 0x20))   uint32 default_sample_flags = { 16842752, 33554432 };
+            break;
+        case "mfhd":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // calculated_value mp4box.sequence_number: a one-based ordinal that
+            // must increase across the file, so the plan carries a counter
+            // rather than drawing each value.
+            uint32 sequence_number <min=1, max=16>;
+            break;
+        case "sidx":
+            // dependency 7: version 0 makes both time fields 32-bit
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // range_constraint mp4box.referenceID: the referenced stream's
+            // track_id, never zero.
+            uint32 referenceID <min=1, max=8, name="Reference ID">;
+            // range_constraint mp4box.timescale: 0 is a division by zero in
+            // every duration this box carries.
+            uint32 timescale <min=1, max=90000, name="Timescale">;
+            if(version == 0)
+            {
+                uint32 earliest_presentation_time = { 0 };              // calculated_value
+                uint32 first_offset = { 0 };                            // the first subsegment follows the box
+            }
+            else
+            {
+                uint64 earliest_presentation_time = { 0 };
+                uint64 first_offset = { 0 };
+            }
+            uint16 reserved = { 0 };                                    // fixed_value mp4box.reserved
+            // calculated_value mp4box.reference_count: an unchecked bound over
+            // 12-byte entries (schema_extension byte_layout).
+            uint16 reference_count <min=1, max=64>;
+            str_sidx references[reference_count] <open=suppress>;
+            break;
+        case "trex":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 trackID;                                             // dependency 36
+            // range_constraint: a one-based index into the stsd table, which
+            // structure rule 11 gives exactly one entry.
+            uint32 default_sample_description_index = { 1 };
+            uint32 default_sample_duration;
+            uint32 default_sample_size;
+            uint32 default_sample_flags;
+            break;
+        case "mehd":
+            // dependency 8: version 0 makes the duration 32-bit
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // calculated_value mp4box.fragment_duration: the sum of every
+            // fragment's duration, in movie time scale units.
+            if(version == 0)
+                uint32 fragment_duration <min=0, max=600000, name="Fragment duration">;
+            else
+                uint64 fragment_duration <name="Fragment duration">;
+            break;
+        // Added stsd, stts, stsc, stco, co64, stsz and stss
+        case "stsd":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            //str_stsd description[entry_count];
+            // dependency 47 / structure rule 11: the entries are whole
+            // recursive boxes, so this is a second recursion site alongside the
+            // container walk and an inflated count multiplies with it.  The plan
+            // writes exactly one entry, which is what real files carry.
+            mp4box entries[entry_count];
+            break;
+        case "enca":
+            // template_deviation 5: an AudioSampleEntry has no version, flags or
+            // entry count - it is six reserved bytes, a data reference index,
+            // eight more reserved bytes, a channel count, a sample size, two
+            // pre-defined words and a 16.16 sample rate, then child boxes.  The
+            // twenty-eight bytes this arm reads happen to be the right length
+            // for a bare one, but every field is named wrongly, so the plan
+            // never emits an enca and uses a plain 'sowt' entry instead, which
+            // the default arm skips cleanly.
+            byte version <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            byte data[0x14];                                            // fixed_result 20
+            break;
+        case "stts":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // dependency 31: the run lengths must sum to the stsz sample count
+            uint32 entry_count;
+            str_stts entry[entry_count];
+            break;
+        case "stsc":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // dependency 32/33: the runs must account for exactly the samples
+            // the stsz box declares, and index only chunks the stco box has.
+            uint32 entry_count;
+            str_stsc entry[entry_count];
+            break;
+        case "stco":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            // calculated_value mp4box.chunk_offset, dependency 43 and the
+            // cross_box note in its generation_range: these are absolute offsets
+            // into the FILE, the format's principal cross-reference and the
+            // commonest reason a hand-built MP4 does not play.  The plan
+            // measures the mdat's position and plants them.
+            uint32 chunk_offset[entry_count];
+            break;
+        case "co64":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            // structure rule 13: stco and co64 are mutually exclusive and the
+            // 64-bit form exists only for files above 4 GB, so the plan always
+            // emits stco.
+            uint64 chunk_offset[entry_count];
+            break;
+        case "stsz":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            // calculated_value mp4box.sample_size: a uniform byte size, or the
+            // 0 sentinel of dependency 28 that turns on the per-sample table.
+            uint32 sample_size;
+            uint32 sample_count;
+            if(sample_size == 0)
+            {
+                // calculated_value mp4box.entry_size: the sizes must sum to the
+                // media data the chunks span, so the plan writes them.
+                uint32 entry_size[sample_count];
+            }
+            break;
+        case "stss":
+            byte version = { 0 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            // calculated_value mp4box.sample_number, dependency 35: one-based,
+            // strictly increasing and no larger than the track's sample count.
+            uint32 sample_number[entry_count];
+            break;
+        case "elst":
+            byte version = { 0 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            // calculated_value mp4box.num_entries: template_deviation 7 - this
+            // is the same format field the other eight arms call entry_count,
+            // spelled differently in this arm alone.  12 bytes per entry
+            // (schema_extension byte_layout) and no bound check.
+            uint32 num_entries <min=0, max=16, name="Number of Entries">;
+            elst_entry entries[num_entries] <open=suppress, name="Edit List Table">;
+            break;
+        case "ftyp":
+            // structure rules 0 and 3: the file type box is first and its type
+            // bytes at offset 4 are the format's only signature.  The plan
+            // plants the size and the type; the brand codes below are the one
+            // place a fourcc is still drawn, from the value set on fourcc.value.
+            fourcc major_brand <name="Major Brand">;
+            // range_constraint mp4box.minor_version: ISO/IEC 14496-12 4.3.3
+            // calls it informative, which is why the plan uses it as its second
+            // structural menu.
+            uint32 minor_version <min=0, max=512, format=hex, name="Minor Version">;
+            // structure rule 20 / dependency 45: the compatible-brands list has
+            // no count field - its length is (contentsize - 8) / 4 - so the box
+            // size and the brand list have to be chosen together.  The plan
+            // picks the size from a menu of 8 whose every entry is 16 plus a
+            // whole number of brands.
+            while (FTell() < startof(major_brand) + contentsize)
+            {
+                compatible_brand brand <name="Compatible Brand">;
+            }
+            break;
+        case "hdlr":
+            byte version = { 0 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            // enumerated_values mp4box.type: four zero bytes for an ISO file,
+            // 'mhlr'/'dhlr' for QuickTime.  enumerated_values mp4box.subtype is
+            // the code that actually declares the track kind and, through
+            // dependencies 38 and 39, which media header must sit inside minf.
+            // Both are planted, because the fourcc value set can only serve one
+            // purpose and the brands need it.
+            fourcc type <name="Component Type">;
+            fourcc subtype <name="Component Subtype">;
+            uint32 mfr = { 0 } <name="Component Manufacturer">;         // fixed_value: reserved
+            uint32 flags_mask = { 0 } <name="Component Flags Mask">;    // fixed_value: reserved
+            // TODO: Apparently the rest of this box is a "counted string" giving the component name,
+            // but I haven't yet found good documentation on how it's structured
+            byte rest[contentsize - (FTell() - startof(version))] <open=suppress>;
+            break;
+        case "mdhd":
+            // template_deviation 2 / dependency 52: version 1 widens the two
+            // times and the duration to 64 bits, which this arm does not
+            // implement, so the plan only ever writes version 0.
+            byte version = { 0 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            mp4time create_time <name="Creation Time">;
+            mp4time modify_time <name="Modification Time">;
+            // range_constraint mp4box.time_scale: 0 is a division by zero in
+            // every duration-to-seconds conversion a player performs.
+            uint32 time_scale <min=1, max=90000, name="Time Scale", comment="Number of media time units per second">;
+            // calculated_value mp4box.duration, dependency 41: it must equal the
+            // sum over the stts entries of sample_count * sample_delta, so the
+            // plan derives it from the sample list rather than drawing it.
+            uint32 duration <name="Duration", comment="Duration of the media in media time scale units">;
+            // bitmask_constraint mp4box.language: 'und' under both the packed
+            // ISO 639-2 reading and the QuickTime one of dependency 53.
+            mp4lang language <name="Language">;
+            uint16 quality = { 0 } <name="Quality">;                    // fixed_value: pre_defined
+            break;
+        case "mvhd":
+            // structure rule 8: exactly one movie header, first inside the moov.
+            // template_deviation 2: version 0 only, for the same reason as mdhd.
+            byte version = { 0 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            mp4time create_time <name="Creation Time">;
+            mp4time modify_time <name="Modification Time">;
+            uint32 time_scale <name="Time Scale", comment="Number of movie time units per second">;
+            // calculated_value mp4box.duration: the longest track's, in movie
+            // units - a different scale from the mdhd duration above, which is
+            // the format's commonest quiet inconsistency (dependency 41).
+            uint32 duration <name="Duration", comment="Duration of the movie in movie time scale units">;
+            // fixed_value mp4box.preferred_rate 0x00010000 and
+            // preferred_volume 0x0100, both planted: a rate of 0 pauses the
+            // presentation and a negative one plays it backwards.
+            fp32 preferred_rate <name="Preferred Rate">;
+            fp16 preferred_volume <name="Preferred Volume">;
+            byte reserved[10] <name="Reserved">;
+            // calculated_value mp4box.matrix_structure: fixed_result 36, the
+            // unity matrix of the nine matrix.* fixed_values.
+            matrix matrix_structure <name="Matrix Structure">;
+            // range_constraint on all six: ISO/IEC 14496-12 8.2.2 collapses this
+            // region into pre_defined[6] and requires it to be zero.  The
+            // template names them after their QuickTime meanings.
+            uint32 preview_time <name="Preview Time", comment="Time value in the movie at which the preview begins">;
+            uint32 preview_duration <name="Preview Duration", comment="Duration of the movie preview in movie time scale units">;
+            uint32 poster_time <name="Poster Time", comment="Time value in the movie of the movie poster">;
+            uint32 selection_time <name="Selection Time", comment="Start time of the current selection">;
+            uint32 selection_duration <name="Selection Duration", comment="Duration of the current selection in movie time scale units">;
+            uint32 current_time <name="Current Time", comment="Time value of current time position within the movie">;
+            // calculated_value mp4box.next_track_id, dependency 37: strictly
+            // greater than every track_id in the file.
+            uint32 next_track_id <name="Next Track ID", comment="The value to use for the track ID number of the next track added">;
+            break;
+        case "smhd":
+            // dependency 39: a sound track's minf carries this box, not a vmhd
+            byte version = { 0 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            // fixed_value mp4box.balance: 0 places a mono track centrally, and
+            // ISO/IEC 14496-12 12.2.2 requires this box's value to be 0.
+            fp16 balance <name="Balance">;
+            uint16 reserved = { 0 } <name="Reserved">;                  // fixed_value
+            break;
+        case "tkhd":
+            byte version = { 0 } <name="Version">;                      // template_deviation 2
+            tkhd_flags flags <name="Flags">;
+            mp4time create_time <name="Creation Time">;
+            mp4time modify_time <name="Modification Time">;
+            // range_constraint mp4box.track_id, dependency 36/37: unique,
+            // non-zero, and below the movie header's next_track_id.  Cross-
+            // referenced by tfhd trackID, trex trackID and sidx referenceID, so
+            // the plan numbers the tracks 1..n rather than drawing them.
+            uint32 track_id <min=1, max=8, name="Track ID">;
+            uint32 reserved = { 0 } <name="Reserved">;                  // fixed_value mp4box.reserved
+            // calculated_value mp4box.duration: the track's length in MOVIE
+            // time scale units, not its own media scale - the template's own
+            // comment spells the trap out.
+            uint32 duration <name="Duration", comment="Duration of the media in movie time scale units (specified in mvhd box)">;
+            uint64 reserved2 = { 0 } <name="Reserved">;                 // fixed_value
+            // range_constraint mp4box.layer / .alt_group: 0 in every file with
+            // one video track and no alternatives.  template_deviation 8: layer
+            // is declared unsigned where the specification makes it signed.
+            uint16 layer <name="Layer">;
+            uint16 alt_group <name="Alternate Group">;
+            // fixed_value mp4box.volume: 0x0100 for a sound track, 0 otherwise
+            fp16 volume <name="Volume">;
+            uint16 reserved3 = { 0 } <name="Reserved">;                 // fixed_value
+            matrix matrix_structure <name="Matrix Structure">;
+            // range_constraint mp4box.width / .height: 16.16 pixels, so
+            // 0x00010000 is one pixel and the cap is 1920.  These are the
+            // presentation size, which ISO/IEC 14496-12 8.3.2 says need not be
+            // the coded sample size - the plan writes the coded size into the
+            // sample entry and leaves these two free.  They are the only fp32
+            // fields the plan does not plant, which is why fp32.value carries
+            // exactly this range.
+            fp32 width <name="Track Width">;
+            fp32 height <name="Track Height">;
+            break;
+        case "vmhd":
+            // dependency 38: a video track's minf carries this box
+            byte version = { 0 } <name="Version">;
+            vmhd_flags flags <name="Flags">;
+            // enumerated_values mp4box.graphics_mode, dependency 51: ISO/IEC
+            // 14496-12 12.1.2 requires the plain copy mode with a black opcolor;
+            // the other eight transfer modes are legal only in a QuickTime file.
+            qtgfxmode graphics_mode = { qtgCopy } <name="Graphics Mode">;
+            // calculated_value mp4box.opcolor: fixed_result 6, all three zero
+            qtopcolor opcolor <name="Opcolor", open=suppress>;
+            break;
+        default:
+            // dependency 5: any type the switch does not name is skipped
+            // wholesale, which is right for mdat and free and for the sample
+            // entry boxes, and wrong for dref - a container this template never
+            // descends into.  In the generate direction FSkip pads the file out
+            // to the box's declared end, which is what fills the mdat payload.
+            FSkip(contentsize);
+            break;
+    }
+} mp4box <read=ReadBox, comment=BoxComment>;
+
+// structure rule 5: an unbounded walk over self-describing boxes with no count
+// field anywhere, and no progress guarantee - a box of size 0 or below 8 makes
+// FTell() fail to advance and the loop spin forever.  Calling FileSize() here
+// would also draw a uniform file length of up to 64 KB in the generate
+// direction and pad the whole of it with random bytes before the first box was
+// written, which is exactly the multi-gigabyte-adjacent behaviour to avoid.  So
+// the plan bounds the walk instead: FEof's probability argument is 0.0 while
+// parsing, where the test is exact, and -1.0 while generating, where it can
+// never fire until mp4PlantBox has run out of planned boxes and sets it to 1.0.
+if( IsParsing() == 0 )
+    mp4EofP = -1.0;                              // an assignment, not a decision
+
+while (!FEof(mp4EofP))
+{
+    mp4box box <name="Box">;
+}

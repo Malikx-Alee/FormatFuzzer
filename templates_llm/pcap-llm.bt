@@ -1,0 +1,887 @@
+//------------------------------------------------
+//--- 010 Editor v3.0.3 Binary Template
+//
+//      File: PCAP.bt
+//   Authors: Didier Stevens
+//   Website: https://DidierStevens.com
+//   Version: 0.5 
+//   Purpose: Parse a PCAP network capture file.
+//  Category: Network
+// File Mask: *.pcap
+//  ID Bytes: D4 C3 B2 A1
+//   History:
+//   0.5   2019-12-24 Tony Saigut: fix L2 padding.
+//   0.4   2019-05-22 S Gorbov: support for VLAN header.
+//   0.3   2018-03-15 Banny: support raw data pcap file.
+//   0.2   2016-02-12 SweetScape Software: Updated header for repository submission.
+//   0.1   D Stevens: Initial release.
+//
+// References:
+//  http://wiki.wireshark.org/Development/LibpcapFileFormat
+//------------------------------------------------
+
+//------------------------------------------------------------------------------
+// GENERATION STATE
+//
+// libpcap has no terminator, no count field and no signature at a record
+// boundary: PCAPRECORD.incl_len is the format's only delimiter (structure rules
+// "contiguous: PCAPRECORD header then packet data" and "last_element: none").
+// The template also walks the packet by shape rather than by incl_len, so every
+// length inside a record has to agree with the one written before it or the
+// parse runs into the next record header (template_deviation 4).
+//
+// The rewrite gets that agreement without a single FSeek back-patch, by turning
+// the dependency chain around.  The JSON asks for the packet bytes to be written
+// first and measured ("generate the chain innermost-first ... so each length
+// field is written from a measured value"); this template instead CHOOSES the
+// outermost length and DERIVES every inner one from it, so each length field is
+// still exactly right but is known before it is written:
+//
+//     incl_len         chosen from a bounded value set          (structure 4)
+//     pcapRoom       = incl_len - len_before_l3                 (dependency 26)
+//     total_length     chosen inside [ip_hdr_len*4, pcapRoom]   (dependency 12)
+//     L4proto          chosen from what total_length leaves      (dependencies 13-15)
+//     udp_hdr_len    = total_length - ip_hdr_len*4              (dependency 16)
+//     tcp_hdr_len      bounded by the same difference           (dependency 17)
+//     AppData        = the remainder                            (dependencies 21-22)
+//     padding        = incl_len - len_before_l3 - total_length  (dependency 27)
+//
+// Every one of those derivations reads fields that are already on disk, so the
+// generate and parse directions make exactly the same number of decisions in
+// exactly the same order.  Nothing here is gated on IsParsing() except the
+// FEof() probability, which is an assignment rather than a decision.
+//------------------------------------------------------------------------------
+
+// Record-loop bound.  structure "cardinality: PCAPRECORD" has generation_bound
+// "4 to 32 records per file"; the bare while( !FEof() ) of the original is an
+// unbounded walk.  0.125 is FEof's own default and is exact in the parse
+// direction (feof() returns 255 at end of file and 0 elsewhere, and the
+// threshold 255*(1-p) separates them for any 0 < p < 1), so the parse direction
+// keeps this value and only generation moves it.
+local double pcapEofP    = 0.125;
+local int    pcapRecords = 0;
+
+// PCAPRECORD.incl_len minus the layer 2 bytes already written - the room the IP
+// datagram has to fit in.  Set at each of the three Layer_3 instantiation sites
+// (structure rule "mutually_exclusive: the three Layer_3 instantiation sites")
+// and read by Layer_3.total_length.
+local uint32 pcapRoom = 0;
+
+// constraints[PCAPRECORD.ts_sec] and structure "ordering: PCAPRECORD timestamps":
+// a capture file is a chronological log, so the timestamp is advanced from one
+// base rather than drawn per record (dependency 30).  2021-01-01T00:00:00Z is
+// inside the JSON's generation_range of 2001-2033.
+local uint32 pcapTsSec = 1609459200;
+
+// Lookahead plants.
+//
+// Nine fields decide how many bytes the rest of the file occupies, and for all
+// of them a declared value set is not enough.  FormatFuzzer's evil bit escapes a
+// value set once in 128 draws, and the escape distribution is deliberately
+// biased small - 87.5 percent of escapes land in 1..16.  A snaplen of 3, an
+// incl_len of 7 or a total_length of 11 is exactly the shape that makes the
+// record stream desynchronise or an unguarded subtraction underflow into a
+// four-billion-byte array, and incl_len below 34 cannot be made consistent at
+// all: an Ethernet header plus the twenty mandatory IP bytes is already 34.
+// SetEvilBit(false) would stop the escape, but it would also make the PARSE
+// direction refuse every real capture whose value is not in the set - and
+// snaplen, incl_len and total_length take arbitrary values in real captures.
+//
+// So each of them is planted instead.  ReadBytes(buf, pos, n, menu, menu, 1.0)
+// writes one menu entry at the read position with the evil bit suppressed for
+// that call and marks those bytes in the accessor's bitmap; the plain field
+// declaration that follows copies the marked bytes back over whatever it drew,
+// on every path, before it writes.  Generation therefore takes a menu entry
+// with probability 32767/32768, while the field itself stays completely
+// unconstrained in the parse direction: ReadBytes' own parse lambda routes a
+// value that is not in the menu to its evil-restored branch, which reads
+// anything.  These are the `lookahead` sets the JSON's schema has no entry for,
+// because the original contains no lookahead call of any kind
+// (template_deviation 12).
+//
+// A bitfield cannot be planted - file_integer asserts "bitfield lookahead not
+// implemented" as soon as the bitmap covers its byte - so Layer_3.ip_hdr_len and
+// Layer_4.tcp_hdr_len are handled differently; see their declarations.
+local char   pcapPeek[4];
+local string pcapVerMenu  [1];    // PCAPHEADER.version_major + version_minor
+local string pcapSnapMenu [6];    // PCAPHEADER.snaplen
+local string pcapNetMenu  [4];    // PCAPHEADER.network
+local string pcapInclMenu [18];   // PCAPRECORD.incl_len
+local string pcapTLMenu   [6];    // Layer_3.total_length
+local string pcapProtoBig [16];   // Layer_3.L4proto, room for a TCP header
+local string pcapProtoMid [13];   // Layer_3.L4proto, room for a UDP header
+local string pcapProtoMin [12];   // Layer_3.L4proto, room for neither
+local string pcapUdpMenu  [1];    // Layer_4.udp_hdr_len
+
+// Bytes this record's TCP header actually occupies.  template_deviation 3 asks
+// for the payload length to be "derived from the parts actually written" rather
+// than recomputed from the header field, which is what makes an escaped
+// tcp_hdr_len harmless instead of desynchronising.
+local uint16 pcapTcpBytes = 20;
+
+string pcapChr( int b )
+{
+    local string r;
+    if( b == 0 )
+        r = "\x00";
+    else
+        SPrintf( r, "%c", b );
+    return r;
+}
+string pcapLE32( uint32 v )
+{
+    return pcapChr( v & 0xff ) + pcapChr( (v >> 8) & 0xff ) + pcapChr( (v >> 16) & 0xff ) + pcapChr( (v >> 24) & 0xff );
+}
+string pcapBE16( uint32 v )
+{
+    return pcapChr( (v >> 8) & 0xff ) + pcapChr( v & 0xff );
+}
+
+void pcapInitMenus()
+{
+    // constraints[PCAPHEADER.version_major] / [version_minor]: fixed_value 2 and
+    // 4.  libpcap rejects any other pair outright ("unsupported pcap savefile
+    // version"), so the two fields are planted together as one four-byte image.
+    pcapVerMenu[0] = pcapBE16( 0x0200 ) + pcapBE16( 0x0400 );
+
+    // constraints[PCAPHEADER.snaplen]: calculated_value, preferred 65535, and
+    // dependency 25 makes it an upper bound on every incl_len - libpcap rejects
+    // outright a record whose caplen exceeds it.  Every entry is at least the
+    // 1514-byte cap on PCAPRECORD.incl_len below, so the dependency holds for
+    // the whole file by construction.  262144 is libpcap's modern default and
+    // 65535 is what tcpdump writes for a full capture; the JSON's floor of 68 is
+    // below the incl_len cap and so is not offered.
+    pcapSnapMenu[0] = pcapLE32( 65535 );
+    pcapSnapMenu[1] = pcapLE32( 65535 );
+    pcapSnapMenu[2] = pcapLE32( 65535 );
+    pcapSnapMenu[3] = pcapLE32( 262144 );
+    pcapSnapMenu[4] = pcapLE32( 2048 );
+    pcapSnapMenu[5] = pcapLE32( 1514 );
+
+    // constraints[PCAPHEADER.network]: enumerated_values lists 25 link types,
+    // but dependency 3 and template_deviation 1 cut that to two - the else at
+    // line 146 of the original treats every value other than 101 as 14-byte
+    // Ethernet, so only LINKTYPE_ETHERNET and LINKTYPE_RAW parse coherently.
+    // preferred_value is 1.  structure rule 16 makes it a per-file constant,
+    // which it already is.
+    pcapNetMenu[0] = pcapLE32( 1 );
+    pcapNetMenu[1] = pcapLE32( 1 );
+    pcapNetMenu[2] = pcapLE32( 1 );
+    pcapNetMenu[3] = pcapLE32( 101 );
+
+    // constraints[PCAPRECORD.incl_len]: the format's principal size lever - a
+    // 32-bit byte count with no upper check anywhere, evil_bit_safe false, and
+    // the only delimiter between records.  The menu is bounded by the
+    // generation_range's 1518 (1514 here, a full Ethernet frame without the FCS)
+    // and floored at 60, well above the 38 bytes a VLAN-tagged minimal datagram
+    // needs, and it is weighted toward the small end so a whole capture stays a
+    // few kilobytes.
+    pcapInclMenu[ 0] = pcapLE32(   60 );
+    pcapInclMenu[ 1] = pcapLE32(   60 );
+    pcapInclMenu[ 2] = pcapLE32(   60 );
+    pcapInclMenu[ 3] = pcapLE32(   74 );
+    pcapInclMenu[ 4] = pcapLE32(   74 );
+    pcapInclMenu[ 5] = pcapLE32(   90 );
+    pcapInclMenu[ 6] = pcapLE32(  102 );
+    pcapInclMenu[ 7] = pcapLE32(  118 );
+    pcapInclMenu[ 8] = pcapLE32(  142 );
+    pcapInclMenu[ 9] = pcapLE32(  174 );
+    pcapInclMenu[10] = pcapLE32(  214 );
+    pcapInclMenu[11] = pcapLE32(  262 );
+    pcapInclMenu[12] = pcapLE32(  342 );
+    pcapInclMenu[13] = pcapLE32(  442 );
+    pcapInclMenu[14] = pcapLE32(  590 );
+    pcapInclMenu[15] = pcapLE32(  742 );
+    pcapInclMenu[16] = pcapLE32( 1014 );
+    pcapInclMenu[17] = pcapLE32( 1514 );
+
+    // constraints[Layer_3.L4proto] and dependencies 13/14/15: the protocol
+    // number picks one of the three mutually exclusive layer 4 layouts
+    // (structure rule 10), and each needs a different amount of room.  TCP is
+    // offered only with 60 bytes free - the whole 4-bit data offset then fits
+    // whatever value it takes - UDP with 8, and every other number reads the
+    // remainder as one opaque array, which is legal at any size including zero.
+    // Choosing the protocol from what total_length has already left over is what
+    // keeps the three subtractions at lines 110, 114 and 162 of the original
+    // from going negative (template_deviation 3).  preferred_value is 6.
+    pcapProtoBig[ 0] = pcapChr(   6 );   // TCP
+    pcapProtoBig[ 1] = pcapChr(   6 );
+    pcapProtoBig[ 2] = pcapChr(   6 );
+    pcapProtoBig[ 3] = pcapChr(   6 );
+    pcapProtoBig[ 4] = pcapChr(   6 );
+    pcapProtoBig[ 5] = pcapChr(  17 );   // UDP
+    pcapProtoBig[ 6] = pcapChr(  17 );
+    pcapProtoBig[ 7] = pcapChr(  17 );
+    pcapProtoBig[ 8] = pcapChr(   1 );   // ICMP
+    pcapProtoBig[ 9] = pcapChr(   2 );   // IGMP
+    pcapProtoBig[10] = pcapChr(  47 );   // GRE
+    pcapProtoBig[11] = pcapChr(  50 );   // ESP
+    pcapProtoBig[12] = pcapChr(  51 );   // AH
+    pcapProtoBig[13] = pcapChr(  89 );   // OSPF
+    pcapProtoBig[14] = pcapChr( 132 );   // SCTP
+    pcapProtoBig[15] = pcapChr( 136 );   // UDPLite
+    pcapProtoMid[ 0] = pcapChr(  17 );
+    pcapProtoMid[ 1] = pcapChr(  17 );
+    pcapProtoMid[ 2] = pcapChr(  17 );
+    pcapProtoMid[ 3] = pcapChr(  17 );
+    pcapProtoMid[ 4] = pcapChr(   1 );
+    pcapProtoMid[ 5] = pcapChr(   2 );
+    pcapProtoMid[ 6] = pcapChr(  41 );   // IPv6 encapsulation
+    pcapProtoMid[ 7] = pcapChr(  47 );
+    pcapProtoMid[ 8] = pcapChr(  50 );
+    pcapProtoMid[ 9] = pcapChr(  51 );
+    pcapProtoMid[10] = pcapChr(  58 );   // ICMPv6
+    pcapProtoMid[11] = pcapChr( 103 );   // PIM
+    pcapProtoMid[12] = pcapChr( 112 );   // VRRP
+    pcapProtoMin[ 0] = pcapChr(   1 );
+    pcapProtoMin[ 1] = pcapChr(   2 );
+    pcapProtoMin[ 2] = pcapChr(  41 );
+    pcapProtoMin[ 3] = pcapChr(  47 );
+    pcapProtoMin[ 4] = pcapChr(  50 );
+    pcapProtoMin[ 5] = pcapChr(  51 );
+    pcapProtoMin[ 6] = pcapChr(  58 );
+    pcapProtoMin[ 7] = pcapChr(  89 );
+    pcapProtoMin[ 8] = pcapChr( 103 );
+    pcapProtoMin[ 9] = pcapChr( 112 );
+    pcapProtoMin[10] = pcapChr( 132 );
+    pcapProtoMin[11] = pcapChr( 136 );
+}
+
+
+// constraints[Dot1q.priority] / [Dot1q.dei]: both are already exactly their
+// field width, so the value sets exist to honour preferred_value 0 rather than
+// to exclude anything.
+local uint16 pcapPcpVals[] = { 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7 };
+local uint16 pcapDeiVals[] = { 0, 0, 0, 0, 0, 0, 0, 1 };
+
+// Saved evil-bit state, for the SetEvilBit(false) blocks below.
+local int evil = 0;
+
+//------------------------------------------------------------------------------
+// The IPv4 flow table.
+//
+// constraints[Layer_3.HdrChecksum] is a calculated_value whose `covers` includes
+// Layer_3.SRC_IP and Layer_3.DST_IP - two fields the template writes AFTER the
+// checksum.  bt.h offers Checksum() for CRC-8/16/32 only, and no primitive reads
+// bytes back out of the file, so the RFC 1071 sum has to be built from the field
+// values; that in turn means the two addresses must be decided before the
+// checksum is emitted.  They are therefore rotated out of this eight-entry table
+// once per IP header instead of being sampled independently.
+//
+// Every entry is an RFC 1918 unicast address, which is what the generation_range
+// of constraints[Layer_3.SRC_IP] and [Layer_3.DST_IP] asks for.  It also settles
+// dependency 10 (an IPv4 multicast destination fixes the destination MAC through
+// the RFC 1112 mapping) by construction: no destination here is multicast, so
+// the antecedent never fires.
+//------------------------------------------------------------------------------
+local int    pcapFlow    = 0;
+local uint32 pcapSrcAddr = 0;
+local uint32 pcapDstAddr = 0;
+local string pcapSrcStr  = "";
+local string pcapDstStr  = "";
+local string pcapIpStr   = "";   // selects which of the two IPv4addr instances is next
+
+void pcapPickFlow()
+{
+    pcapFlow = pcapFlow + 1;
+    if( pcapFlow > 7 )
+        pcapFlow = 0;
+
+    if( pcapFlow == 0 )
+    {
+        pcapSrcStr = "\xc0\xa8\x01\x64"; pcapSrcAddr = 0xc0a80164;   // 192.168.1.100
+        pcapDstStr = "\xc0\xa8\x01\x01"; pcapDstAddr = 0xc0a80101;   // 192.168.1.1
+    }
+    else if( pcapFlow == 1 )
+    {
+        pcapSrcStr = "\x0a\x14\x1e\x28"; pcapSrcAddr = 0x0a141e28;   // 10.20.30.40
+        pcapDstStr = "\x0a\x14\x1e\x01"; pcapDstAddr = 0x0a141e01;   // 10.20.30.1
+    }
+    else if( pcapFlow == 2 )
+    {
+        pcapSrcStr = "\xac\x10\x05\x09"; pcapSrcAddr = 0xac100509;   // 172.16.5.9
+        pcapDstStr = "\xac\x10\x05\x01"; pcapDstAddr = 0xac100501;   // 172.16.5.1
+    }
+    else if( pcapFlow == 3 )
+    {
+        pcapSrcStr = "\xc0\xa8\x0a\x37"; pcapSrcAddr = 0xc0a80a37;   // 192.168.10.55
+        pcapDstStr = "\xc0\xa8\x0a\x01"; pcapDstAddr = 0xc0a80a01;   // 192.168.10.1
+    }
+    else if( pcapFlow == 4 )
+    {
+        pcapSrcStr = "\x0a\x01\x02\x03"; pcapSrcAddr = 0x0a010203;   // 10.1.2.3
+        pcapDstStr = "\x0a\x01\x02\x01"; pcapDstAddr = 0x0a010201;   // 10.1.2.1
+    }
+    else if( pcapFlow == 5 )
+    {
+        pcapSrcStr = "\xc0\xa8\x64\xc8"; pcapSrcAddr = 0xc0a864c8;   // 192.168.100.200
+        pcapDstStr = "\xc0\xa8\x64\x01"; pcapDstAddr = 0xc0a86401;   // 192.168.100.1
+    }
+    else if( pcapFlow == 6 )
+    {
+        pcapSrcStr = "\xac\x14\x2c\x07"; pcapSrcAddr = 0xac142c07;   // 172.20.44.7
+        pcapDstStr = "\xac\x14\x2c\xfe"; pcapDstAddr = 0xac142cfe;   // 172.20.44.254
+    }
+    else
+    {
+        pcapSrcStr = "\x0a\x63\x58\x4d"; pcapSrcAddr = 0x0a63584d;   // 10.99.88.77
+        pcapDstStr = "\x0a\x63\x58\x01"; pcapDstAddr = 0x0a635801;   // 10.99.88.1
+    }
+}
+
+// constraints[Layer_3.HdrChecksum].algorithm: "the 16-bit one's complement of
+// the one's complement sum of all 16-bit words of the IPv4 header, computed with
+// this checksum field itself taken as zero".  w0..w4 are the five header words
+// that precede it; the two addresses come from the flow table above.  Two folds
+// are enough: nine 16-bit words cannot carry past bit 20.
+uint32 pcapIPChecksum( uint32 w0, uint32 w1, uint32 w2, uint32 w3, uint32 w4 )
+{
+    local uint32 sum = w0 + w1 + w2 + w3 + w4
+                     + (pcapSrcAddr >> 16) + (pcapSrcAddr & 0xFFFF)
+                     + (pcapDstAddr >> 16) + (pcapDstAddr & 0xFFFF);
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    return (~sum) & 0xFFFF;
+}
+
+typedef struct {
+        // constraints[PCAPHEADER.magic_number]: fixed_value, corruption_risk
+        // high, evil_bit_safe false.  It is the signature, the byte-order mark
+        // (dependency 29) and the timestamp-unit selector (dependency 28) at
+        // once, and the guard below rejects the file outright without it, so the
+        // evil bit is suppressed across the whole block - every field in it is
+        // corruption_risk high.
+        evil = SetEvilBit(false);
+        uint32 magic_number = { 0xA1B2C3D4 } <format=hex>;   /* magic number */
+        if(magic_number != 0xA1B2C3D4) {
+            Warning("Not a valid PCAP file");
+            return 1;
+        }
+        // constraints[PCAPHEADER.version_major] / [version_minor]: fixed_value
+        // 2 and 4; no other pair has ever been published.
+        SetEvilBit(evil);
+        // constraints[PCAPHEADER.version_major] / [version_minor]: fixed_value
+        // 2 and 4; no other pair has ever been published, and libpcap refuses
+        // anything else outright.  Planted as one four-byte image.
+        ReadBytes( pcapPeek, FTell(), 4, pcapVerMenu, pcapVerMenu, 1.0 );
+        uint16 version_major;  /* major version number */
+        uint16 version_minor;  /* minor version number */
+        // constraints[PCAPHEADER.thiszone] / [sigfigs]: fixed_value 0, both
+        // corruption_risk low, so the evil bit is left on for entropy - nothing
+        // reads them back (template_deviation 10).
+        int32  thiszone = { 0 };       /* GMT to local correction */
+        uint32 sigfigs = { 0 };        /* accuracy of timestamps */
+        // constraints[PCAPHEADER.snaplen] - menu and rationale in pcapInitMenus.
+        ReadBytes( pcapPeek, FTell(), 4, pcapSnapMenu, pcapSnapMenu, 1.0 );
+        uint32 snaplen;        /* max length of captured packets, in octets */
+        // constraints[PCAPHEADER.network] - menu and rationale in pcapInitMenus.
+        ReadBytes( pcapPeek, FTell(), 4, pcapNetMenu, pcapNetMenu, 1.0 );
+        uint32 network;        /* data link type */
+} PCAPHEADER;
+
+typedef struct 
+{
+    // constraints[MACaddr.Byte[0]]: bitmask_constraint on the individual/group
+    // and universal/local bits, preferred_value 2 - a locally administered
+    // unicast address.  Every entry below has bit 0 clear and bit 1 set, which
+    // also satisfies constraints[Layer_2.SrcMac] ("unicast source - the only
+    // legal kind") and dependency 9, since the same typedef serves both MACs.
+    // A byte set here may not be zero: ffcompile emits these as C++ string
+    // literals and an embedded NUL would truncate the set entry.
+    uchar Byte[6] = { "\x02\x11\x22\x33\x44\x55",
+                      "\x02\xaa\xbb\xcc\xdd\xee",
+                      "\x06\x1f\x2e\x3d\x4c\x5b",
+                      "\x0a\x7b\x6c\x5d\x4e\x3f",
+                      "\x0e\x12\x34\x56\x78\x9a",
+                      "\x12\xde\xad\xbe\xef\x11",
+                      "\x16\xfe\xed\xfa\xce\x99",
+                      "\x02\x42\xac\x11\x33\x02" };
+} MACaddr<read=MACname>;
+
+typedef struct 
+{
+        MACaddr DstMac<name="Destination MAC">;
+        MACaddr SrcMac<name="Source MAC">;
+        // constraints[Layer_2.L3type]: enumerated_values lists 21 EtherTypes,
+        // but structure rule 8 and template_deviation 0 reduce that to two.  The
+        // if/else-if of PCAPRECORD has no final else, so any other EtherType
+        // leaves L3 uninstantiated and the unconditional L3.ip_hdr_len read that
+        // follows aborts the parse.  0x0800 opens the decoded IPv4 path
+        // (dependency 4) and 0x8100 inserts the VLAN tag (dependency 5); the
+        // split weights the preferred_value.  Both are far above the 1536 floor
+        // of dependency 8, so the 802.3 length interpretation never applies.
+        // corruption_risk is high, so the evil bit is off: an out-of-set value
+        // here would be an unparseable file rather than an interesting one.
+        evil = SetEvilBit(false);
+        uint16 L3type = { 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x8100 } <name="Layer 3 Protocol">;
+        SetEvilBit(evil);
+} Layer_2 <size=14>;
+
+typedef struct 
+{
+        // schema_extensions "bitfield_layout": these three pack into the 16-bit
+        // Tag Control Information word most-significant-first, because
+        // BigEndian() is in force - priority is bits 15-13, dei bit 12 and id
+        // bits 11-0.  ffcompile packs first-declared into the high bits too, so
+        // the original declaration order is already correct and is left alone.
+        uint16 priority:3 <values=pcapPcpVals>;
+        uint16 dei:1 <values=pcapDeiVals>;
+        // constraints[Dot1q.id]: range_constraint 1..4094 - 0 means a
+        // priority-tagged frame with no VLAN and 4095 is reserved.
+        // ffcompile only registers <min>/<max> when they come before any other
+        // attribute - a leading name= swallows the rest of the list - so the
+        // order here is deliberate.
+        uint16 id:12 <min=1, max=4094, name="Vlan Id">;
+        // constraints[Dot1q.L3type]: the seven inner EtherTypes are all legal
+        // 802.1Q payloads, but dependency 6 pins this to IPv4 for generation -
+        // the template instantiates Layer_3 unconditionally after the tag, and
+        // any other value takes the undecoded else branch of Layer_3, which
+        // leaves L4proto undeclared and aborts the record.  corruption_risk
+        // high, so the evil bit is off for the same reason.
+        evil = SetEvilBit(false);
+        uint16 L3type = { 0x0800 } <name="Layer 3 Protocol">;
+        SetEvilBit(evil);
+} Dot1q <size=4>;
+
+typedef struct 
+{
+    // constraints[IPv4addr.Byte[0]] has generation_range 1..223 to keep the
+    // address unicast; the flow table above goes further and pins all four
+    // octets, because Layer_3.HdrChecksum has to know them before they are
+    // written.  pcapIpStr names which of the pair is next.
+    uchar Byte[4] = { pcapIpStr };
+} IPv4addr<read=IPv4addrName>;
+
+string IPv4addrName(IPv4addr &IP)
+{
+    string strReturn;
+    SPrintf(strReturn,"%d.%d.%d.%d",IP.Byte[0],IP.Byte[1],IP.Byte[2],IP.Byte[3]);
+    return strReturn;
+}
+typedef struct (uint16 proto_type)
+{
+     pcapPickFlow();   // decide SRC_IP and DST_IP up front - see pcapIPChecksum
+
+     // constraints[Layer_3.version]: fixed_value 4, bit_width 4, the HIGH nibble
+     // of the first header byte.  It is evil_bit_safe and nothing downstream
+     // reads it, so the escape stays - and keeping it means a raw-IP capture
+     // carrying IPv6 still parses, exactly as badly as the original parsed it
+     // (template_deviation 2).
+     //
+     // constraints[Layer_3.ip_hdr_len]: dependency 11 allows 5..15, but the
+     // decoded branch below reads exactly the twenty mandatory bytes and never
+     // reads an options region, so any other value declares a header of a
+     // different length than the one actually written and shifts the whole
+     // record - it is the one field whose escape cannot be absorbed anywhere.
+     // 5 is also the preferred_value.  This is the only place where suppressing
+     // the evil bit narrows what the template can parse: a capture carrying
+     // IPv4 options is now refused rather than silently mis-parsed from its
+     // first option byte, which is what the original did with it.
+     // A bitfield cannot be planted - file_integer asserts "bitfield lookahead
+     // not implemented" as soon as the bitmap covers its byte - so the choice
+     // here really is between the escape and SetEvilBit(false).
+     uchar version:4 <min=4, max=4>;
+     evil = SetEvilBit(false);
+     uchar ip_hdr_len:4 <min=5, max=5>;   // spec range 5..15; see comment above
+     SetEvilBit(evil);
+     local int hdr_length = ip_hdr_len*4;
+     // constraints[Layer_3.DiffServField]: bitmask_constraint, the nine
+     // standardised DSCP class selectors plus EF, preferred_value 0.  BYTE is a
+     // signed char in the generated C++, so the four codepoints above 127 are
+     // written as their negative encodings: -128 = 0x80 CS4, -96 = 0xA0 CS5,
+     // -72 = 0xB8 EF, -64 = 0xC0 CS6, -32 = 0xE0 CS7.
+     BYTE DiffServField = { 0, 0, 0, 0, 32, 64, 96, -128, -96, -72, -64, -32 };
+
+     // constraints[Layer_3.total_length]: calculated_value, and the pivot of the
+     // whole record.  dependency 12 puts its floor at ip_hdr_len*4 and
+     // dependency 26 its ceiling at incl_len minus the layer 2 bytes, or the
+     // parse runs past the end of the record; the JSON's generation_range caps
+     // it at the 1500-byte Ethernet MTU.  The four candidates are offsets from
+     // that ceiling chosen so the leftover - PCAPRECORD.padding - lands inside
+     // its own generation_range of 0..46, which is what Ethernet's 60-byte
+     // minimum frame actually produces.  corruption_risk high and it sizes three
+     // arrays, so the evil bit is off.
+     local uint16 tlMin = hdr_length;
+     local uint16 tlMax = pcapRoom;
+     if (tlMax > 1500)
+         tlMax = 1500;                      // generation_range max
+     if (tlMax < tlMin)
+         tlMax = tlMin;
+     pcapTLMenu[0] = pcapBE16( tlMax );
+     pcapTLMenu[1] = pcapTLMenu[0];
+     pcapTLMenu[2] = pcapTLMenu[0];
+     pcapTLMenu[3] = pcapTLMenu[0];
+     pcapTLMenu[4] = pcapTLMenu[0];
+     pcapTLMenu[5] = pcapTLMenu[0];
+     if (tlMax > tlMin + 4)
+         pcapTLMenu[3] = pcapBE16( tlMax - 4 );
+     if (tlMax > tlMin + 26)
+         pcapTLMenu[4] = pcapBE16( tlMax - 26 );
+     if (tlMax > tlMin + 46)
+         pcapTLMenu[5] = pcapBE16( tlMax - 46 );
+     ReadBytes( pcapPeek, FTell(), 2, pcapTLMenu, pcapTLMenu, 1.0 );
+     uint16 total_length;
+
+     if (proto_type == 0x0800)    // IP
+     {
+        // constraints[Layer_3.Identification]: free in its 16 bits, but RFC 6864
+        // requires 0 for an atomic datagram, which is what the Flags value below
+        // makes this.  The evil bit stays on, so it still varies occasionally.
+        uint16 Identification = { 0 };   
+        // constraints[Layer_3.Flags]: bitmask_constraint - the template collapses
+        // RFC 791's 3-bit flags and 13-bit fragment offset into one word
+        // (template_deviation 6).  Only two values are emitted: 0x4000 is DF set
+        // with a zero offset (preferred_value, an atomic datagram) and 0 is an
+        // unfragmented datagram with no flags.  Both leave bit 15 clear, which
+        // dependency 19 requires, and both avoid the fragmentation shapes of
+        // dependency 18 that promise fragments a lone packet cannot supply.
+        uint16 Flags = { 0x4000, 0x4000, 0x4000, 0x0000 };
+        // constraints[Layer_3.TTL]: generation_range 32..255 - a captured packet
+        // has been decremented from 64, 128 or 255, and 0 is undeliverable.
+        BYTE   TTL <min=32, max=255>;
+        // constraints[Layer_3.L4proto] and dependencies 13/14/15: the protocol
+        // number picks one of the three mutually exclusive layer 4 layouts
+        // (structure rule 10), and each needs a different amount of room.  TCP
+        // needs its 20 mandatory bytes, UDP its 8, and every other number reads
+        // the remainder as one opaque array - which is legal at any size,
+        // including zero.  Choosing the protocol from what total_length has
+        // already left over is what keeps the three subtractions at lines 110,
+        // 114 and 162 of the original from going negative (template_deviation 3).
+        local uint32 l4room = 0;
+        if (total_length > hdr_length)
+            l4room = total_length - hdr_length;
+        if (l4room >= 60) {
+            ReadBytes( pcapPeek, FTell(), 1, pcapProtoBig, pcapProtoBig, 1.0 );
+        } else if (l4room >= 8) {
+            ReadBytes( pcapPeek, FTell(), 1, pcapProtoMid, pcapProtoMid, 1.0 );
+        } else {
+            ReadBytes( pcapPeek, FTell(), 1, pcapProtoMin, pcapProtoMin, 1.0 );
+        }
+        BYTE   L4proto<name="Layer 4 Protocol",read=L4protoName>;
+        // constraints[Layer_3.HdrChecksum]: the RFC 1071 sum over the whole
+        // header with this field taken as zero.  Everything it covers is either
+        // already declared above - so it is read back at its actual value, even
+        // if the evil bit corrupted it - or was decided by pcapPickFlow.
+        // dependency 20 (the coverage is itself set by ip_hdr_len) is why this
+        // is computed rather than tabulated: it is only valid for a 20-byte
+        // header, which is exactly what ip_hdr_len is pinned to.
+        local uint16 ipck = pcapIPChecksum( (version << 12) | (ip_hdr_len << 8) | (DiffServField & 0xFF),
+                                            total_length,
+                                            Identification,
+                                            Flags,
+                                            ((TTL & 0xFF) << 8) | (L4proto & 0xFF) );
+        uint16 HdrChecksum = { ipck };
+        pcapIpStr = pcapSrcStr;
+        IPv4addr SRC_IP<name="Source IP">;
+        pcapIpStr = pcapDstStr;
+        IPv4addr DST_IP<name="Dest IP">;
+     }
+     else
+     {
+        // Never generated: the two EtherType fields that reach this branch are
+        // both pinned to 0x0800 with the evil bit off.  It is kept because it is
+        // the parse path for a VLAN-tagged non-IPv4 frame, and because
+        // constraints[Layer_3.Unknown] documents that hdr_length-4 underflows
+        // for an ip_hdr_len below 5 - which a real file can still contain.
+        // template_deviation 3: the original writes BYTE Unknown[hdr_length-4],
+        // and an ip_hdr_len below 2 makes that subtraction negative.
+        local uint16 unkLen = 0;
+        if (hdr_length > 4)
+            unkLen = hdr_length - 4;
+        BYTE Unknown[unkLen];
+      }
+} Layer_3;
+
+typedef struct (ushort VER_HDR,uint16 total_length,uint L4proto)
+{    
+    // template_deviation 9: VER_HDR is misnamed - PCAPRECORD passes the IHL
+    // nibble alone, not a combined version/header byte, so the multiply is
+    // right.  The call site is unchanged.
+    local uint16 ip_hdr_length = VER_HDR*4;
+
+    if (L4proto == 0x11) // UDP
+    {
+        // constraints[Layer_4.SrcPort]: generation_range 1024..65535, the
+        // ephemeral range, preferred_value 49152.  constraints[Layer_4.DstPort]:
+        // a registered service port makes an analyser reach its dissector.
+        uint16 SrcPort = { 49152, 49152, 51000, 53124, 40000, 32768, 60123, 1024 } <name="Source Port">;
+        uint16 DstPort = { 53, 53, 67, 68, 123, 161, 514, 1900, 5353, 4789 } <name="Destination Port">;
+        // constraints[Layer_4.udp_hdr_len] and dependency 16: this is not a free
+        // field, it is Layer_3.total_length re-encoded - it must equal
+        // total_length - ip_hdr_len*4 exactly.  Both operands are parameters, so
+        // the value is exact in both directions.  It is also the cheapest way in
+        // the whole format to demand an enormous allocation: line 170 of the
+        // original computes udp_hdr_len - 8 into an unsigned local with no lower
+        // guard, so anything below 8 underflows to about four billion.  Hence
+        // corruption_risk high and the evil bit off.
+        pcapUdpMenu[0] = pcapBE16( 8 );
+        if (total_length > ip_hdr_length + 8)
+            pcapUdpMenu[0] = pcapBE16( total_length - ip_hdr_length );
+        ReadBytes( pcapPeek, FTell(), 2, pcapUdpMenu, pcapUdpMenu, 1.0 );
+        uint16 udp_hdr_len<name="Datagram Length">;
+        // constraints[Layer_4.ChkSum]: preferred_value 0, which in IPv4 UDP
+        // means "not computed" and is legal.  dependency 23 - the pseudo-header
+        // reaches back into the IP header - is why nothing else is attempted
+        // here; see the findings note.
+        uint16 ChkSum = { 0 } <name="Checksum">;
+    }
+    else if (L4proto == 0x6) // TCP
+    {
+        uint16 SrcPort = { 49152, 49152, 51000, 53124, 40000, 32768, 60123, 1024 } <name="Source Port">;
+        uint16 DstPort = { 80, 80, 443, 443, 22, 25, 110, 143, 179, 3306, 8080 } <name="Destination Port">;
+        // constraints[Layer_4.SEQ]: RFC 6528 wants this unpredictable, so a
+        // uniform draw is genuinely correct here.  The range table in the
+        // generated C++ is int-typed, so the top half of the 32-bit space cannot
+        // be named; 2000000000 is the largest bound that fits.
+        uint32 SEQ <min=0, max=2000000000>;
+        // constraints[Layer_4.ACK]: RFC 9293 requires 0 while the ACK control
+        // bit is clear, which is the case for an initial SYN.
+        uint32 ACK = { 0 }; 
+        // constraints[Layer_4.tcp_hdr_len] and dependency 17: at least 5 - four
+        // or less makes tcp_hdr_len*4-13 negative - and small enough that
+        // tcp_hdr_len*4 fits in what total_length left over, which line 162 of
+        // the original subtracts with no guard.  The upper bound is narrowed
+        // from the spec's 15 to 8, i.e. at most twelve bytes of options: that is
+        // what real segments carry, and it lets the L4proto choice above offer
+        // TCP whenever 32 bytes are free rather than 60.  A bitfield cannot be
+        // planted, so this one keeps its escape; the Crap and AppData guards
+        // below absorb it.
+        uchar tcp_hdr_len:4;
+        // constraints[Layer_4.Reserved]: fixed_value 0, bit_width 4, the LOW
+        // nibble of the same byte (schema_extensions "bitfield_layout").
+        uchar Reserved:4;
+        SetEvilBit(evil);
+        // These two are the awkward case.  ffcompile silently drops <min>,
+        // <max> and <values> from a BITFIELD declared inside an if - the
+        // metadata never reaches the emitted generate() call - and a bitfield
+        // cannot be planted either, so neither of this template's two other
+        // mechanisms is available.  What is left is the one the JSON says this
+        // template has always used: ffcompile harvests every direct
+        // field/constant comparison into that field's good-known-value set
+        // (template_deviations 11 and 12), so the checks below are simultaneously
+        // the parser-side validation the original never had - dependency 17 and
+        // constraints[Layer_4.Reserved] - and the generator's value sets,
+        // {5,6,7,8} and {0}.
+        if (tcp_hdr_len != 5 && tcp_hdr_len != 6 && tcp_hdr_len != 7 && tcp_hdr_len != 8)
+            Warning("TCP data offset outside the generated range 5..8");
+        if (Reserved != 0)
+            Warning("TCP reserved nibble is not zero");
+        // constraints[Layer_4.Crap]: tcp_hdr_len*4-13 - the flags byte, window,
+        // checksum and urgent pointer, plus any options.  At the pinned minimum
+        // that is exactly the seven mandatory bytes.  template_deviation 7 notes
+        // the TCP checksum is invisible inside this array; see the findings.
+        local uint16 crapLen = 0;
+        if (tcp_hdr_len*4 > 13)
+            crapLen = tcp_hdr_len*4 - 13;   // original: BYTE Crap[tcp_hdr_len*4-13]
+        pcapTcpBytes = 13 + crapLen;        // what this header really occupies
+        BYTE Crap[crapLen];
+    }
+    else
+    {
+          // constraints[Layer_4.packet]: total_length - ip_hdr_len*4, which the
+          // L4proto choice above has already guaranteed is not negative.
+          // dependency 15 - no layer 4 fields are decoded for these protocol
+          // numbers, and PCAPRECORD.AppData is not emitted either.
+          local uint16 pktLen = 0;
+          if (total_length > ip_hdr_length)
+              pktLen = total_length - ip_hdr_length;   // original: BYTE packet[total_length-ip_hdr_length]
+          BYTE packet[pktLen]<name="Unknown Layer 4 Data">;
+    }
+    
+} Layer_4;
+
+string L4protoName(BYTE val)
+{
+    if (val == 0x06)
+    {
+        return "TCP";
+    }
+    else if (val == 0x11)
+    {
+        return "UDP";
+    }
+    else
+    {
+        return "Unknown";
+    }
+}
+
+typedef struct (uint32 network) {
+        local uint32 len_before_l3;
+        // constraints[PCAPRECORD.ts_sec]: advanced from the file-scope base so
+        // successive records never go backwards (dependency 30, structure rule
+        // "ordering: PCAPRECORD timestamps").
+        time_t ts_sec = { pcapTsSec };         /* timestamp seconds */
+        pcapTsSec = pcapTsSec + 1;
+        // constraints[PCAPRECORD.ts_usec] and dependency 28: the microsecond
+        // magic fixes the unit, so the legal range is only 0..999999 - a uniform
+        // 32-bit draw is out of range 99.98 percent of the time.
+        uint32 ts_usec <min=0, max=999999>;    /* timestamp microseconds */
+        // constraints[PCAPRECORD.incl_len]: the format's principal size lever -
+        // a 32-bit byte count with no upper check anywhere, evil_bit_safe false,
+        // and the only delimiter between records.  The set is bounded by the
+        // generation_range's 1518 (1514 here, a full Ethernet frame without the
+        // FCS) and floored well above the 38 bytes a VLAN-tagged minimal
+        // datagram needs, and it is weighted toward the small end so a whole
+        // capture stays a few kilobytes.  Every value is at or below the
+        // smallest PCAPHEADER.snaplen, which is dependency 25.
+        ReadBytes( pcapPeek, FTell(), 4, pcapInclMenu, pcapInclMenu, 1.0 );
+        uint32 incl_len;       /* number of octets of packet saved in file */
+        // constraints[PCAPRECORD.orig_len] and dependency 24: the packet as it
+        // was on the wire, so never less than what was stored.  Equal to
+        // incl_len is the untruncated case; the two larger values describe a
+        // capture truncated by snaplen.
+        uint32 orig_len = { incl_len, incl_len, incl_len, incl_len + 4, incl_len + 64 };       /* actual length of packet */
+        // structure rule "ordering: endianness within a record" - the record
+        // header is little-endian and everything from the layer 2 header onward
+        // is network byte order.
+        BigEndian();
+
+        len_before_l3 = 0;
+        if (network == 101) { // Raw IP; the packet begins with an IPv4 or IPv6 header
+            // dependencies 0/1: LINKTYPE_RAW removes the Ethernet header
+            // entirely and the literal 0x0800 makes the IP header unconditionally
+            // IPv4 (template_deviation 2 - there is no IPv6 handling anywhere).
+            pcapRoom = 0;
+            if (incl_len > len_before_l3)
+                pcapRoom = 0;
+                if (incl_len > len_before_l3)
+                    pcapRoom = incl_len - len_before_l3;
+            Layer_3 L3(0x0800) <name="Layer 3">;
+        } else { // other wise create L2 header
+            // dependency 2 and structure rule 14: a fourteen-byte Ethernet
+            // header opens every record for any other link type.
+            Layer_2 L2 <name="Layer 2">;
+            len_before_l3 += 14;
+            if (L2.L3type == 0x0800) {
+                pcapRoom = 0;
+            if (incl_len > len_before_l3)
+                pcapRoom = 0;
+                if (incl_len > len_before_l3)
+                    pcapRoom = incl_len - len_before_l3;
+                Layer_3 L3(L2.L3type) <name="Layer 3">;
+            }
+            else if (L2.L3type == 0x8100) {
+                // structure rule 11: the tag has no signature of its own and is
+                // located purely by the EtherType before it, so it appears only
+                // here - and adds 4 to the layer 2 length the padding
+                // computation uses.
+                Dot1q d1q <name="802.1Q Vitual LAN">;
+                len_before_l3 += 4;
+                pcapRoom = 0;
+            if (incl_len > len_before_l3)
+                pcapRoom = 0;
+                if (incl_len > len_before_l3)
+                    pcapRoom = incl_len - len_before_l3;
+                Layer_3 L3(d1q.L3type) <name="Layer 3">;
+            }
+        }
+        Layer_4 L4(L3.ip_hdr_len,L3.total_length,L3.L4proto)<name="Layer 4">;
+
+        // structure rule 12 and dependencies 21/22: the payload exists only for
+        // TCP and UDP, and its length is derived rather than chosen.  Both
+        // subtractions are now guaranteed non-negative by the L4proto and
+        // tcp_hdr_len choices above, so the `> 0` guards - which an underflowed
+        // unsigned value would sail straight through - are never load-bearing.
+        if (L3.L4proto == 0x6)
+        {
+            // template_deviation 3: the original subtracts both header lengths
+            // into a uint16 with no guard, and the `> 0` test below passes an
+            // underflowed value straight through.
+            local uint16 AppDataLen = 0;
+            if (L3.total_length > L3.ip_hdr_len*4 + pcapTcpBytes)
+                AppDataLen = L3.total_length - L3.ip_hdr_len*4 - pcapTcpBytes;
+                // original: L3.total_length - L3.ip_hdr_len*4 - L4.tcp_hdr_len*4;
+                // identical whenever the data offset is at least 5, which is
+                // every well-formed segment.
+            if (AppDataLen > 0)
+            {
+                BYTE AppData[AppDataLen]<name="TCP Application Data">;
+            }
+        }
+        else if (L3.L4proto == 0x11)
+        {
+            // template_deviation 3: udp_hdr_len - 8 underflows a full uint
+            // below 8 - the single cheapest route in this format to a
+            // four-billion-byte array.
+            local uint AppDataLen = 0;
+            if (L4.udp_hdr_len > 8)
+                AppDataLen = L4.udp_hdr_len-8;
+            if (AppDataLen > 0)
+            {
+                BYTE AppData[AppDataLen]<name="UDP Application Data">;
+            }
+        }
+        // dependency 27 and constraints[PCAPRECORD.padding]: whatever is left
+        // between the end of the datagram and the end of the record is layer 2
+        // trailer padding.  This is the one length subtraction in the original
+        // that is properly guarded, and the total_length candidates above keep
+        // the difference inside the 0..46 the generation_range asks for - so the
+        // bytes written by this record add up to incl_len exactly, which is what
+        // keeps the next record header where the next iteration expects it.
+        if (len_before_l3 + L3.total_length < incl_len) {
+            uchar padding[incl_len - len_before_l3 - L3.total_length]<name="Layer 2 Padding">;
+        }
+        LittleEndian();
+} PCAPRECORD <read=ReadPCAPRECORD,comment=PCAPcomments>;
+
+string PCAPcomments(PCAPRECORD &P)
+{
+    local uint16 L4_proto = P.L3.L4proto;
+    string strReturn;
+    local uint16 AppDataLen = 0;
+    if (L4_proto == 0x6)
+    {
+        AppDataLen = P.L3.total_length - P.L3.ip_hdr_len*4 - P.L4.tcp_hdr_len*4;
+    }
+    else if (L4_proto == 0x11)
+    {
+        AppDataLen = P.L4.udp_hdr_len - 8;
+    }   
+    SPrintf(strReturn,"%s:%d -> %s:%d  %s %s",IPv4addrName(P.L3.SRC_IP),P.L4.SrcPort,IPv4addrName(P.L3.DST_IP),P.L4.DstPort,L4protoName(L4_proto), AppDataLen > 0 ? "***" : "");
+    return strReturn;
+}
+string ReadPCAPRECORD(PCAPRECORD &record)
+{
+	string strReturn;
+	
+	SPrintf(strReturn, "%s.%06u", TimeTToString(record.ts_sec), record.ts_usec);
+	return strReturn;
+}
+
+string MACname(MACaddr &addr)
+{
+    string strReturn;
+    SPrintf(strReturn,"%.02x:%.02x:%.02x:%.02x:%.02x:%.02x",addr.Byte[0],addr.Byte[1],addr.Byte[2],addr.Byte[3],addr.Byte[4],addr.Byte[5]);
+    return strReturn;
+}
+
+// Define the headers
+LittleEndian();
+pcapInitMenus();
+PCAPHEADER header;
+
+// structure rules 2/3/5: an unbounded, terminator-free record stream that ends
+// only at end of file.  generation_bound is "4 to 32 records per file"; -1.0
+// drives FEof's threshold to 510 so it can never fire, and 1.0 drives it to 0 so
+// it always does.  Both assignments are gated on generation because the parse
+// direction must keep a probability strictly between 0 and 1 for FEof to be
+// exact - and because they decide nothing, they cost no randomness, so the two
+// directions still draw the same values in the same order.
+if( IsParsing() == 0 )
+    pcapEofP = -1.0;
+
+while( !FEof( pcapEofP ) )
+{
+	PCAPRECORD record(header.network) <name="Frame">;
+	pcapRecords = pcapRecords + 1;
+	if( IsParsing() == 0 )
+	{
+		if( pcapRecords >= 32 )
+			pcapEofP = 1.0;
+		else if( FTell() > 24000 )
+			pcapEofP = 1.0;
+		else if( pcapRecords >= 4 )
+			pcapEofP = 0.125;
+	}
+}

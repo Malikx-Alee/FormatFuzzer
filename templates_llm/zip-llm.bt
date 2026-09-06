@@ -1,0 +1,1179 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: ZIPAdv.bt
+//    Author: SweetScape Software
+//   Version: 2.6
+//   Purpose: Defines a template for
+//            parsing ZIP files. Handles more
+//            complex ZIP data such as ZIP64
+//            that the base ZIP.bt cannot read.
+//  Category: Archive
+// File Mask: *.zip
+//  ID Bytes: 50 4B //PK
+//   History:  
+//   2.6   2015-07-18  SweetScape: Updated header for repository submission.
+//   2.5   G Woods:    Handle zero compressed size in header with ZIPDATADESCR header 
+//                     after compressed data.
+//   2.3   DCeres:     Added write function for VERECORD structure.
+//                     Added write function for ZIP64ENDLOCATORRECORD structure.
+//                     Added write function for ZIP64ENDLOCATOR structure.
+//                     Added write function for EXTRAFIELD structure.
+//   2.2   S.Gibson    Fix for entry comment field
+//                     Fix for parsing data descriptors
+//   2.1   SweetScape  Added write function for ZIPFILERECORD structure
+//   2.0   SweetScape  Added read functions
+//   1.0   SweetScape  Initial release
+//
+// More information available at:
+//  https://en.wikipedia.org/wiki/Zip_%28file_format%29
+//------------------------------------------------
+
+// Define structures used in ZIP files
+
+typedef enum <uint> {
+	S_ZIPFILERECORD 		= 0x04034b50,
+	S_ZIPDATADESCR 			= 0x08074b50,
+	S_ZIPDIRENTRY 			= 0x02014b50, 
+	S_ZIPDIGITALSIG 		= 0x05054b50,
+	S_ZIP64ENDLOCATORRECORD = 0x06064b50,
+	S_ZIP64ENDLOCATOR 		= 0x07064b50,
+	S_ZIPENDLOCATOR 		= 0x06054b50
+} SignatureTYPE <format=hex>;
+
+typedef enum <byte> {
+	OS_FAT      = 0,
+	OS_AMIGA    = 1,
+	OS_VMS      = 2,  // VAX/VMS
+	OS_Unix     = 3,
+	OS_VM_CMS   = 4,
+	OS_Atari    = 5,  // what if it's a minix filesystem? [cjh]
+	OS_HPFS     = 6,  // filesystem used by OS/2 (and NT 3.x)
+	OS_Mac      = 7,
+	OS_Z_System = 8,
+	OS_CPM      = 9,
+	OS_TOPS20   = 10, // pkzip 2.50 NTFS
+	OS_NTFS     = 11, // filesystem used by Windows NT
+	OS_QDOS     = 12, // SMS/QDOS
+	OS_Acorn    = 13, // Archimedes Acorn RISC OS
+	OS_VFAT     = 14, // filesystem used by Windows 95, NT
+	OS_MVS      = 15,
+	OS_BeOS     = 16, // hybrid POSIX/database filesystem
+	OS_Tandem   = 17,
+	OS_OS400    = 18,
+	OS_OSX      = 19 
+} HOSTOSTYPE;
+
+typedef byte VERSIONTYPE <read=read_VERSIONTYPE>;
+
+string read_VERSIONTYPE (local VERSIONTYPE &af) {
+	local string s = "";  
+	SPrintf (s, "%1.1f", (float)af / 10);  
+	return s;
+}
+
+typedef struct{
+	VERSIONTYPE Version;
+	HOSTOSTYPE HostOS;
+} VERECORD <read=read_VERECORD>;
+
+string read_VERECORD (local VERECORD &af) {
+	local string s = "";  
+	SPrintf (s, "Ver %1.1f, ", (float)af.Version / 10);  
+	s +=  EnumToString(  af.HostOS);
+	return s;
+}
+
+//enum used for compression format
+typedef enum <short> { 
+	COMP_STORED    		= 0,
+	COMP_SHRUNK    		= 1,
+	COMP_REDUCED1  		= 2,
+	COMP_REDUCED2  		= 3,
+	COMP_REDUCED3  		= 4,
+	COMP_REDUCED4  		= 5,
+	COMP_IMPLODED  		= 6,
+	COMP_TOKEN     		= 7,
+	COMP_DEFLATE   		= 8, // Deflate - standard ZIP codec, used from the start, also found in regular ZIP files
+	COMP_DEFLATE64 		= 9,
+	COMP_PKImploding 	= 10,
+	
+	COMP_BZip2			= 12, // BZIP2 - Newer than deflate, with better compression and slightly slower speed.
+	COMP_LZMA 			= 14, // LZMA - advanced ZIPX codec, taken from open source 7-zip format
+	COMP_Terse 			= 18,
+	COMP_Lz77 			= 19,
+	
+	COMP_Jpeg 			= 0x60, // Jpeg - Codec added by WinZip for specific support of jpeg images ( http://www.winzip.com/wz_jpg_comp.pdf )
+	COMP_WavPack		= 0x61, // WavPack - Codec for compressing specifically wav files. ( http://www.wavpack.com )
+	COMP_PPMd 			= 0x62, // PPMd - context modeling based codec, also featured in new ZIP standard. We use it in our Optimized method for text file compression. ( http://www.compression.ru/ds/ )
+	COMP_WzAES 			= 0x63  // WZAES encryption methods
+} COMPTYPE;
+
+typedef enum <ushort>{ 
+	FLAG_Encrypted             = 0x0001, //Bit 0: If set, indicates that the file is encrypted.
+	FLAG_CompressionFlagBit1   = 0x0002, 
+	FLAG_CompressionFlagBit2   = 0x0004,
+	FLAG_DescriptorUsedMask    = 0x0008,
+	FLAG_Reserved1             = 0x0010,
+	FLAG_Reserved2             = 0x0020,
+	FLAG_StrongEncrypted       = 0x0040, //Bit 6: Strong encryption
+	FLAG_CurrentlyUnused1      = 0x0080,
+	FLAG_CurrentlyUnused2      = 0x0100,
+	FLAG_CurrentlyUnused3      = 0x0200,
+	FLAG_CurrentlyUnused4      = 0x0400,
+	FLAG_Utf8                  = 0x0800, // Bit 11: filename and comment encoded using UTF-8
+	FLAG_ReservedPKWARE1       = 0x1000,
+	FLAG_CDEncrypted           = 0x2000, // Bit 13: Used when encrypting the Central Directory to indicate selected data values in the Local Header are masked to hide their actual values.
+	FLAG_ReservedPKWARE2       = 0x4000,
+	FLAG_ReservedPKWARE3       = 0x8000,
+
+} FLAGTYPE <read=read_FLAGTYPE>;
+
+string read_FLAGTYPE (local FLAGTYPE &af) {
+	local string s = "";
+	local int commaNeeded = 0;
+	local FLAGTYPE i = 1;
+
+	SPrintf (s, "%d: ", af);  
+	while (i < FLAG_ReservedPKWARE3) 
+	{
+		if (af & i)
+		{
+			if (commaNeeded) 
+			{ s += ", "; }
+			s +=  EnumToString(i);
+			commaNeeded = 1;
+		}
+		i = i << 1;
+	}
+	return s;
+}
+
+typedef enum <ushort>{ 
+	EH_Zip64 = 					0x0001,		//Zip64 extended information extra field
+	EH_AVInfo = 				0x0007,		//AV Info
+	EH_ExtLanguage = 			0x0008,		//Reserved for extended language encoding data (PFS)
+	EH_OS2 = 					0x0009,		//OS/2
+	EH_NTFS = 					0x000a,		//NTFS 
+	EH_OpenVMS = 				0x000c,		//OpenVMS
+	EH_UNIX = 					0x000d,		//UNIX
+	EH_fileStream = 			0x000e,		//Reserved for file stream and fork descriptors
+	EH_PatchDescriptor = 		0x000f,		//Patch Descriptor
+	EH_PKCS7X509 = 				0x0014,		//PKCS#7 Store for X.509 Certificates
+	EH_X509IDSignature = 		0x0015,		//X.509 Certificate ID and Signature for individual file
+	EH_X509IDCD = 				0x0016,		//X.509 Certificate ID for Central Directory
+	EH_StrongEncryption = 		0x0017,		//Strong Encryption Header
+	EH_RecordManagement = 		0x0018,		//Record Management Controls
+	EH_PKCS7List = 				0x0019,		//PKCS#7 Encryption Recipient Certificate List
+	EH_Attributes = 			0x0065,		//IBM S/390 (Z390), AS/400 (I400) attributes uncompressed
+	EH_ReservedAttributes = 	0x0066,		//Reserved for IBM S/390 (Z390), AS/400 (I400) attributes - compressed
+	EH_POSZIP4690 = 			0x4690,		//POSZIP 4690 (reserved) 
+	EH_Mac = 					0x07c8,		//Macintosh
+	EH_ZipItMac1 = 				0x2605,		//ZipIt Macintosh
+	EH_ZipItMac2 = 				0x2705,		//ZipIt Macintosh 1.3.5+
+	EH_ZipItMac3 = 				0x2805,		//ZipIt Macintosh 1.3.5+
+	EH_InfoZIPMac = 			0x334d,		//Info-ZIP Macintosh
+	EH_Acorn = 					0x4341,		//Acorn/SparkFS 
+	EH_WinNTSecurity = 			0x4453,		//Windows NT security descriptor (binary ACL)
+	EH_VM_CMS = 				0x4704,		//VM/CMS
+	EH_MVS = 					0x470f,		//MVS
+	EH_FWKCS = 					0x4b46,		//FWKCS MD5 (see below)
+	EH_OS2AccessList = 			0x4c41,		//OS/2 access control list (text ACL)
+	EH_InfoZIPOpenVMS = 		0x4d49,		//Info-ZIP OpenVMS
+	EH_Xceed = 					0x4f4c,		//Xceed original location extra field
+	EH_AOSVS = 					0x5356,		//AOS/VS (ACL)
+	EH_extTimestamp = 			0x5455,		//extended timestamp
+	EH_XceedUnicode = 			0x554e,		//Xceed unicode extra field
+	EH_InfoZIPUNIX = 			0x5855,		//Info-ZIP UNIX (original, also OS/2, NT, etc)
+	EH_InfoZIPUnicodeComment = 	0x6375,		//Info-ZIP Unicode Comment Extra Field
+	EH_BeOS = 					0x6542,		//BeOS/BeBox
+	EH_InfoZIPUnicodePath = 	0x7075,		//Info-ZIP Unicode Path Extra Field
+	EH_ASiUNIX = 				0x756e,		//ASi UNIX
+	EH_InfoZIPUNIXNew = 		0x7855,		//Info-ZIP UNIX (16-bit UID/GID info)
+	EH_InfoZIPUNIXNew3rd = 		0x7875,     //Info-ZIP UNIX 3rd generation (generic UID/GID, ...)
+	EH_WinGrowth = 				0xa220,		//Microsoft Open Packaging Growth Hint
+	EH_SMSQDOS = 				0xfd4a, 	//SMS/QDOS
+    EH_WzAES                =   0x9901,      //
+} HEADERFLAG;
+
+typedef enum <ushort>{ 
+    AlgID_DES       = 0x6601, //- DES
+    AlgID_RC2OLD    = 0x6602, //- RC2 (version needed to extract < 5.2)
+    AlgID_3DES168   = 0x6603, //- 3DES 168
+    AlgID_3DES112   = 0x6609, //- 3DES 112
+    AlgID_AES128    = 0x660E, //- AES 128 
+    AlgID_AES192    = 0x660F, //- AES 192 
+    AlgID_AES256    = 0x6610, //- AES 256 
+    AlgID_RC2       = 0x6702, //- RC2 (version needed to extract >= 5.2)
+    AlgID_Blowfish  = 0x6720, //- Blowfish
+    AlgID_Twofish   = 0x6721, //- Twofish
+    AlgID_RC4       = 0x6801, //- RC4
+    AlgID_Unknown   = 0xFFFF, //- Unknown algorithm
+} ALGFLAG;
+
+typedef enum <byte>{ 
+    AES128 = 0x01, 	//128-bit encryption key
+    AES192 = 0x02, 	//192-bit encryption key
+    AES256 = 0x03, 	//256-bit encryption key
+} AESMODE;
+
+typedef enum <ushort>{ 
+    pfPassword  = 0x0001, //- Password is required to decrypt
+    pfCertificates = 0x0002, //- Certificates only
+    pfPasswordCertificates = 0x0003, //- Password or certificate required to decrypt
+}   PRCFLAG;
+
+typedef struct {
+	HEADERFLAG  efHeaderID;       // enumerated_values; EH_extTimestamp preferred
+	ushort  efDataSize;           // calculated: the byte count of everything after this field.
+	                              // Zip64 8..28 (dependency 13), Unicode path >= 6 (14), NTFS >= 4 (15),
+	                              // strong encryption >= 8 (16), WinZip AES exactly 7 (17).
+
+	Printf("%d", efHeaderID);
+	switch (efHeaderID)
+	{
+	case EH_Zip64:
+		// template_deviations #2: APPNOTE makes this a variable-length list of only the
+		// values that overflowed, so its size is 8, 16, 24 or 28.  This template always
+		// reads exactly two uint64 fields, so the generator emits only the 16-byte form
+		// and sets both 32-bit sizes to the 0xFFFFFFFF sentinel (dependency 11).
+		uint64 efOriginalSize;
+		uint64 efCompressedSize;      // dependency 47: the top-level loop FSkips exactly this many bytes
+		//uint64 efHeaderOffset;
+		//uint   efDiskNumberStart;
+		break;
+	case EH_InfoZIPUnicodePath:
+		byte efVersion;               // fixed_value 1
+		uint efNameCRC32;             // calculated: CRC-32 of the header's own filename field
+		// dependency 14: efDataSize must be at least 6; the guard below tests only > 0, so a
+		// size of 1 to 4 makes this array length negative (template_deviations #5)
+		if(efDataSize > 0 )
+		    char efUnicodeName[efDataSize - 5];
+		break;
+    case EH_NTFS:
+        int Reserved;   //4 bytes    Reserved for future use   fixed_value 0
+	    local int len = efDataSize - 4;
+	    while (len > 0)
+        {
+            ushort Tag;        //2 bytes    NTFS attribute tag value #1   enumerated_values [1]
+            ushort Size;       //2 bytes    Size of attribute #1, in bytes
+                               // dependency 18 / template_deviations #5: the template reads 24 bytes
+                               // whatever this says but advances the chain by Size + 4, so the only
+                               // self-consistent value for a Tag-1 record is 24
+            if (Tag == 0x001)
+            {
+                FILETIME Mtime;      //8 bytes    File last modification time
+                FILETIME Atime;      //8 bytes    File last access time
+                FILETIME Ctime;     //8 bytes    File creation time                
+            }
+            else
+                byte Data[Size]; //(var.)     Size1      Attribute #1 data
+    		len -= Size + 4;
+        }
+        break;
+    case EH_StrongEncryption:
+        ushort  Format;    //2 bytes  Format definition for this record   fixed_value 2
+        ALGFLAG AlgID;     //2 bytes  Encryption algorithm identifier     AlgID_AES256 preferred
+        ushort  Bitlen;    //2 bytes  Bit length of encryption key
+                           // dependencies 19-21: 128, 192 or 256 to match AlgID_AES128/192/256
+        PRCFLAG Flags;     //2 bytes  Processing flags
+        if (efDataSize > 8)
+            byte    CertData[efDataSize - 8];  //TSize-8  Certificate decryption extra field data        
+        break;
+    case EH_WzAES:
+        // dependency 17: this record is exactly seven bytes, and dependency 2 makes it mandatory
+        // for a COMP_WzAES entry.  template_deviations #3/#4: the lenSalt switch below reads the
+        // LAST extra-field record and defaults to zero, so this record must be the last one.
+        ushort version;         //2 bytes   Integer version number specific to the zip vendor  fixed_value 2
+        char VendorID[2];       //2 bytes 	2-character vendor ID   fixed_value "AE"
+        AESMODE Strength;       //1 bytes   Integer mode value indicating AES encryption strength
+                                // dependencies 3-5: 1, 2 or 3 fixes the salt at 8, 12 or 16 bytes
+        COMPTYPE deCompression; //2 bytes The actual compression method used to compress the file
+        break;
+	default:
+		if(efDataSize > 0 )
+		    char efData[ efDataSize ];
+        break;
+	}
+} EXTRAFIELD <read=read_EXTRAFIELD>;
+
+string read_EXTRAFIELD (local EXTRAFIELD &af) 
+{
+	return EnumToString(af.efHeaderID);
+}
+
+typedef struct {
+	HEADERFLAG  efHeaderID;
+	uint  efDataSize;
+
+	Printf("%d", efHeaderID);
+	switch (efHeaderID)
+	{
+	case EH_Zip64:
+		uint64 efOriginalSize;
+		uint64 efCompressedSize;
+		//uint64 efHeaderOffset;
+		//uint   efDiskNumberStart;
+		break;
+	case EH_InfoZIPUnicodePath:
+		byte efVersion;
+		uint efNameCRC32;
+		if(efDataSize > 0 )
+		    char efUnicodeName[efDataSize - 5];
+		break;
+	default:
+		if(efDataSize > 0 )
+		    char efData[ efDataSize ];
+        break;
+	}
+} EXTRA64FIELD;
+
+typedef enum <uint>{
+	FA_READONLY             = 0x00000001,  
+	FA_HIDDEN               = 0x00000002,  
+	FA_SYSTEM               = 0x00000004,  
+	FA_DIRECTORY            = 0x00000010,  
+	FA_ARCHIVE              = 0x00000020,  
+	FA_DEVICE               = 0x00000040,  
+	FA_NORMAL               = 0x00000080,  
+	FA_TEMPORARY            = 0x00000100,  
+	FA_SPARSE_FILE          = 0x00000200,  
+	FA_REPARSE_POINT        = 0x00000400,  
+	FA_COMPRESSED           = 0x00000800,  
+	FA_OFFLINE              = 0x00001000,  
+	FA_NOT_CONTENT_INDEXED  = 0x00002000,  
+	FA_ENCRYPTED            = 0x00004000,  
+	FA_VIRTUAL              = 0x00010000,  
+
+    kIFMT   =   0170000 << 16,     /* Unix file type mask */
+    
+    kIFDIR  =   0040000 << 16,     /* Unix directory */
+    kIFREG  =   0100000 << 16,     /* Unix regular file */
+    kIFSOCK =   0140000 << 16,     /* Unix socket (BSD, not SysV or Amiga) */
+    kIFLNK  =   0120000 << 16,     /* Unix symbolic link (not SysV, Amiga) */
+    kIFBLK  =   0060000 << 16,     /* Unix block special       (not Amiga) */
+    kIFCHR  =   0020000 << 16,     /* Unix character special   (not Amiga) */
+    kIFIFO  =   0010000 << 16,     /* Unix fifo    (BCC, not MSC or Amiga) */
+    
+    kISUID  =   04000 << 16,       /* Unix set user id on execution */
+    kISGID  =   02000 << 16,       /* Unix set group id on execution */
+    kISVTX  =   01000 << 16,       /* Unix directory permissions control */
+    kIRWXU  =   00700 << 16,       /* Unix read, write, execute: owner */
+    kIRUSR  =   00400 << 16,       /* Unix read permission: owner */
+    kIWUSR  =   00200 << 16,       /* Unix write permission: owner */
+    kIXUSR  =   00100 << 16,       /* Unix execute permission: owner */
+    kIRWXG  =   00070 << 16,       /* Unix read, write, execute: group */
+    kIRGRP  =   00040 << 16,       /* Unix read permission: group */
+    kIWGRP  =   00020 << 16,       /* Unix write permission: group */
+    kIXGRP  =   00010 << 16,       /* Unix execute permission: group */
+    kIRWXO  =   00007 << 16,       /* Unix read, write, execute: other */
+    kIROTH  =   00004 << 16,       /* Unix read permission: other */
+    kIWOTH  =   00002 << 16,       /* Unix write permission: other */
+    kIXOTH  =   00001 << 16        /* Unix execute permission: other */
+} FILEATTRIBUTE <read=read_FILEATTRIBUTE>;
+
+string read_FILEATTRIBUTE (local FILEATTRIBUTE &af) {
+	local string s = "";
+	local int commaNeeded = 0;
+	local FILEATTRIBUTE i = 1;
+
+	SPrintf (s, "0x%X: ", af);  
+	while (i < 	0xFFFFFF - 2) 
+	{
+		if (af & i)
+		{
+			if (commaNeeded) 
+			{ 
+                s += ", ";
+            }
+			s +=  EnumToString(i);
+			commaNeeded = 1;
+		}
+		i = i << 1;
+	}
+	return s;
+}
+
+// Defintes the Data descriptor
+typedef struct {
+	SignatureTYPE ddSignature; //0x08074b50   fixed_value, corruption_risk high
+	uint ddCRC <format=hex>;    // calculated: must equal ZIPDIRENTRY.deCrc for the same entry (dependency 8)
+	uint ddCompressedSize;      // calculated: must equal ZIPDIRENTRY.deCompressedSize
+	uint ddUncompressedSize;    // calculated: must equal ZIPDIRENTRY.deUncompressedSize
+} ZIPDATADESCR;
+
+// Defines a file record
+typedef struct {
+	// Header for the file
+	SignatureTYPE frSignature;    //0x04034b50   fixed_value, corruption_risk high
+	VERECORD frVersion;           // generation_range 10..20; 45 when the entry uses Zip64 (dependency 12).
+	                              // template_deviations #8: the high byte of a "version needed to
+	                              // extract" is unused and must be zero, not a HOSTOSTYPE code.
+	FLAGTYPE frFlags;             // bitmask_constraint, preferred 0; bit 3 defers the sizes (dependency 7)
+	COMPTYPE frCompression;       // enumerated_values, COMP_STORED preferred; 99 is the AES marker (dependency 1)
+	ushort  frFileTime;           // bitmask_constraint valid_values [0]
+	ushort  frFileDate;           // bitmask_constraint valid_values [33] = 1980-01-01
+	uint     frCrc     <format=hex>;   // calculated: CRC-32/ISO-HDLC of the UNCOMPRESSED data
+	uint     frCompressedSize;    // calculated: the payload byte count, or 0xFFFFFFFF under Zip64 (dependency 11)
+	uint     frUncompressedSize;  // calculated: equals frCompressedSize for COMP_STORED (dependency 9)
+	ushort   frFileNameLength;    // calculated: the measured length of frFileName
+	ushort   frExtraFieldLength;  // calculated: the summed (efDataSize + 4) of every record below (dependency 23)
+	if( frFileNameLength > 0 )
+	char     frFileName[ frFileNameLength ];
+	
+	local int len = frExtraFieldLength;
+	while (len > 0)
+	{
+		EXTRAFIELD frExtraField;
+		len -= frExtraField.efDataSize + 4;
+	}
+	// Compressed data
+	SetBackColor( cNone );
+
+    if ((frFlags & FLAG_Encrypted) && ( frFlags & FLAG_StrongEncrypted))
+    {
+        struct
+        {
+            ushort  IVSize;
+            byte    IVData[IVSize];
+            uint    Size;
+            ushort  Format;
+            ALGFLAG AlgID;
+            ushort  BitLen;
+            ushort  Flags;
+            ushort  ErdSize;
+            byte    ErdData[ErdSize];
+            uint    Reserved;
+            ushort  VSize;
+            byte    VData[VSize - 4];
+            uint    VCRC32;
+        } StrongEncryptedHeader;
+        char    frData[ frCompressedSize - StrongEncryptedHeader.IVSize - StrongEncryptedHeader.Size - 6];
+    }
+    else if ((frFlags & FLAG_Encrypted) && ( frCompression == COMP_WzAES ))
+    {
+        local int lenSalt = 0;
+        if (frExtraField.efHeaderID == EH_WzAES)
+        {
+            switch (frExtraField.Strength)
+            {
+            case AES128: 
+                lenSalt = 8;
+                break;
+            case AES192: 
+                lenSalt = 12;
+                break;
+            case AES256: 
+                lenSalt = 16;
+                break;
+            }
+        }
+        uchar   SaltValue[lenSalt];
+        ushort  PassVerification;
+		uchar   frData[ frCompressedSize - 12 - lenSalt];
+		uchar   AuthenticationCode[ 10];
+    }
+	else if( (frCompressedSize > 0) && (frCompressedSize < 0xFFFFFFFF))
+    {
+		uchar    frData[ frCompressedSize ];
+    }
+    else if (frCompressedSize == 0 && (frFlags & FLAG_DescriptorUsedMask))
+    {
+		// If bit 3 (0x08) of the flags field is set, then the CRC-32 and file sizes were not known when the header was written.
+		// Instead there is an additional header ZIPDATADESCR appended after the compressed data.
+		// We look for the next signature of the appended header here. 
+        local int64 posCurrent = FTell();
+        local int64 posNext =  FindFirst(S_ZIPDATADESCR,true,false,false,0.0,1,posCurrent);
+        if (posNext >= posCurrent) 
+        {
+            uchar frData[posNext - posCurrent];
+
+    		SetBackColor( cLtGreen );
+		    ZIPDATADESCR dataDescr;
+        }
+    }
+
+} ZIPFILERECORD <read=ReadZIPFILERECORD, write=WriteZIPFILERECORD>;
+
+// Defines an entry in the directory table
+typedef struct {
+	SignatureTYPE deSignature;     //0x02014b50   fixed_value, corruption_risk high
+	VERECORD deVersionMadeBy;      // range 10..63, and at least deVersionToExtract (dependency 39); its
+	                               // host-OS byte chooses the deExternalAttributes namespace (dependency 38)
+	VERECORD deVersionToExtract;   // range 10..20; high byte zero (template_deviations #8)
+	FLAGTYPE deFlags;              // calculated: must equal frFlags for the same entry (dependency 26)
+	COMPTYPE deCompression;        // calculated: must equal frCompression (dependency 27)
+	ushort  deFileTime;            // calculated: must equal frFileTime (dependency 28)
+	ushort  deFileDate;            // calculated: must equal frFileDate (dependency 29)
+	uint     deCrc     <format=hex>;   // calculated: must equal frCrc (dependency 30)
+	uint     deCompressedSize;     // calculated: must equal frCompressedSize (dependency 31); 0 for a
+	                               // directory entry, whose name ends in '/' (dependency 40)
+	uint     deUncompressedSize;   // calculated: must equal frUncompressedSize (dependency 32)
+	ushort   deFileNameLength;     // calculated: must equal frFileNameLength (dependency 33)
+	ushort   deExtraFieldLength;   // calculated: the summed (efDataSize + 4) of every record below (dependency 24)
+	ushort   deFileCommentLength;  // calculated: the measured length of deFileComment, preferred 0
+	ushort   deDiskNumberStart;    // fixed_result 0 in a single-volume archive
+	ushort   deInternalAttributes; // bitmask_constraint valid_values [0, 1]
+	FILEATTRIBUTE deExternalAttributes;  // template_deviations #14: the DOS bits and the Unix mode bits in
+	                               // this enum are two disjoint namespaces, never one flag set
+	uint     deHeaderOffset;       // calculated: the absolute offset of the matching local header (dependency 37)
+	if( deFileNameLength > 0 )
+		char     deFileName[ deFileNameLength ];
+	local int len = deExtraFieldLength;
+	while (len > 0)
+	{
+		EXTRAFIELD deExtraField;
+		len -= deExtraField.efDataSize + 4;
+	}
+	if( deFileCommentLength > 0 )
+		uchar    deFileComment[ deFileCommentLength ];
+} ZIPDIRENTRY <read=ReadZIPDIRENTRY>;
+
+// Defines the digital signature
+typedef struct {
+	SignatureTYPE dsSignature;    //0x05054b50   fixed_value, corruption_risk high
+	ushort   dsDataLength;        // calculated: the measured length of dsData
+	if( dsDataLength > 0 )
+		uchar 	dsData[ dsDataLength ];
+} ZIPDIGITALSIG;
+
+// Zip64 end of central directory record
+typedef struct {
+	SignatureTYPE elr64Signature; //0x06064b50   fixed_value, corruption_risk high
+	                              // template_deviations #6: the thresholds below bear no relation to the
+	                              // real field offsets and APPNOTE does not define this record as
+	                              // truncatable - 44 is the one size that yields the conforming field set
+	                              // and an empty DataSect (dependency 45).
+		int64       elr64DirectoryRecordSize;   // fixed_result 44
+	if (elr64DirectoryRecordSize > 1)
+		VERECORD    elr64VersionMadeBy;
+	if (elr64DirectoryRecordSize > 2)
+		VERECORD    elr64VersionToExtract;
+	if (elr64DirectoryRecordSize > 4)
+		uint        el64DiskNumber;
+	if (elr64DirectoryRecordSize > 8)
+		uint        el64StartDiskNumber;
+	if (elr64DirectoryRecordSize > 12)
+		int64       el64EntriesOnDisk;
+	if (elr64DirectoryRecordSize > 20)
+		int64       el64EntriesInDirectory;
+	if (elr64DirectoryRecordSize > 28)
+		int64       el64DirectorySize;
+	if (elr64DirectoryRecordSize > 36)
+		int64       el64DirectoryOffset;
+	if (elr64DirectoryRecordSize > 44)
+	{
+        char DataSect [elr64DirectoryRecordSize - 44];
+//	    local int len = elr64DirectoryRecordSize - 44;
+//	    while (len > 0)
+//	    {
+//		    EXTRA64FIELD frExtraField;
+//		    len -= frExtraField.efDataSize + 4;
+//	    }
+
+    }
+} ZIP64ENDLOCATORRECORD;
+
+//Zip64 end of central directory locator
+typedef struct {
+	SignatureTYPE elSignature;    //0x07064b50   fixed_value, corruption_risk high
+	uint     elStartDiskNumber;   // fixed_result 0
+	int64    elDirectoryOffset;   // calculated: the absolute offset of the ZIP64ENDLOCATORRECORD signature (dependency 42)
+	uint     elEntriesInDirectory;// template_deviations #7: APPNOTE calls this the total number of DISKS,
+	                              // not an entry count - fixed_result 1
+}  ZIP64ENDLOCATOR;
+
+// Defines the end of central directory locator
+typedef struct {
+	SignatureTYPE elSignature;    //0x06054b50   fixed_value, corruption_risk high
+	ushort   elDiskNumber;        // fixed_result 0
+	ushort   elStartDiskNumber;   // fixed_result 0
+	ushort   elEntriesOnDisk;     // calculated: the number of ZIPDIRENTRY records (dependency 35)
+	ushort   elEntriesInDirectory;// calculated: equals elEntriesOnDisk in a single-volume archive
+	uint     elDirectorySize;     // calculated: the total byte length of the central directory (dependency 36)
+	uint     elDirectoryOffset;   // calculated: elDirectoryOffset + elDirectorySize is this record's offset
+	ushort   elCommentLength;     // calculated: the measured length of elComment, preferred 0
+	if( elCommentLength > 0 )
+		char elComment[ elCommentLength ];
+} ZIPENDLOCATOR;
+
+//--------------------------------------------
+
+// Custom read functions that allows the name of the
+//  of the file to appear in the Template Results.
+
+string ReadZIPFILERECORD( ZIPFILERECORD &file )
+{
+	if( exists( file.frFileName ) )
+		return file.frFileName;
+	else
+		return "";
+}
+
+string ReadZIPDIRENTRY( ZIPDIRENTRY &entry )
+{
+	if( exists( entry.deFileName ) )
+		return entry.deFileName;
+	else
+		return "";
+}
+
+// Custom write function that allows changing
+//  the name of the file - note that the file
+//  name size cannot be increased
+
+void WriteZIPFILERECORD( ZIPFILERECORD &file, string s )
+{
+	local int len = Strlen( s );
+	if( exists( file.frFileName ) )
+	{
+		Strncpy( file.frFileName, s, file.frFileNameLength );
+		if( len < file.frFileNameLength )
+		file.frFileName[len] = 0; //null terminate        
+	}
+}
+
+//--------------------------------------------
+// Generation planner
+//
+// A ZIP is a stream of self-identifying records with NO container header
+// (meta.structure_note): the local file headers and their data come first, then the
+// central directory that indexes them by absolute offset, then the end record that every
+// extractor finds by scanning backwards.  Every length in a local header is written
+// before the bytes it measures, and the directory is a second copy of nine fields per
+// entry that must agree with the first.  The planner below chooses one complete layout
+// and PLANTS every header byte through ffcompile's lookahead, so each length, offset and
+// count is correct the first time it is written.  A planted byte is copied back over
+// every write path in file_accessor.h, the evil-bit one included, so the plants are exact.
+//
+// The one value that cannot be known in time is the CRC-32 of an entry's data, which is
+// random and written after its own header.  It is back-planted from Checksum() once the
+// data exists - a plant rather than an FSeek-and-rewrite backpatch, so it needs no
+// SetEvilBit(false) and cannot make the parse direction reject a file it used to accept.
+//
+// The planner runs in generation only.  Its numbers describe a layout it chose, so
+// replaying them against a real archive would be meaningless and the CRC back-plant would
+// fail against bytes already parsed.  With zipPlanned clear every function here returns
+// immediately and the parse walks the file exactly as the original does.
+
+const local string ReadBytesInitValues[0];   // per-call-site value sets win over mined ones
+
+local int    zipPlanned = 0;
+local char   zipPeek[1024];
+local string zipOne[1];
+
+local int  zipPhase   = 0;      // 0 local entries, 1 directory, 2 Zip64 end record, 3 Zip64 locator, 4 end record
+local int  zipEntry   = 0;      // index of the local entry being written
+local int  zipDirIdx  = 0;      // index of the directory entry being written
+local int  zipN       = 1;      // number of entries in this archive
+local int  zipEofP    = 0;
+local uint zipDirOff  = 0;
+local uint zipDirSize = 0;
+local uint zipZ64Off  = 0;
+local int  zipUseZ64  = 0;
+local int  zipArcComment = 0;
+
+// per-entry plan, index 0..7 (structure rule: 1 to 8 entries)
+local uint zipOff[8];           // offset of the local header signature      (dependency 37)
+local uint zipDataOff[8];       // offset of the UNCOMPRESSED bytes, for the CRC
+local uint zipLen[8];           // uncompressed size
+local uint zipCLen[8];          // compressed size = the payload byte count
+local uint zipCrc[8];
+local ushort zipVer[8];
+local ushort zipMethod[8];
+local int  zipZ64[8];           // this entry uses the Zip64 extra field
+local int  zipDir[8];           // this entry is a directory: name ends in '/', size 0
+local int  zipHostOS[8];        // chooses the deExternalAttributes namespace (dependency 38)
+local int  zipExtraKind[8];
+local uint zipAttr[8];
+
+local int  zipK = 0;            // scratch loop counters
+local uint zipTmp = 0;
+local string zipTmpStr = "";
+
+// The decision menus.  Each plant picks uniformly from the set it is given and the value
+// it planted is then read back out of the buffer, so these are the generator's only
+// source of entropy.
+
+// The first record's signature.  structure rule first_element: an archive with content
+// opens with a local file header, and the one exception - an empty archive - opens
+// directly with the end of central directory record.
+local string zipFirstSig[] = { "PK\x03\x04", "PK\x03\x04", "PK\x03\x04", "PK\x03\x04",
+                               "PK\x03\x04", "PK\x03\x04", "PK\x03\x04", "PK\x05\x06" };
+local string zipLocSig[]   = { "PK\x03\x04" };
+
+// Bytes 4..13 of a local header: version needed to extract, general purpose flags,
+// compression method, modification time and date.  The flags are always 0: structure rule
+// ordering for ZIPDATADESCR says to prefer no descriptor at all, and bits 0 and 6 would
+// demand an encryption header this generator cannot fill in.  Version 45 marks the entries
+// that carry a Zip64 extra field (dependency 12).  COMP_STORED is the preferred value and
+// COMP_DEFLATE is emitted as a single RFC 1951 stored block, the only deflate stream that
+// can be produced without a compressor.
+// The same ten decisions with the local file header signature in front, for the records
+// after the first, where no other signature is legal.
+local string zipHead14[] = {
+    "PK\x03\x04\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00", "PK\x03\x04\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00",
+    "PK\x03\x04\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00", "PK\x03\x04\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00",
+    "PK\x03\x04\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00", "PK\x03\x04\x14\x00\x00\x00\x08\x00\x00\x00\x21\x00",
+    "PK\x03\x04\x14\x00\x00\x00\x08\x00\x00\x00\x21\x00", "PK\x03\x04\x14\x00\x00\x00\x08\x00\x00\x00\x21\x00",
+    "PK\x03\x04\x2d\x00\x00\x00\x00\x00\x00\x00\x21\x00", "PK\x03\x04\x2d\x00\x00\x00\x08\x00\x00\x00\x21\x00" };
+
+local string zipHead[] = {
+    "\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00", "\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00",
+    "\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00", "\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00",
+    "\x14\x00\x00\x00\x00\x00\x00\x00\x21\x00", "\x14\x00\x00\x00\x08\x00\x00\x00\x21\x00",
+    "\x14\x00\x00\x00\x08\x00\x00\x00\x21\x00", "\x14\x00\x00\x00\x08\x00\x00\x00\x21\x00",
+    "\x2d\x00\x00\x00\x00\x00\x00\x00\x21\x00", "\x2d\x00\x00\x00\x08\x00\x00\x00\x21\x00" };
+
+// Bytes 18..25: the compressed and uncompressed sizes as one pair, so dependency 9 - a
+// stored entry's two sizes are the same number - holds by construction, and so does the
+// five-byte overhead of a deflate stored block.
+local string zipSizeStored[] = {
+    "\x00\x00\x00\x00\x00\x00\x00\x00", "\x01\x00\x00\x00\x01\x00\x00\x00", "\x02\x00\x00\x00\x02\x00\x00\x00",
+    "\x03\x00\x00\x00\x03\x00\x00\x00", "\x04\x00\x00\x00\x04\x00\x00\x00", "\x05\x00\x00\x00\x05\x00\x00\x00",
+    "\x10\x00\x00\x00\x10\x00\x00\x00", "\x20\x00\x00\x00\x20\x00\x00\x00", "\x40\x00\x00\x00\x40\x00\x00\x00",
+    "\x80\x00\x00\x00\x80\x00\x00\x00", "\x00\x01\x00\x00\x00\x01\x00\x00", "\x00\x02\x00\x00\x00\x02\x00\x00",
+    "\x00\x04\x00\x00\x00\x04\x00\x00" };
+local string zipSizeDeflate[] = {
+    "\x05\x00\x00\x00\x00\x00\x00\x00", "\x06\x00\x00\x00\x01\x00\x00\x00", "\x07\x00\x00\x00\x02\x00\x00\x00",
+    "\x08\x00\x00\x00\x03\x00\x00\x00", "\x09\x00\x00\x00\x04\x00\x00\x00", "\x0a\x00\x00\x00\x05\x00\x00\x00",
+    "\x15\x00\x00\x00\x10\x00\x00\x00", "\x25\x00\x00\x00\x20\x00\x00\x00", "\x45\x00\x00\x00\x40\x00\x00\x00",
+    "\x85\x00\x00\x00\x80\x00\x00\x00", "\x05\x01\x00\x00\x00\x01\x00\x00", "\x05\x02\x00\x00\x00\x02\x00\x00",
+    "\x05\x04\x00\x00\x00\x04\x00\x00" };
+// dependency 11: 0xFFFFFFFF is a Zip64 escape, not a size - the true 64-bit values live in
+// the extra field.  A Zip64 entry therefore takes a fixed 256-byte payload.
+local string zipSizeZ64[] = { "\xff\xff\xff\xff\xff\xff\xff\xff" };
+
+// SPrintf writes through `s = res`, which stops at the first NUL, so a computed byte
+// cannot be formatted directly when it is zero; the literal covers that case.
+string zipChr( int b )
+{
+    local string r;
+    if( b == 0 )
+        r = "\x00";
+    else
+        SPrintf( r, "%c", b );
+    return r;
+}
+
+string zipLE16( uint v )
+{
+    return zipChr( v & 0xff ) + zipChr( (v >> 8) & 0xff );
+}
+
+string zipLE32( uint v )
+{
+    return zipChr( v & 0xff ) + zipChr( (v >> 8) & 0xff ) + zipChr( (v >> 16) & 0xff ) + zipChr( (v >> 24) & 0xff );
+}
+
+// Every value this generator writes fits in 32 bits, so the high word is always zero.
+string zipLE64( uint v )
+{
+    return zipLE32( v ) + zipLE32( 0 );
+}
+
+// Plant one byte image.  Every plant is a single ReadBytes call with the preferred and
+// possible sets equal and p = 1.0, which writes the chosen value with the evil bit
+// suppressed for that call only.
+void zipPlant( int64 pos, string img )
+{
+    zipOne[0] = img;
+    ReadBytes( zipPeek, pos, Strlen( img ), zipOne, zipOne, 1.0 );
+}
+
+// dependency 34: the local and central copies of a name must be byte-for-byte identical,
+// so both call this.  dependency 40: a name ending in '/' is a directory entry and its two
+// size fields are pinned to zero.
+string zipNameOf( int k )
+{
+    local string s;
+    if( zipDir[k] )
+        SPrintf( s, "dir%d/", k );
+    else if( zipLen[k] == 0 )
+        SPrintf( s, "empty%d.txt", k );
+    else
+        SPrintf( s, "file%d.dat", k );
+    return s;
+}
+
+string zipCommentOf( int k )
+{
+    local string s = "";
+    if( (zipLen[k] % 5) == 2 )
+        SPrintf( s, "entry %d comment", k );
+    return s;
+}
+
+// The extra field of one header, as one contiguous image.  dependencies 23 and 24 require
+// the enclosing length field to be the exact sum of every (efDataSize + 4) here, because
+// the walks at lines 407-411 and 502-506 have no other termination condition.
+string zipExtraImage( int k, uint nameCrc )
+{
+    local string s = "";
+    local string nm;
+    if( zipZ64[k] )
+    {
+        // template_deviations #2 / #3: the 16-byte two-field form, emitted as the ONLY
+        // record so the scalar read of frExtraField at line 628 refers to it
+        s = zipLE16( 1 ) + zipLE16( 16 ) + zipLE64( zipLen[k] ) + zipLE64( zipCLen[k] );
+        return s;
+    }
+    if( zipExtraKind[k] == 1 || zipExtraKind[k] == 4 )
+    {
+        // extended timestamp: one flags byte then a 32-bit modification time
+        s = s + zipLE16( 0x5455 ) + zipLE16( 5 ) + "\x01" + zipLE32( 0 );
+    }
+    if( zipExtraKind[k] == 2 || zipExtraKind[k] == 4 )
+    {
+        // dependency 15 / 18 and the NTFS cardinality rule: four reserved bytes then one
+        // Tag-1 attribute of exactly 24 bytes, so efDataSize is 4 + 4 + 24 = 32
+        s = s + zipLE16( 0x000a ) + zipLE16( 32 ) + zipLE32( 0 ) + zipLE16( 1 ) + zipLE16( 24 );
+        s = s + zipLE64( 0 ) + zipLE64( 0 ) + zipLE64( 0 );
+    }
+    if( zipExtraKind[k] == 3 )
+    {
+        // dependency 14: a one-byte version, a four-byte name CRC and at least one name byte
+        nm = zipNameOf( k );
+        s = s + zipLE16( 0x7075 ) + zipLE16( 5 + Strlen( nm ) ) + "\x01" + zipLE32( nameCrc ) + nm;
+    }
+    return s;
+}
+
+// One complete central directory entry.  Nine of its fields are second copies of the local
+// header's (dependencies 26-33) and two more are the archive's only pointers (37).
+string zipDirImage( int k )
+{
+    local string s;
+    local string nm = zipNameOf( k );
+    local string cm = zipCommentOf( k );
+    local string ex = "";
+    if( zipExtraKind[k] == 1 && !zipZ64[k] )
+        ex = zipLE16( 0x5455 ) + zipLE16( 5 ) + "\x01" + zipLE32( 0 );
+    s = "PK\x01\x02";
+    // dependency 39: deVersionMadeBy must be at least deVersionToExtract, so a Zip64 entry
+    // raises both.  Its high byte is the host OS, which chooses the attribute namespace.
+    s = s + zipLE16( (zipHostOS[k] << 8) + zipVer[k] ) + zipLE16( zipVer[k] );
+    s = s + zipLE16( 0 ) + zipLE16( zipMethod[k] ) + zipLE16( 0 ) + zipLE16( 0x0021 );
+    s = s + zipLE32( zipCrc[k] ) + zipLE32( zipCLen[k] ) + zipLE32( zipLen[k] );
+    s = s + zipLE16( Strlen( nm ) ) + zipLE16( Strlen( ex ) ) + zipLE16( Strlen( cm ) );
+    s = s + zipLE16( 0 ) + zipLE16( 0 ) + zipLE32( zipAttr[k] ) + zipLE32( zipOff[k] );
+    s = s + nm + ex + cm;
+    return s;
+}
+
+string zipZ64RecImage()
+{
+    local string s = "PK\x06\x06";
+    s = s + zipLE64( 44 );                                  // fixed_result 44
+    s = s + zipLE16( 0x032d ) + zipLE16( 0x002d );          // made by 4.5 on FAT, needs 4.5
+    s = s + zipLE32( 0 ) + zipLE32( 0 );                    // both disk numbers fixed_result 0
+    s = s + zipLE64( zipN ) + zipLE64( zipN );
+    s = s + zipLE64( zipDirSize ) + zipLE64( zipDirOff );
+    return s;
+}
+
+string zipZ64LocImage()
+{
+    local string s = "PK\x06\x07";
+    s = s + zipLE32( 0 ) + zipLE64( zipZ64Off ) + zipLE32( 1 );   // one disk, not one entry
+    return s;
+}
+
+// Everything after the four signature bytes, so the empty-archive path below - which has
+// already planted the signature to discover that it IS an empty archive - can reuse it.
+string zipEndImage()
+{
+    local string s = "";
+    local string cm = "";
+    if( zipArcComment )
+        cm = "generated by FormatFuzzer";
+    s = s + zipLE16( 0 ) + zipLE16( 0 ) + zipLE16( zipN ) + zipLE16( zipN );
+    s = s + zipLE32( zipDirSize ) + zipLE32( zipDirOff );
+    s = s + zipLE16( Strlen( cm ) ) + cm;
+    return s;
+}
+
+// Decide and plant one local file entry.
+void zipPlanEntry()
+{
+    local int64 P = FTell();
+    local int   k = zipEntry;
+    local string nm;
+    local string ex;
+    local uint  nameCrc = 0;
+
+    // --- the signature and, with it, the decision word.  On the first record the
+    //     empty-archive alternative is offered, so the two have to be planted separately
+    //     there; every later record takes them as one fourteen-byte image.
+    if( k == 0 )
+    {
+        ReadBytes( zipPeek, P, 4, zipFirstSig, zipFirstSig, 1.0 );
+        if( ReadUInt( P ) == S_ZIPENDLOCATOR )
+        {
+            // structure rule required/first_element: a valid empty archive is just this record
+            zipN = 0;
+            zipPhase = 4;
+            zipDirOff = 0;
+            zipDirSize = 0;
+            zipPlant( P + 4, zipEndImage() );
+            return;
+        }
+        ReadBytes( zipPeek, P + 4, 10, zipHead, zipHead, 1.0 );
+    }
+    else
+    {
+        ReadBytes( zipPeek, P, 14, zipHead14, zipHead14, 1.0 );
+    }
+    zipVer[k]    = ReadUShort( P + 4 );
+    zipMethod[k] = ReadUShort( P + 8 );
+    if( zipVer[k] >= 45 )
+        zipZ64[k] = 1;
+    else
+        zipZ64[k] = 0;
+
+    // --- the two sizes as one decision (bytes 18..25); bytes 14..17 are deliberately left
+    //     unplanted, because a byte already marked in the lookahead bitmap can never be
+    //     re-planted and the CRC is only knowable once the data has been written.
+    if( zipZ64[k] )
+    {
+        ReadBytes( zipPeek, P + 18, 8, zipSizeZ64, zipSizeZ64, 1.0 );
+        zipLen[k] = 256;
+    }
+    else if( zipMethod[k] == 8 )
+    {
+        ReadBytes( zipPeek, P + 18, 8, zipSizeDeflate, zipSizeDeflate, 1.0 );
+        zipLen[k] = ReadUInt( P + 22 );
+    }
+    else
+    {
+        ReadBytes( zipPeek, P + 18, 8, zipSizeStored, zipSizeStored, 1.0 );
+        zipLen[k] = ReadUInt( P + 22 );
+    }
+    // generation_range guard: the size menus are exact, but a lookahead escape would put a
+    // 32-bit draw here and one bad byte would ask for a four-gigabyte payload
+    if( zipLen[k] > 1024 )
+        zipLen[k] = 0;
+    if( zipMethod[k] == 8 )
+        zipCLen[k] = zipLen[k] + 5;         // one RFC 1951 stored block: 01 LEN NLEN
+    else
+        zipCLen[k] = zipLen[k];
+
+    // --- the shape of the entry, derived from the size it drew.  The local header has no
+    //     free field left to plant these in, and every byte of it is either a fixed value
+    //     or one of the two decisions above.
+    // dependency 40: a directory entry is a name ending in '/' with BOTH size fields zero,
+    // which rules out the deflate form - even an empty stored block is five payload bytes
+    if( zipLen[k] == 0 && zipMethod[k] == 0 && (k % 2) == 0 && !zipZ64[k] )
+        zipDir[k] = 1;
+    else
+        zipDir[k] = 0;
+    zipExtraKind[k] = zipLen[k] % 5;
+    if( (zipLen[k] % 2) == 1 )
+        zipHostOS[k] = 3;                   // OS_Unix: the high 16 bits are a st_mode
+    else
+        zipHostOS[k] = 0;                   // OS_FAT: the low 16 bits are DOS attribute bits
+    // dependency 38 / template_deviations #14: the namespace follows the host-OS byte
+    if( zipHostOS[k] == 3 )
+    {
+        if( zipDir[k] )
+            zipAttr[k] = 0040755 << 16;
+        else
+            zipAttr[k] = 0100644 << 16;
+    }
+    else
+    {
+        if( zipDir[k] )
+            zipAttr[k] = 0x10;              // FA_DIRECTORY
+        else
+            zipAttr[k] = 0x20;              // FA_ARCHIVE
+    }
+
+    // --- the two lengths and the name (bytes 26..29 and the name itself)
+    nm = zipNameOf( k );
+    ex = zipExtraImage( k, 0 );
+    zipPlant( P + 26, zipLE16( Strlen( nm ) ) + zipLE16( Strlen( ex ) ) + nm );
+
+    // --- the extra field, and for a deflate entry the five-byte stored-block header.  The
+    //     Unicode path record carries a CRC of the filename, which is now in the buffer.
+    if( zipExtraKind[k] == 3 && !zipZ64[k] )
+    {
+        nameCrc = Checksum( CHECKSUM_CRC32, P + 30, Strlen( nm ) );
+        ex = zipExtraImage( k, nameCrc );
+    }
+    if( zipMethod[k] == 8 )
+        ex = ex + "\x01" + zipLE16( zipLen[k] ) + zipLE16( 65535 - zipLen[k] );
+    if( Strlen( ex ) > 0 )
+        zipPlant( P + 30 + Strlen( nm ), ex );
+
+    // --- record where this entry sits, for the directory that indexes it
+    zipOff[k] = P;
+    zipDataOff[k] = P + 30 + Strlen( nm ) + Strlen( zipExtraImage( k, nameCrc ) );
+    if( zipMethod[k] == 8 )
+        zipDataOff[k] = zipDataOff[k] + 5;
+
+    // --- the archive-level shape, decided once from the first entry's draws
+    if( k == 0 )
+    {
+        zipN = 1 + (zipLen[0] % 6);         // structure rule: 1 to 8 entries
+        if( zipVer[0] >= 45 )
+            zipUseZ64 = 1;                  // dependencies 42-44: the Zip64 pair, in that order
+        else
+            zipUseZ64 = 0;
+        if( (zipLen[0] % 4) == 1 )
+            zipArcComment = 1;
+        else
+            zipArcComment = 0;
+    }
+}
+
+// Plant whichever record comes next, before the dispatch below peeks at its signature.
+void zipPlantTop()
+{
+    if( !zipPlanned )
+        return;
+    if( zipPhase == 0 )
+    {
+        zipPlanEntry();
+        return;
+    }
+    if( zipPhase == 1 )
+    {
+        zipPlant( FTell(), zipDirImage( zipDirIdx ) );
+        return;
+    }
+    if( zipPhase == 2 )
+    {
+        zipZ64Off = FTell();
+        zipPlant( FTell(), zipZ64RecImage() );
+        return;
+    }
+    if( zipPhase == 3 )
+    {
+        zipPlant( FTell(), zipZ64LocImage() );
+        return;
+    }
+    zipTmpStr = "PK\x05\x06";
+    zipPlant( FTell(), zipTmpStr + zipEndImage() );
+}
+
+// Close off the record just written and move to the next region.
+void zipAdvance()
+{
+    if( !zipPlanned )
+        return;
+    if( zipPhase == 0 )
+    {
+        // the CRC-32 of the uncompressed data, back-planted now that the data exists
+        zipCrc[zipEntry] = Checksum( CHECKSUM_CRC32, zipDataOff[zipEntry], zipLen[zipEntry] );
+        zipPlant( zipOff[zipEntry] + 14, zipLE32( zipCrc[zipEntry] ) );
+        zipEntry++;
+        if( zipEntry >= zipN )
+        {
+            zipPhase = 1;
+            zipDirOff = FTell();            // structure rule ordering: the directory follows the data
+        }
+        return;
+    }
+    if( zipPhase == 1 )
+    {
+        zipDirIdx++;
+        if( zipDirIdx >= zipN )
+        {
+            zipDirSize = FTell() - zipDirOff;
+            if( zipUseZ64 )
+                zipPhase = 2;
+            else
+                zipPhase = 4;
+        }
+        return;
+    }
+    if( zipPhase == 2 )
+    {
+        zipPhase = 3;
+        return;
+    }
+    if( zipPhase == 3 )
+    {
+        zipPhase = 4;
+        return;
+    }
+    zipEofP = 1;                            // structure rule last_element: nothing follows
+}
+
+//--------------------------------------------
+
+// Define the file
+local uint tag;
+LittleEndian(); 
+
+// The planner owns the layout in generation only; see the note above zipPlanEntry.
+// zipEofP of -1 makes FEof's threshold unreachable, so the walk below is bounded by the
+// planned record sequence rather than by a 1-in-8 coin flip at every record boundary; a
+// value of 0 leaves FEof exact, which is what the parse direction needs.
+if( IsParsing() == 0 )   // pfp cannot fold `!IsParsing()`; the comparison form emits the same C++
+{
+	zipPlanned = 1;
+	zipEofP = -1;
+}
+
+while( !FEof( zipEofP ) )
+{
+	zipPlantTop();
+
+	// Read a tag
+	tag = ReadUInt( FTell() );
+
+	// Read data depending upon tag - should start with 'PK'.
+	// Note that when duplicate variables are defined, they
+	// are made into an array (see 'Using Templates and Structs'
+	// in the help file).
+	if( tag == S_ZIPFILERECORD )
+	{
+		SetBackColor( cLtGray );
+		ZIPFILERECORD record;
+		if (record.frExtraFieldLength > 0 && record.frExtraField.efHeaderID == EH_Zip64)
+		{
+			//Printf("%Lu", record.frExtraField.efCompressedSize);
+			FSkip(record.frExtraField.efCompressedSize);
+		}
+	}
+	else if( tag == S_ZIPDATADESCR )
+	{
+		SetBackColor( cLtGreen );
+		ZIPDATADESCR dataDescr;
+	}
+	else if( tag == S_ZIPDIRENTRY )
+	{
+		SetBackColor( cLtPurple );
+		ZIPDIRENTRY dirEntry;
+	}
+	else if( tag == S_ZIPDIGITALSIG )
+	{
+		SetBackColor( cLtBlue );
+		ZIPDIGITALSIG digitalSig;
+	}
+	else if( tag == S_ZIP64ENDLOCATORRECORD )
+	{
+		SetBackColor( cYellow );
+		ZIP64ENDLOCATORRECORD end64Locator;
+	}
+	else if( tag == S_ZIP64ENDLOCATOR )
+	{
+		SetBackColor( cDkYellow );
+		ZIP64ENDLOCATOR end64Locator;
+	}
+	else if( tag == S_ZIPENDLOCATOR )
+	{
+		SetBackColor( cLtYellow );
+		ZIPENDLOCATOR endLocator;
+	}
+	else
+	{
+		// structure rule forbidden: at every top-level position the next four bytes must be
+		// one of the seven SignatureTYPE constants, and there is nothing to recover from
+		Warning( "Unknown ZIP tag encountered. Template stopped." );
+		return -1;
+	}
+
+	zipAdvance();
+}
