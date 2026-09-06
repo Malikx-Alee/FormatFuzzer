@@ -1,0 +1,1381 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: WAV.bt
+//    Author: SweetScape Software, Paulo Max Gil I Reis
+//   Version: 1.2
+//   Purpose: Parse WAV audio files.
+//  Category: Audio
+// File Mask: *.wav
+//  ID Bytes: 52 49 46 46 [+4] 57 41 56 45 //RIFF????WAVE
+//   History:  
+//   1.2   2020-02-04 Paulo Max: Improved to correct parsing of DVI ADPCM and fix some issues in subchunk list parsing.
+//   1.1   2015-10-05 SweetScape: Updated header for repository submission.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at:
+//  https://en.wikipedia.org/wiki/WAV
+//------------------------------------------------
+
+// Record whether we have found a format chunk yet
+local int haveValidFormat = false;
+
+//------------------------------------------------
+// Generation plan
+//
+// RIFF is a flat stream of self-delimiting chunks with no terminator, and every
+// chunk states its own byte count before its content exists.  The parse
+// direction discovers the stream; the generate direction has to decide it.
+//
+// The plan is a state machine over chunk boundaries.  At each boundary
+// wavPlantHead() plants the eight header bytes - the four-character identifier
+// and the 32-bit size - picked from a menu of exactly the headers that are legal
+// in the current state, which is the preferred/possible idiom applied to a whole
+// chunk envelope rather than to the tag alone.  wavPlantBody() then plants the
+// fields inside that chunk which have to agree with it.  Because the header is
+// written before it is read, every size, count and cross-reference is already
+// right the first time the template looks at it, and the container size at
+// offset 4 is the one field written backwards, once the layout is settled.
+//
+// A plant is a lookahead ReadBytes whose preferred and possible sets are both
+// the same computed menu, with p = 1.0: 255 times in 256 an entry is written
+// with the evil bit suppressed for that call, and the remaining time the same
+// set is redrawn with evil restored - a net escape of about 1/32768 per plant.
+// A single-entry menu is therefore an exact write, and a multi-entry menu picks
+// uniformly AND plants the choice, which is where the generator's structural
+// entropy comes from.
+//
+// The plan runs in BOTH directions.  Gating it on IsParsing() would make the two
+// directions draw different numbers of decisions, and FormatFuzzer's round trip
+// - generate, parse, re-generate from the parsed decisions, compare - only holds
+// when the streams line up.  In the parse direction a plant reads the bytes that
+// are there: for a file this template generated they are the ones the plan
+// expected, so the reads cost exactly what the writes did.  For any other file
+// the first header that does not match clears wavPlanOK and no further plant is
+// attempted, which is what keeps a plant from ever reaching past a chunk.
+//------------------------------------------------
+
+const local string ReadBytesInitValues[0];   // per-call-site menus beat mined values
+
+local char   wavPeek[64];                    // scratch for every lookahead
+local string wavOne[1];                      // single-entry menu for a computed plant
+local string wavHdrMenu[24];                 // chunk headers legal in the current state
+local string wavBodyMenu[32];                // format-chunk bodies of the chosen size
+
+// structure rule 16: RIFF has no terminator, so the generator has to say when
+// the chunk stream ends.  FEof's probability argument is the only lever: -1.0
+// puts the threshold at 510 and can never fire, 1.0 puts it at 0 and always
+// fires, and the original's default 0.125 leaves the parse direction exactly as
+// it was.  Assigning it draws no decisions, which is why this is the one thing
+// in the plan that may be gated on the direction.
+local double wavEofP = 0.125;
+
+local int wavPlanOK = 1;      // the plan still describes the file being walked
+local int wavStage  = 0;      // 0 = fmt, 1 = fact, 2 = optional chunks then data, 3 = done
+local int wavKind   = -1;     // kind of the chunk whose header was just planted
+local int wavSize   = 0;      // and its declared size
+local string wavImg;          // exact bytes inside that chunk, at wavImgOff from its data
+local int wavImgOff = 0;
+local string wavImg2;
+local int wavImg2Off = 0;
+local int wavPos    = 0;      // file offset of the current chunk's first byte
+
+local int wavTag    = 1;      // the format the plan chose, and everything it fixes
+local int wavCh     = 1;
+local int wavBits   = 16;
+local int wavBA     = 2;
+local int wavRate   = 44100;
+local int wavFmtSize = 16;
+local int wavFrames = 0;      // sample frames, or ADPCM blocks
+local int wavDataSize = 0;
+local int wavFactVal = 0;     // decoded frame count for the fact chunk
+local int wavNeedFact = 0;
+
+local int wavOptCount = 0;    // structure rule 7: bound the top-level chunk walk
+local int wavHasCue   = 0;
+local int wavNCue     = 0;
+local int wavHasSmpl  = 0;
+local int wavNList    = 0;
+local int wavHasJunk  = 0;
+
+// Chunk kinds, in the order of the top-level switch
+local int WAV_FMT = 0;
+local int WAV_DAT = 1;
+local int WAV_FCT = 2;
+local int WAV_CUE = 3;
+local int WAV_SMP = 4;
+local int WAV_LST = 5;
+local int WAV_UNK = 6;
+
+// lookahead FORMATCHUNK.chunkID / DATACHUNK.chunkID / FACTCHUNK.chunkID /
+// CUECHUNK.chunkID / SMPLCHUNK.chunkID / LISTCHUNK.chunkID: the six literals the
+// top-level switch names, as a per-call-site set for the tag peek below.
+local string wavTagValues[] = { "fmt ", "data", "fact", "cue ", "smpl", "LIST" };
+
+//------------------------------------------------
+// Byte-image helpers.  SPrintf assigns through std::string = const char*, which
+// stops at the first NUL, so a zero byte has to be handed over as a literal.
+//------------------------------------------------
+string wavChr( int b )
+{
+    local string r;
+    if( b == 0 )
+        r = "\x00";
+    else
+        SPrintf( r, "%c", b );
+    return r;
+}
+
+string wavLE16( int v )
+{
+    return wavChr( v & 0xff ) + wavChr( (v >> 8) & 0xff );
+}
+
+string wavLE32( int64 v )
+{
+    return wavChr( v & 0xff ) + wavChr( (v >> 8) & 0xff ) + wavChr( (v >> 16) & 0xff ) + wavChr( (v >> 24) & 0xff );
+}
+
+string wavZero( int n )
+{
+    local string r;
+    local int i;
+    r = "";
+    for( i = 0; i < n; i++ )
+        r = r + wavChr( 0 );
+    return r;
+}
+
+// A NUL-terminated ZSTR padded out to an even declared length, which is what
+// keeps every LIST subchunk size even and the padding branches unreachable.
+string wavPad( string s, int n )
+{
+    return s + wavZero( n - Strlen( s ) );
+}
+
+void wavPlant( int64 pos, string img )
+{
+    wavOne[0] = img;
+    ReadBytes( wavPeek, pos, Strlen( img ), wavOne, wavOne, 1.0 );
+}
+
+// pfp cannot index a file-scope char array inside an expression, so both
+// accessors take the buffer as a string parameter.
+int wavByte( string s, int off )
+{
+    return s[off] & 0xff;
+}
+
+int wavVal32( string s, int off )
+{
+    return (s[off] & 0xff) + (s[off+1] & 0xff) * 256 + (s[off+2] & 0xff) * 65536 + (s[off+3] & 0xff) * 16777216;
+}
+
+// Fill the remaining menu slots by cycling the real entries, so every slot holds
+// a legal header of the same length whatever the current state allows.
+void wavFillHdr( int n )
+{
+    local int i;
+    for( i = n; i < 24; i++ )
+        wavHdrMenu[i] = wavHdrMenu[i % n];
+}
+
+void wavFillBody( int n )
+{
+    local int i;
+    for( i = n; i < 32; i++ )
+        wavBodyMenu[i] = wavBodyMenu[i % n];
+}
+
+//------------------------------------------------
+// The format chunk.  Its declared size selects one of the four layouts the
+// specification defines - 16 for plain PCM, 18 for a compressed tag with an
+// empty cbSize extension, 20 for the DVI IMA ADPCM layout this template reads
+// and 40 for WAVE_FORMAT_EXTENSIBLE - and the body menu for that size holds only
+// internally consistent combinations, so dependencies 0 to 12 hold by
+// construction rather than by check.
+//------------------------------------------------
+void wavHeadFmt( int64 pos )
+{
+    // structure rules 1, 3 and 4: exactly one format chunk, and it comes first
+    wavHdrMenu[0] = "fmt " + wavLE32( 16 );
+    wavHdrMenu[1] = "fmt " + wavLE32( 16 );
+    wavHdrMenu[2] = "fmt " + wavLE32( 16 );
+    wavHdrMenu[3] = "fmt " + wavLE32( 16 );
+    wavHdrMenu[4] = "fmt " + wavLE32( 16 );
+    wavHdrMenu[5] = "fmt " + wavLE32( 18 );
+    wavHdrMenu[6] = "fmt " + wavLE32( 20 );
+    wavHdrMenu[7] = "fmt " + wavLE32( 40 );
+    wavFillHdr( 8 );
+    ReadBytes( wavPeek, pos, 8, wavHdrMenu, wavHdrMenu, 1.0 );
+    wavFmtSize = wavVal32( wavPeek, 4 );
+    if( wavFmtSize != 16 && wavFmtSize != 18 && wavFmtSize != 20 && wavFmtSize != 40 )
+        wavFmtSize = 16;                     // a plant escape: keep the plan bounded
+    wavKind  = WAV_FMT;
+    wavSize  = wavFmtSize;
+    wavStage = 1;
+}
+
+// The 32 entries of a plain PCM body: two channel counts, the four byte-aligned
+// depths and four sampling rates, with wBlockAlign and dwAvgBytesPerSec computed
+// from them so dependencies 8 and 10 cannot be violated.
+void wavBuildBody16()
+{
+    local int c;
+    local int b;
+    local int r;
+    local int n;
+    local int bits;
+    local int rate;
+    local int ba;
+    local int bitTab[4];
+    local int rateTab[4];
+    bitTab[0] = 8;  bitTab[1] = 16; bitTab[2] = 24; bitTab[3] = 32;
+    rateTab[0] = 8000; rateTab[1] = 11025; rateTab[2] = 22050; rateTab[3] = 44100;
+    n = 0;
+    for( c = 1; c <= 2; c++ )
+    {
+        for( b = 0; b < 4; b++ )
+        {
+            for( r = 0; r < 4; r++ )
+            {
+                bits = bitTab[b];
+                rate = rateTab[r];
+                ba   = c * bits / 8;
+                wavBodyMenu[n] = wavLE16( 1 ) + wavLE16( c ) + wavLE32( rate )
+                               + wavLE32( rate * ba ) + wavLE16( ba ) + wavLE16( bits );
+                n = n + 1;
+            }
+        }
+    }
+    wavFillBody( n );
+}
+
+// The 18-byte layout: a compressed tag with an empty cbSize.  Dependency 5 fixes
+// IEEE float at 32 bits and dependency 6 fixes both G.711 companders at 8.
+void wavBuildBody18()
+{
+    local int c;
+    local int t;
+    local int r;
+    local int n;
+    local int bits;
+    local int rate;
+    local int ba;
+    local int tagTab[3];
+    local int rateTab[4];
+    tagTab[0] = 3; tagTab[1] = 6; tagTab[2] = 7;
+    rateTab[0] = 8000; rateTab[1] = 22050; rateTab[2] = 44100; rateTab[3] = 48000;
+    n = 0;
+    for( t = 0; t < 3; t++ )
+    {
+        for( c = 1; c <= 2; c++ )
+        {
+            for( r = 0; r < 4; r++ )
+            {
+                bits = 8;
+                if( tagTab[t] == 3 )
+                    bits = 32;
+                rate = rateTab[r];
+                ba   = c * bits / 8;
+                wavBodyMenu[n] = wavLE16( tagTab[t] ) + wavLE16( c ) + wavLE32( rate )
+                               + wavLE32( rate * ba ) + wavLE16( ba ) + wavLE16( bits )
+                               + wavLE16( 0 );
+                n = n + 1;
+            }
+        }
+    }
+    wavFillBody( n );
+}
+
+// The 20-byte DVI IMA ADPCM layout the 1.2 history entry records this template
+// being extended for.  Dependency 7 fixes the depth at 4 bits, dependency 12
+// fixes wcbsize at 2, and dependency 11 gives wSamplesPerBlock its formula:
+// ((wBlockAlign - 4 * wChannels) * 8) / (wBitsPerSample * wChannels) + 1.
+void wavBuildBody20()
+{
+    local int c;
+    local int r;
+    local int n;
+    local int rate;
+    local int ba;
+    local int spb;
+    local int rateTab[4];
+    rateTab[0] = 8000; rateTab[1] = 11025; rateTab[2] = 22050; rateTab[3] = 44100;
+    n = 0;
+    for( c = 1; c <= 2; c++ )
+    {
+        for( r = 0; r < 4; r++ )
+        {
+            rate = rateTab[r];
+            ba   = 256 * c;
+            spb  = ((ba - 4 * c) * 8) / (4 * c) + 1;
+            wavBodyMenu[n] = wavLE16( 17 ) + wavLE16( c ) + wavLE32( rate )
+                           + wavLE32( (rate * ba) / spb ) + wavLE16( ba ) + wavLE16( 4 )
+                           + wavLE16( 2 ) + wavLE16( spb );
+            n = n + 1;
+        }
+    }
+    wavFillBody( n );
+}
+
+// The 40-byte WAVE_FORMAT_EXTENSIBLE layout: the 16 common bytes, a cbSize of
+// 22, the valid-bits union, the channel mask and the 16-byte sub-format GUID.
+// Template deviation 6 records that this template decodes none of the extension,
+// so the whole 22 bytes land in FORMATCHUNK.unknown - which is why they have to
+// be planted rather than drawn.
+void wavBuildBody40()
+{
+    local int c;
+    local int b;
+    local int r;
+    local int n;
+    local int bits;
+    local int rate;
+    local int ba;
+    local int mask;
+    local string guid;
+    local int bitTab[2];
+    local int rateTab[4];
+    bitTab[0] = 16; bitTab[1] = 32;
+    rateTab[0] = 8000; rateTab[1] = 22050; rateTab[2] = 44100; rateTab[3] = 48000;
+    // KSDATAFORMAT_SUBTYPE_PCM, 00000001-0000-0010-8000-00aa00389b71
+    guid = wavLE32( 1 ) + wavLE16( 0 ) + wavLE16( 16 ) + wavChr( 0x80 ) + wavChr( 0 )
+         + wavChr( 0 ) + wavChr( 0xAA ) + wavChr( 0 ) + wavChr( 0x38 ) + wavChr( 0x9B ) + wavChr( 0x71 );
+    n = 0;
+    for( c = 1; c <= 2; c++ )
+    {
+        for( b = 0; b < 2; b++ )
+        {
+            for( r = 0; r < 4; r++ )
+            {
+                bits = bitTab[b];
+                rate = rateTab[r];
+                ba   = c * bits / 8;
+                mask = 4;                    // SPEAKER_FRONT_CENTER
+                if( c == 2 )
+                    mask = 3;                // FRONT_LEFT | FRONT_RIGHT
+                wavBodyMenu[n] = wavLE16( 65534 ) + wavLE16( c ) + wavLE32( rate )
+                               + wavLE32( rate * ba ) + wavLE16( ba ) + wavLE16( bits )
+                               + wavLE16( 22 ) + wavLE16( bits ) + wavLE32( mask ) + guid;
+                n = n + 1;
+            }
+        }
+    }
+    wavFillBody( n );
+}
+
+// Pick one body, then read back out of it everything the rest of the file
+// depends on: the channel count, the depth, the block alignment and the rate.
+void wavPlantFmtBody( int64 pos )
+{
+    local int spb;
+    if( wavFmtSize == 16 )
+        wavBuildBody16();
+    else if( wavFmtSize == 18 )
+        wavBuildBody18();
+    else if( wavFmtSize == 20 )
+        wavBuildBody20();
+    else
+        wavBuildBody40();
+    ReadBytes( wavPeek, pos, wavFmtSize, wavBodyMenu, wavBodyMenu, 1.0 );
+
+    wavTag  = wavByte( wavPeek, 0 ) + wavByte( wavPeek, 1 ) * 256;
+    wavCh   = wavByte( wavPeek, 2 ) + wavByte( wavPeek, 3 ) * 256;
+    wavRate = wavVal32( wavPeek, 4 );
+    wavBA   = wavByte( wavPeek, 12 ) + wavByte( wavPeek, 13 ) * 256;
+    wavBits = wavByte( wavPeek, 14 ) + wavByte( wavPeek, 15 ) * 256;
+    if( wavCh < 1 || wavCh > 2 || wavBA < 1 || wavBA > 512 || wavRate < 1 )
+    {
+        wavPlanOK = 0;                       // a plant escape: stop planting
+        return;
+    }
+
+    // dependency 21: the data chunk must hold a whole number of sample frames,
+    // so its size is a multiple of wBlockAlign by construction.  The frame count
+    // is derived from the body just chosen rather than drawn separately - there
+    // is no free byte range left to plant a second menu on.
+    wavFrames   = 96 + 32 * (((wavRate / 25) + wavBits + wavCh * 7) % 24);
+    if( wavTag == 17 )
+        wavFrames = 4 + (wavBits + wavCh) % 8;   // ADPCM blocks, not frames
+    wavDataSize = wavFrames * wavBA;
+    wavFactVal  = wavFrames;
+    if( wavTag == 17 )
+    {
+        spb = ((wavBA - 4 * wavCh) * 8) / (4 * wavCh) + 1;
+        wavFactVal = wavFrames * spb;        // dependency 25: decoded frame count
+    }
+    // dependencies 23 and 24, structure rule 6: every format but WAVE_FORMAT_PCM
+    // must declare its decoded length in a fact chunk.
+    wavNeedFact = 1;
+    if( wavTag == 1 )
+        wavNeedFact = 0;
+}
+
+//------------------------------------------------
+// The optional chunks and the data chunk that ends the stream.
+//------------------------------------------------
+int wavListSize( int k )
+{
+    if( k == 1 )
+        return 24;                           // INFO with one 12-byte INAM
+    if( k == 2 )
+        return 48;                           // INFO with INAM and a 16-byte IART
+    if( k == 3 )
+        return 80;                           // INFO with INAM, IART and a 24-byte ISFT
+    return 28;                               // adtl with one 16-byte labl
+}
+
+string wavListBody( int k )
+{
+    local string s;
+    if( k == 4 )
+    {
+        // dependency 38: an adtl subchunk's payload opens with a cue point
+        // identifier that must name a CUEPOINT.dwIdentifier in the file.
+        s = "adtl";
+        return s + "labl" + wavLE32( 16 ) + wavLE32( 1 ) + wavPad( "Cue", 12 );
+    }
+    s = "INFO";
+    s = s + "INAM" + wavLE32( 12 ) + wavPad( "FuzzTone", 12 );
+    if( k >= 2 )
+        s = s + "IART" + wavLE32( 16 ) + wavPad( "FormatFuzzer", 16 );
+    if( k >= 3 )
+        s = s + "ISFT" + wavLE32( 24 ) + wavPad( "FormatFuzzer 1.0", 24 );
+    return s;
+}
+
+string wavCueBody( int n )
+{
+    local string s;
+    local int i;
+    local int p;
+    s = wavLE32( n );
+    for( i = 0; i < n; i++ )
+    {
+        p = (wavFrames * (i + 1)) / (n + 1);
+        // dwIdentifier unique and small, fccChunk naming the data chunk that
+        // dependency 27 requires to exist, and both offsets 0 because
+        // CUEPOINT.dwChunkStart and .dwBlockStart have fixed_result 0 with no
+        // wavl playlist and no block-compressed format.
+        s = s + wavLE32( i + 1 ) + wavLE32( p ) + "data" + wavLE32( 0 ) + wavLE32( 0 ) + wavLE32( p );
+    }
+    return s;
+}
+
+string wavLoopBody( int m )
+{
+    local string s;
+    local int i;
+    local int st;
+    local int en;
+    // calculated_value SMPLCHUNK.Num_Sample_Loops, and SMPLCHUNK.Sampler_Data
+    // with fixed_result 0 - template deviation 0: the template never reads the
+    // bytes that field counts, so any other value desynchronises the walk.
+    s = wavLE32( m ) + wavLE32( 0 );
+    for( i = 0; i < m; i++ )
+    {
+        st = (wavFrames * i) / (m + 1);
+        en = (wavFrames * (i + 1)) / (m + 1);
+        // Cue_Point names one of the identifiers the cue chunk actually wrote
+        // (dependency 26), Start and End lie inside the sample stream and End is
+        // at or after Start (dependency 35), and Fraction is 0.
+        s = s + wavLE32( (i % wavNCue) + 1 ) + wavLE32( i % 3 )
+              + wavLE32( st ) + wavLE32( en ) + wavLE32( 0 ) + wavLE32( i );
+    }
+    return s;
+}
+
+void wavHeadOpt( int64 pos )
+{
+    local int n;
+    local int k;
+    local int sz;
+    n = 0;
+    // structure rule 7: the top-level walk is bounded explicitly rather than by
+    // the end of the file, and structure rules 8, 9 and 11 cap each optional
+    // chunk at one - or two for LIST - per file.
+    if( wavOptCount < 4 )
+    {
+        if( wavHasCue == 0 )
+        {
+            wavHdrMenu[n] = "cue " + wavLE32( 4 + 24 * 1 ); n = n + 1;
+            wavHdrMenu[n] = "cue " + wavLE32( 4 + 24 * 2 ); n = n + 1;
+            wavHdrMenu[n] = "cue " + wavLE32( 4 + 24 * 4 ); n = n + 1;
+        }
+        if( wavHasSmpl == 0 )
+        {
+            wavHdrMenu[n] = "smpl" + wavLE32( 36 ); n = n + 1;
+            // structure rule 10 and dependency 26: a loop names a cue point, so
+            // the looped forms become legal only once a cue chunk has been
+            // written.  This is the value set growing when its precondition is met.
+            if( wavHasCue )
+            {
+                wavHdrMenu[n] = "smpl" + wavLE32( 36 + 24 * 1 ); n = n + 1;
+                wavHdrMenu[n] = "smpl" + wavLE32( 36 + 24 * 2 ); n = n + 1;
+            }
+        }
+        if( wavNList < 2 )
+        {
+            wavHdrMenu[n] = "LIST" + wavLE32( wavListSize( 1 ) ); n = n + 1;
+            wavHdrMenu[n] = "LIST" + wavLE32( wavListSize( 2 ) ); n = n + 1;
+            wavHdrMenu[n] = "LIST" + wavLE32( wavListSize( 3 ) ); n = n + 1;
+            if( wavHasCue )
+                { wavHdrMenu[n] = "LIST" + wavLE32( wavListSize( 4 ) ); n = n + 1; }
+        }
+        if( wavHasJunk == 0 )
+        {
+            // pattern_constraint UNKNOWNCHUNK.chunkID with excluded_values: a
+            // printable four-character code that is none of the six the dispatch
+            // already claims, drawn from the preferred set the JSON lists.
+            wavHdrMenu[n] = "JUNK" + wavLE32( 4 );  n = n + 1;
+            wavHdrMenu[n] = "PAD " + wavLE32( 16 ); n = n + 1;
+            wavHdrMenu[n] = "bext" + wavLE32( 32 ); n = n + 1;
+            wavHdrMenu[n] = "id3 " + wavLE32( 8 );  n = n + 1;
+        }
+    }
+    // structure rules 2 and 5: exactly one data chunk, and it is what ends the
+    // stream, so it is always reachable and eventually forced.
+    wavHdrMenu[n] = "data" + wavLE32( wavDataSize ); n = n + 1;
+    wavFillHdr( n );
+
+    ReadBytes( wavPeek, pos, 8, wavHdrMenu, wavHdrMenu, 1.0 );
+    sz = wavVal32( wavPeek, 4 );
+    wavSize = sz;
+    wavImg  = "";
+    wavImg2 = "";
+    wavImgOff  = 0;
+    wavImg2Off = 0;
+
+    if( wavByte( wavPeek, 0 ) == 'c' )
+    {
+        wavKind = WAV_CUE;
+        k = (sz - 4) / 24;
+        if( k < 1 || k > 4 )
+            { wavPlanOK = 0; return; }
+        wavNCue = k;
+        wavImg  = wavCueBody( k );
+    }
+    else if( wavByte( wavPeek, 0 ) == 's' )
+    {
+        wavKind = WAV_SMP;
+        k = (sz - 36) / 24;
+        if( k < 0 || k > 2 )
+            { wavPlanOK = 0; return; }
+        // calculated_value SMPLCHUNK.Sample_Period, dependency 34: the sampler
+        // chunk restates the format chunk's rate as a nanosecond period.
+        wavImgOff  = 8;
+        wavImg     = wavLE32( 1000000000 / wavRate );
+        wavImg2Off = 28;
+        wavImg2    = wavLoopBody( k );
+    }
+    else if( wavByte( wavPeek, 0 ) == 'L' )
+    {
+        wavKind = WAV_LST;
+        k = 4;
+        if( sz == 24 ) k = 1;
+        if( sz == 48 ) k = 2;
+        if( sz == 80 ) k = 3;
+        if( sz != 24 && sz != 48 && sz != 80 && sz != 28 )
+            { wavPlanOK = 0; return; }
+        wavImg = wavListBody( k );
+    }
+    else if( wavByte( wavPeek, 0 ) == 'd' )
+    {
+        wavKind = WAV_DAT;
+        if( sz != wavDataSize )
+            { wavPlanOK = 0; return; }
+        // calculated_value WAVRIFFHEADER.hsize, structure rule 17: the container
+        // size is the file's only statement of its own extent, and the data
+        // chunk is the last thing in the file, so the total is known here.  This
+        // is the one field written backwards; everything else is planted forward.
+        wavPlant( 4, wavLE32( pos + 8 + sz - 8 ) );
+    }
+    else
+    {
+        wavKind = WAV_UNK;                   // the payload bytes are free-form
+    }
+    wavStage = 2;
+}
+
+void wavPlantHead( int64 pos )
+{
+    if( wavPlanOK == 0 )
+        return;
+    wavPos = pos;
+    if( wavStage == 1 && wavNeedFact == 0 )
+        wavStage = 2;
+    if( wavStage == 0 )
+        wavHeadFmt( pos );
+    else if( wavStage == 1 )
+    {
+        // FACTCHUNK.chunkSize is fixed at 4: template deviation 4 records that
+        // the struct reads one unsigned long whatever the size says and never
+        // seeks to the declared end, so any other size desynchronises the walk.
+        wavHdrMenu[0] = "fact" + wavLE32( 4 );
+        wavFillHdr( 1 );
+        ReadBytes( wavPeek, pos, 8, wavHdrMenu, wavHdrMenu, 1.0 );
+        wavKind = WAV_FCT;
+        wavSize = 4;
+        wavImg  = wavLE32( wavFactVal );
+        wavImgOff  = 0;
+        wavImg2 = "";
+        wavStage = 2;
+    }
+    else if( wavStage == 2 )
+        wavHeadOpt( pos );
+}
+
+void wavPlantBody( int64 pos, int kind, int64 size )
+{
+    if( wavPlanOK == 0 )
+        return;
+    if( kind != wavKind || size != wavSize )
+    {
+        wavPlanOK = 0;                       // not the file this plan describes
+        return;
+    }
+    if( kind == WAV_FMT )
+        wavPlantFmtBody( pos );
+    else
+    {
+        if( Strlen( wavImg ) != 0 )
+            wavPlant( pos + wavImgOff, wavImg );
+        if( Strlen( wavImg2 ) != 0 )
+            wavPlant( pos + wavImg2Off, wavImg2 );
+    }
+    if( kind == WAV_CUE )
+        { wavHasCue = 1;  wavOptCount = wavOptCount + 1; }
+    else if( kind == WAV_SMP )
+        { wavHasSmpl = 1; wavOptCount = wavOptCount + 1; }
+    else if( kind == WAV_LST )
+        { wavNList = wavNList + 1; wavOptCount = wavOptCount + 1; }
+    else if( kind == WAV_UNK )
+        { wavHasJunk = 1; wavOptCount = wavOptCount + 1; }
+    else if( kind == WAV_DAT )
+    {
+        wavStage = 3;
+        if( IsParsing() == 0 )
+            wavEofP = 1.0;                   // structure rule 16: nothing follows
+    }
+}
+
+//-----------------------------------
+// Define structures used in WAV files
+
+// Stores the file header information
+typedef struct 
+{
+    // fixed_value WAVRIFFHEADER.groupID and .riffType: together the format's
+    // complete signature, and the two values the guard below refuses to run
+    // without.  Both are planted before this struct is read, and a planted byte
+    // beats the evil bit outright, so no SetEvilBit(false) is needed - and none
+    // is used, deliberately: suppressing the bit here would turn the template's
+    // own "File is not a valid wave file" rejection into a hard assertion in the
+    // parse direction, because a non-RIFF file then needs an evil decision the
+    // suppression forbids.
+    char   groupID[4] = { "RIFF" };
+    // calculated_value WAVRIFFHEADER.hsize: the total file size minus 8.
+    // Template deviation 1 - the top-level loop never consults it - so nothing
+    // here would notice a wrong value, but every conforming reader trusts it to
+    // bound the chunk stream.  The plan writes it backwards once the layout is
+    // settled; the range is the generation bound.
+    long   hsize <min=36, max=262144>;
+    char   riffType[4] = { "WAVE" };
+} WAVRIFFHEADER;
+
+// Stores the format information for the file
+typedef struct {
+    // fixed_value FORMATCHUNK.chunkID.  Note the trailing space: template
+    // deviation 11 - the top-level switch compares four raw bytes, so 'fmt'
+    // followed by anything else falls to UNKNOWNCHUNK and the file is then
+    // rejected for having no format chunk.
+    char           chunkID[4] = { "fmt " };
+    // calculated_value FORMATCHUNK.chunkSize: unlike the data chunk this is not
+    // free - the specification defines exactly four layouts, of 16, 18, 20 and
+    // 40 bytes, and dependencies 0, 1 and 2 tie each to a format tag.
+    long           chunkSize <min=16, max=40>;
+    local int pos = FTell();
+    // Plant the whole body from a menu of internally consistent combinations for
+    // the size just read, so wBlockAlign, dwAvgBytesPerSec and the extension
+    // fields agree with the tag, the channel count and the depth by construction.
+    wavPlantBody( pos, WAV_FMT, chunkSize );
+    // enumerated_values FORMATCHUNK.wFormatTag.  Declared `short`, which is
+    // signed, so WAVE_FORMAT_EXTENSIBLE (0xFFFE) has to be written -2 here -
+    // template deviation 2.
+    short          wFormatTag = { 1, 2, 3, 6, 7, 17, 20, 49, 64, 80, 85, -2 };
+    // range_constraint FORMATCHUNK.wChannels: used straight as an array bound in
+    // the interleaved sample layout, and a factor of the block alignment.
+    unsigned short wChannels <min=1, max=2>;
+    // range_constraint FORMATCHUNK.dwSamplesPerSec: the rates real files carry.
+    unsigned long  dwSamplesPerSec <min=8000, max=48000>;
+    // calculated_value FORMATCHUNK.dwAvgBytesPerSec and .wBlockAlign,
+    // dependencies 8, 9 and 10: for PCM both are pure functions of the other
+    // three fields, and a zero block alignment is a division by zero in the
+    // data chunk's frame count.
+    unsigned long  dwAvgBytesPerSec <min=8000, max=384000>;
+    unsigned short wBlockAlign <min=1, max=512>;   // spec bound 65535
+    // enumerated_values FORMATCHUNK.wBitsPerSample.  Template deviation 5: only
+    // 8, 16 and 32 reach the typed sample layout below; 4, 24 and 64 are legal
+    // depths that fall into the opaque waveformData array.
+    unsigned short wBitsPerSample = { 4, 8, 16, 24, 32, 64 };
+    if (wFormatTag == 17) //DVI IMA ADPCM
+    {
+        // dependency 12: the DVI IMA ADPCM extension is exactly the two-byte
+        // wSamplesPerBlock, so fixed_result FORMATCHUNK.wcbsize is 2.
+        unsigned short wcbsize = { 2 };
+        // calculated_value, dependency 11:
+        // ((wBlockAlign - 4 * wChannels) * 8) / (wBitsPerSample * wChannels) + 1
+        unsigned short wSamplesPerBlock <min=1, max=4096>;
+    }
+
+    // Mark that we have found a valid format chunk
+    haveValidFormat = true;
+
+    // Unknown data at the end of the chunk
+    if( chunkSize > (FTell() - pos) )
+        uchar unknown[ chunkSize - (FTell() - pos) ];
+
+    // Padding so the next chunk starts on an even byte
+    if( chunkSize & 1 )
+        uchar padding;
+} FORMATCHUNK;
+
+// Stores the actual wave data
+typedef struct 
+{
+    char           chunkID[4] = { "data" };        // fixed_value DATACHUNK.chunkID
+    // calculated_value DATACHUNK.chunkSize: the format's principal size lever -
+    // an array bound at two places and a divisor-numerator at three more, with
+    // no upper check anywhere.  Dependency 21 makes it an exact multiple of
+    // wBlockAlign, which the plan guarantees by writing frames * wBlockAlign.
+    long           chunkSize <min=0, max=131072>;
+    wavPlantBody( FTell(), WAV_DAT, chunkSize );   // no body image: the samples are free audio
+
+    // Test if we have a valid format
+    if( !haveValidFormat )
+    {
+        Warning( "File contains no valid WAVE format chunk." );
+        return -1;
+    }
+
+    // Parse the samples of the data
+    if( ((format.wBitsPerSample != 8) && (format.wBitsPerSample != 16) && (format.wBitsPerSample != 32)) 
+        || format.wBlockAlign == 0 || (chunkSize % (int)format.wBlockAlign != 0) )
+    {
+        // Unsupported storage method used
+        unsigned char  waveformData[chunkSize];
+    }
+    else if( (format.wChannels == 1) && (format.wBitsPerSample == 8) )
+    {
+        // Define an array of 8-bit samples - common case
+        uchar samples[ chunkSize ];
+    }
+    else if( (format.wChannels == 1) && (format.wBitsPerSample == 16) )
+    {
+        // Define an array of 16-bit samples - common case
+        short samples[ chunkSize/2 ];
+    }
+    else if( (format.wChannels == 1) && (format.wBitsPerSample == 32) )
+    {
+        // Define an array of 32-bit samples - common case
+        int samples[ chunkSize/4 ];
+    }
+    else
+    {
+        // Define general case sample
+        struct SAMPLES {
+            if( format.wBitsPerSample == 8 )
+                 uchar channels[ format.wChannels ];
+            else if( format.wBitsPerSample == 16 )
+                 short channels[ format.wChannels ];
+            else if( format.wBitsPerSample == 32 )
+                 int   channels[ format.wChannels ];
+        } samples[ chunkSize / (int)format.wBlockAlign ];
+    }
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} DATACHUNK;
+
+// Stores the size of the wave after decompression
+typedef struct
+{
+    char           chunkID[4] = { "fact" };        // fixed_value FACTCHUNK.chunkID
+    // calculated_value FACTCHUNK.chunkSize: 4 is the only conforming value.
+    // Template deviation 4 - the struct reads one unsigned long whatever this
+    // says and never seeks to the declared end - and template deviation 3, which
+    // records that this struct has no padding branch at all, so an odd size
+    // would leave the walk permanently misaligned.
+    long           chunkSize = { 4 };
+    wavPlantBody( FTell(), WAV_FCT, chunkSize );
+    // calculated_value FACTCHUNK.uncompressedSize, dependency 25: the decoded
+    // sample frame count, which must agree with the data chunk it describes.
+    unsigned long  uncompressedSize <min=0, max=65536>;
+} FACTCHUNK;
+
+// Stores a list of cue points or markers to points in the data
+typedef struct {
+    // range_constraint CUEPOINT.dwIdentifier: an identifier, not a magnitude -
+    // unique within the list and the target of SMPLLOOPS.Cue_Point and of any
+    // adtl labl subchunk, so the plan numbers them 1..n.
+    long    dwIdentifier <min=1, max=16>;
+    // calculated_value CUEPOINT.dwPosition and .dwSampleOffset: sample frame
+    // offsets that must lie inside the stream the data chunk carries.
+    long    dwPosition <min=0, max=65536>;
+    // enumerated_values CUEPOINT.fccChunk, dependencies 27 and 28: only 'data'
+    // or 'slnt', and 'slnt' exists only inside a wavl playlist this template has
+    // no handling for, so the plan writes 'data'.
+    char    fccChunk[4] = { "data", "slnt" };
+    // fixed_result 0 for both: dwChunkStart is 0 with no wavl playlist and
+    // dwBlockStart is 0 for any format without compression blocks.
+    long    dwChunkStart = { 0 };
+    long    dwBlockStart = { 0 };
+    long    dwSampleOffset <min=0, max=65536>;
+} CUEPOINT;
+
+typedef struct {
+    char      chunkID[4] = { "cue " };             // fixed_value, trailing space significant
+    // calculated_value CUECHUNK.chunkSize, dependency 29: exactly
+    // 4 + 24 * dwCuePoints, and always even, which is what makes template
+    // deviation 3's missing padding branch harmless here.
+    long      chunkSize <min=4, max=388>;
+    local int pos = FTell();
+    wavPlantBody( pos, WAV_CUE, chunkSize );
+    // calculated_value CUECHUNK.dwCuePoints: an unchecked array bound over
+    // 24-byte records - a signed 32-bit count would claim 48 GB from four bytes.
+    long      dwCuePoints <min=0, max=16>;
+    CUEPOINT  points[dwCuePoints];
+
+    // Unknown data at the end of the chunk
+    if( chunkSize > (FTell() - pos) )
+        uchar unknown[ chunkSize - (FTell() - pos) ];
+} CUECHUNK;
+
+// Define a list chunk with a set of subchunks
+typedef struct {
+    // enumerated_values LISTSUBCHUNK.chunkID, dependencies 37, 38 and 39: which
+    // identifiers are legal follows from the enclosing LIST's form type - the
+    // INFO metadata set, the adtl records, or the wavl playlist segments.
+    char      chunkID[4] = { "IARL", "IART", "ICMS", "ICMT", "ICOP", "ICRD",
+                             "ICRP", "IDIM", "IDPI", "IENG", "IGNR", "IKEY",
+                             "ILGT", "IMED", "INAM", "IPLT", "IPRD", "ISBJ",
+                             "ISFT", "ISHP", "ISRC", "ISRF", "ITCH",
+                             "labl", "note", "ltxt", "data", "slnt" };
+    // calculated_value LISTSUBCHUNK.chunkSize.  Dependency 41 and template
+    // deviation 7: a zero-size subchunk advances the enclosing loop by only its
+    // 8-byte header and the loop has no other progress guarantee, so the plan
+    // never writes one - and every size it writes is even, which keeps the
+    // padding branch below unreachable.
+    long      chunkSize <min=1, max=256>;
+    char      listData[chunkSize];
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} LISTSUBCHUNK;
+
+typedef struct {
+    char      chunkID[4] = { "LIST" };             // fixed_value LISTCHUNK.chunkID
+    // calculated_value LISTCHUNK.chunkSize: 4 for the form type plus every
+    // subchunk's own header, payload and pad byte.  It is the sole bound on the
+    // subchunk loop below, so the plan makes it decompose into whole subchunks
+    // exactly - structure rule 12.
+    long      chunkSize <min=4, max=4096>;
+    local quad pos = FTell();
+    wavPlantBody( pos, WAV_LST, chunkSize );
+    // enumerated_values LISTCHUNK.chunkType, structure rule 13: the form type is
+    // the first four bytes of the LIST's data, not a chunk of its own, and it is
+    // the only thing that gives the subchunk identifiers meaning.
+    char      chunkType[4] = { "INFO", "adtl", "wavl" };
+    local uint size;
+
+    // Read the subchunks
+    while( FTell() - pos < chunkSize ) {
+        // lookahead LISTCHUNK.subchunk: a ReadUInt peek of the NEXT subchunk's
+        // size, four bytes ahead, tested below against the room left in this
+        // LIST.  comparison is bounds_test, so there is no value set to mine.
+        size = ReadUInt( FTell()+4 );
+        if  (FTell() - pos + size<= chunkSize)
+            LISTSUBCHUNK subchunk;
+        else
+            uchar unknown[ chunkSize - (FTell() - pos) ];       
+    }
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} LISTCHUNK;
+
+// A chunk which could not be identified
+typedef struct {
+    // pattern_constraint UNKNOWNCHUNK.chunkID with excluded_values: four
+    // printable ASCII bytes that are NOT one of the six the dispatch claims -
+    // emitting one of those here would produce a chunk the template's own
+    // grammar re-parses with a different, fixed-shape layout.
+    char      chunkID[4] = { "bext", "junk", "JUNK", "PAD ", "id3 ", "iXML",
+                             "_PMX", "minf", "elm1", "ovwf", "regn", "umid",
+                             "DISP", "afsp" };
+    long      chunkSize <min=0, max=1024>;         // calculated_value, unchecked array bound
+    wavPlantBody( FTell(), WAV_UNK, chunkSize );   // no body image: the payload is free-form
+    uchar     unknownData[chunkSize];
+
+    // Padding so the next chunk starts on an even byte
+    if( (chunkSize & 1) && (FTell() < FileSize()) )
+        uchar padding;
+} UNKNOWNCHUNK;
+
+//---------------------------------------------
+// SMPL / SMPL Loop
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Cue_ID <read=WAV_SMPLLOOPS_Cue_ID>;
+
+string
+WAV_SMPLLOOPS_Cue_ID( SMPLLOOPS_Cue_ID cid )
+{
+    string  sret;
+    SPrintf( sret, "Cue Point ID: %u", cid );
+
+return sret;
+}
+
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Play_Count <read=WAV_SMPLLOOPS_Play_Count>;
+
+string
+WAV_SMPLLOOPS_Play_Count( SMPLLOOPS_Play_Count pc )
+{
+    string  sret;
+
+    if (pc==0)
+    {
+        SPrintf( sret, " Infinite Sustain Loop (%u)", pc );
+    }
+    else
+    {
+        SPrintf( sret, "Play Count: %u", pc );
+    }
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Start <read=WAV_SMPLLOOPS_Start>;
+
+string
+WAV_SMPLLOOPS_Start( SMPLLOOPS_Start st )
+{
+    string  sret;
+    SPrintf( sret, "Loop Start at %u byte offset", st );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_End <read=WAV_SMPLLOOPS_End>;
+
+string
+WAV_SMPLLOOPS_End( SMPLLOOPS_End end )
+{
+    string  sret;
+    SPrintf( sret, "Loop End at %u byte offset", end );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Fraction <read=WAV_SMPLLOOPS_Fraction>;
+
+string
+WAV_SMPLLOOPS_Fraction( SMPLLOOPS_Fraction f )
+{
+    string  sret;
+    SPrintf( sret, "Fraction: %u", f );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SL <read=WAV_SMPL_SL>;
+
+string
+WAV_SMPL_SL( SMPL_SL sl )
+{
+    string  sret;
+    SPrintf( sret, "Number of Samples Loops (Sustain Loops): %u", sl );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SD <read=WAV_SMPL_SD>;
+
+string
+WAV_SMPL_SD( SMPL_SD sd )
+{
+    string  sret;
+    SPrintf( sret, "Sample Data (number of bytes): %u", sd );
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPL_SMPTE_Offset <read=WAV_SMPL_SMPTE_Offset>;
+
+string
+WAV_SMPL_SMPTE_Offset( SMPL_SMPTE_Offset so )
+{
+    string  sret;
+    SPrintf( sret, "SMPTE Offset (for synchronization): %u", so );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Pitch_Fraction <read=WAV_SMPL_MIDI_Pitch_Fraction>;
+
+string
+WAV_SMPL_MIDI_Pitch_Fraction( SMPL_MIDI_Pitch_Fraction pf )
+{
+    string  sret;
+    SPrintf( sret, "MIDI Pitch Fraction: %u", pf );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Unity_Note <read=WAV_SMPL_MIDI_Unity_Note>;
+
+string
+WAV_SMPL_MIDI_Unity_Note( SMPL_MIDI_Unity_Note un )
+{
+    string  sret;
+    SPrintf( sret, "MIDI unity note value: %u", un );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Product <read=WAV_SMPL_Product>;
+
+string
+WAV_SMPL_Product( SMPL_Product product )
+{
+    string  sret;
+    SPrintf( sret, "MIDI model ID (defined by the manufacturer): %u", product );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Sample_Period <read=WAV_SMPL_Sample_Period>;
+
+string
+WAV_SMPL_Sample_Period( SMPL_Sample_Period sp )
+{
+    string  sret;
+     // The sample period specifies the duration of time that passes during the playback of one sample in nanoseconds (normally equal to 1 / Samplers Per Second, where Samples Per Second is the value found in the format chunk).
+    SPrintf( sret, "Sample Period: %u", sp );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SMPTE <read=WAV_SMPL_SMPTE>;
+
+string
+WAV_SMPL_SMPTE( SMPL_SMPTE smptef )
+{
+    string  s;
+    string  sret;
+
+    switch( smptef )
+    {
+    case 0: SPrintf( s, "No SMPTE offset" ); break;
+    case 24: SPrintf( s, "24 frames per second" ); break;
+    case 25: SPrintf( s, "25 frames per second" ); break;
+    case 29: SPrintf( s, "30 frames per second with frame dropping (30 drop)" ); break;
+    case 30: SPrintf( s, "30 frames per second" ); break;
+    default: SPrintf( s, "unknown (%u)", smptef ); break;
+    }
+
+    SPrintf( sret, "SMPTE Format: %s", s );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Manufacturer <read=WAV_SMPL_Manufacturer>;
+
+string
+WAV_SMPL_Manufacturer( SMPL_Manufacturer manufacture )
+{
+    string  s;
+    string  sret;
+
+    switch( manufacture )
+    {
+    case 0: SPrintf( s, "Unknown" ); break;
+    case 1: SPrintf( s, "Sequential Circuits"); break;
+    case 2: SPrintf( s, "Big Briar"); break;
+    case 3: SPrintf( s, "Octave / Plateau"); break;
+    case 4: SPrintf( s, "Moog"); break;
+    case 5: SPrintf( s, "Passport Designs"); break;
+    case 6: SPrintf( s, "Lexicon"); break;
+    case 7: SPrintf( s, "Kurzweil"); break;
+    case 8: SPrintf( s, "Fender"); break;
+    case 9: SPrintf( s, "Gulbransen"); break;
+    case 10: SPrintf( s, "Delta Labs"); break;
+    case 11: SPrintf( s, "Sound Comp."); break;
+    case 12: SPrintf( s, "General Electro"); break;
+    case 13: SPrintf( s, "Techmar"); break;
+    case 14: SPrintf( s, "Matthews Research"); break;
+    case 16: SPrintf( s, "Oberheim"); break;
+    case 17: SPrintf( s, "PAIA"); break;
+    case 18: SPrintf( s, "Simmons"); break;
+    case 19: SPrintf( s, "DigiDesign"); break;
+    case 20: SPrintf( s, "Fairlight"); break;
+    case 21: SPrintf( s, "JL Cooper"); break;
+    case 22: SPrintf( s, "Lowery"); break;
+    case 23: SPrintf( s, "Lin"); break;
+    case 24: SPrintf( s, "Emu"); break;
+    case 27: SPrintf( s, "Peavey"); break;
+    case 32: SPrintf( s, "Bon Tempi"); break;
+    case 33: SPrintf( s, "S.I.E.L."); break;
+    case 35: SPrintf( s, "SyntheAxe"); break;
+    case 36: SPrintf( s, "Hohner"); break;
+    case 37: SPrintf( s, "Crumar"); break;
+    case 38: SPrintf( s, "Solton"); break;
+    case 39: SPrintf( s, "Jellinghaus Ms"); break;
+    case 40: SPrintf( s, "CTS"); break;
+    case 41: SPrintf( s, "PPG"); break;
+    case 47: SPrintf( s, "Elka"); break;
+    case 54: SPrintf( s, "Cheetah"); break;
+    case 62: SPrintf( s, "Waldorf"); break;
+    case 64: SPrintf( s, "Kawai"); break;
+    case 65: SPrintf( s, "Roland"); break;
+    case 66: SPrintf( s, "Korg"); break;
+    case 67: SPrintf( s, "Yamaha"); break;
+    case 68: SPrintf( s, "Casio"); break;
+    case 70: SPrintf( s, "Kamiya Studio"); break;
+    case 71: SPrintf( s, "Akai"); break;
+    case 72: SPrintf( s, "Victor"); break;
+    case 75: SPrintf( s, "Fujitsu"); break;
+    case 76: SPrintf( s, "Sony"); break;
+    case 78: SPrintf( s, "Teac"); break;
+    case 80: SPrintf( s, "Matsushita"); break;
+    case 81: SPrintf( s, "Fostex"); break;
+    case 82: SPrintf( s, "Zoom"); break;
+    case 84: SPrintf( s, "Matsushita"); break;
+    case 85: SPrintf( s, "Suzuki"); break;
+    case 86: SPrintf( s, "Fuji Sound"); break;
+    case 87: SPrintf( s, "Acoustic Technical Laboratory"); break;
+    default: SPrintf( s, "Unknown"); break;
+    }
+
+SPrintf( sret, "Manufacturer: %s", s);
+
+return sret;
+}
+
+//----------------------------------------------------------------------
+typedef long SMPLLOOPS_Type <read=WAV_SMPL_Loop_Type>;
+
+string
+WAV_SMPL_Loop_Type( SMPLLOOPS_Type loop )
+{
+    string  s;
+
+    switch( loop )
+    {
+        case 0 :
+            SPrintf( s, "Loop: Forward (%u)", loop );
+            break;
+
+        case 1 :
+            SPrintf( s, "Loop: Ping Pong (%u)", loop );
+            break;
+
+        case 2 :
+            SPrintf( s, "Loop: Reverse (%u)", loop );
+            break;
+
+        case 3 :
+            SPrintf( s, "Loop [reserved for future standard types] (%u)", loop );
+            break;
+
+        default:
+            s = "Loop: <unknown>";
+    }
+
+    return s;
+}
+
+//----------------------------------------------------------------------
+// SMPL Loop
+typedef struct {
+    // range_constraint SMPLLOOPS.Cue_Point, dependency 26 and structure rule 10:
+    // a cross-reference that must name a CUEPOINT.dwIdentifier present in the
+    // file, so the plan draws it from the identifiers the cue chunk wrote.
+    SMPLLOOPS_Cue_ID     Cue_Point <min=0, max=16>;
+    // enumerated_values SMPLLOOPS.Type: the four types the display switch below
+    // enumerates - forward, ping pong, reverse and the reserved fourth.
+    SMPLLOOPS_Type       Type = { 0, 1, 2, 3 };
+    // calculated_value SMPLLOOPS.Start and .End, dependency 35: sample frame
+    // indices inside the stream, with End at or after Start.  Template
+    // deviation 12: the display functions call these byte offsets, but the
+    // specification defines them in frames.
+    SMPLLOOPS_Start      Start <min=0, max=65536>;
+    SMPLLOOPS_End        End <min=0, max=65536>;
+    // range_constraint SMPLLOOPS.Fraction: a fraction of a frame in units of
+    // 1/2^32, so 0 is a loop that starts exactly on a frame boundary.
+    SMPLLOOPS_Fraction   Fraction = { 0 };
+    // range_constraint SMPLLOOPS.Play_Count, dependency 36: 0 is the
+    // infinite-sustain sentinel the display function below calls out, not a
+    // count of zero plays.
+    SMPLLOOPS_Play_Count Play_Count <min=0, max=16>;
+
+} SMPLLOOPS;
+
+//----------------------------------------------------------------------
+// Chunk SMPL
+typedef struct {
+    char                     chunkID[4] = { "smpl" };   // fixed_value SMPLCHUNK.chunkID
+    // calculated_value SMPLCHUNK.chunkSize, dependency 30: exactly
+    // 36 + 24 * Num_Sample_Loops + Sampler_Data.  Template deviation: the
+    // template never uses this field to bound anything, so a wrong value is
+    // invisible here and mis-sizes the chunk for a real reader.
+    long                     chunkSize <min=36, max=420>;
+    wavPlantBody( FTell(), WAV_SMP, chunkSize );
+    // enumerated_values SMPLCHUNK.Manufacturer: the 56 MIDI manufacturer codes
+    // the display switch below names, of which 0 means no particular sampler.
+    SMPL_Manufacturer        Manufacturer = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                                              11, 12, 13, 14, 16, 17, 18, 19, 20,
+                                              21, 22, 23, 24, 27, 32, 33, 35, 36,
+                                              37, 38, 39, 40, 41, 47, 54, 62, 64,
+                                              65, 66, 67, 68, 70, 71, 72, 75, 76,
+                                              78, 80, 81, 82, 84, 85, 86, 87 };
+    // range_constraint SMPLCHUNK.Product: a model code inside one manufacturer's
+    // namespace, 0 meaning unspecified.
+    SMPL_Product             Product <min=0, max=255>; // Product code (Manufacture)
+    // calculated_value SMPLCHUNK.Sample_Period, dependency 34: 1000000000 /
+    // dwSamplesPerSec, which the template's own comment above states.  Planted,
+    // because it has to agree with a field in a different chunk.
+    SMPL_Sample_Period       Sample_Period <min=20833, max=125000>;
+    // range_constraint SMPLCHUNK.MIDI_Unity_Note: a MIDI key number, 60 being
+    // middle C; the spec bound is 0-127 and 36-96 is the span that sounds.
+    SMPL_MIDI_Unity_Note     MIDI_Unity_Note <min=36, max=96>;
+    // range_constraint: a fraction of a semitone in units of 1/2^32, 0 meaning
+    // exactly in tune.
+    SMPL_MIDI_Pitch_Fraction MIDI_Pitch_Fraction = { 0 };
+    // enumerated_values SMPLCHUNK.SMPTE: the five rates the display switch names.
+    // Note the encoding oddity - 29 denotes 30 fps drop-frame, not 29 fps.
+    SMPL_SMPTE               SMPTE = { 0, 24, 25, 29, 30 };
+    // bitmask_constraint SMPLCHUNK.SMPTE_Offset, dependencies 32 and 33: hours,
+    // minutes, seconds and frames packed one per byte, with the frames byte
+    // bounded by the rate above - 0 is the one value safe under every rate.
+    SMPL_SMPTE_Offset        SMPTE_Offset = { 0 };
+    // calculated_value SMPLCHUNK.Num_Sample_Loops: an unchecked array bound over
+    // 24-byte records, the same blow-up as CUECHUNK.dwCuePoints.
+    SMPL_SL                  Num_Sample_Loops <min=0, max=16>;
+    // fixed_result SMPLCHUNK.Sampler_Data = 0, dependency 31 and template
+    // deviation 0: this is a length field whose bytes the template NEVER reads,
+    // so any non-zero value leaves that many bytes unconsumed and desynchronises
+    // the whole chunk walk from here on.  It is the one field in this file where
+    // a legal value is unparseable.
+    SMPL_SD                  Sampler_Data = { 0 };
+    SMPLLOOPS                loops[Num_Sample_Loops];
+
+    //Padding so the next chunk starts on an even byte
+     if( (chunkSize & 1) && (FTell() < FileSize()) )
+     uchar padding;
+
+} SMPLCHUNK;
+
+
+
+//---------------------------------------------
+
+// Define the headers
+LittleEndian(); 
+SetBackColor( cLtPurple );
+// structure rule 0: the 12-byte RIFF header occupies offsets 0-11 and nothing
+// may precede it.  Both signatures are planted before the struct is read, which
+// is exactly the twelve bytes the struct is about to consume.
+wavPlant( 0, "RIFF" );
+wavPlant( 8, "WAVE" );
+WAVRIFFHEADER header;
+
+// Check for valid header
+if( header.groupID != "RIFF" || header.riffType != "WAVE" )
+{
+    Warning( "File is not a valid wave file. Template stopped." );
+    return -1;
+}
+
+// Read the file as a set of chunks
+local char tag[4];
+local uint size;
+// structure rules 7 and 16: RIFF has no terminator and this loop never consults
+// the container size, so left alone it is an unbounded walk that the generator
+// would fill with random chunks until FEof happened to fire.  The plan bounds it
+// instead: wavEofP can never fire while chunks remain and always fires once the
+// data chunk has been written.
+if( IsParsing() == 0 )
+    wavEofP = -1.0;
+
+while( !FEof( wavEofP ) )
+{
+    // Plant the next chunk's identifier and size from the set of headers legal
+    // at this point in the stream, so the tag peeked below and the size read
+    // inside the struct are both already the ones the plan intends.
+    wavPlantHead( FTell() );
+
+    // Read the chunk tag 
+    // lookahead: the six identifiers the switch dispatches on, as a
+    // per-call-site value set (structure rule 15).
+    ReadBytes( tag, FTell(), 4, wavTagValues, wavTagValues, 1.0 );
+
+    // See which chunk this is
+    switch( tag )
+    {
+        case "fmt ":
+            SetBackColor( cLtGray );
+            FORMATCHUNK format;
+            break;
+        case "data":
+            SetBackColor( cNone );
+            DATACHUNK   data;
+            break;
+        case "fact":
+            SetBackColor( cLtBlue );
+            FACTCHUNK   fact;
+            break;
+        case "cue ":
+            SetBackColor( cLtGray );
+            CUECHUNK    cue;
+            break;
+        case "smpl":
+            SetBackColor( cLtGray );
+            SMPLCHUNK    smpl;
+            break;
+        case "LIST":
+            SetBackColor( cLtYellow );
+            LISTCHUNK   list;
+            break;
+        default:
+            // Unknown chunk
+            size = ReadUInt( FTell()+4 );
+            Printf( "Encountered unknown chunk '%s' of size %d at position %Ld.\n",
+                tag, size, FTell() );
+            SetBackColor( cNone );
+            UNKNOWNCHUNK unknown;
+            break;
+    }
+}
+

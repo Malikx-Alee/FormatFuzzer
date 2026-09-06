@@ -1,0 +1,738 @@
+//------------------------------------------------
+//--- 010 Editor v1.2 Binary Template
+//
+//      File: AVI.bt
+//   Authors: Blaine Lefebvre [bl], Elias Bachaalany [eb]
+//   Version: 1.2
+//   Purpose: Parse an AVI movie file.
+//  Category: Video
+// File Mask: *.avi
+//  ID Bytes: 52 49 46 46 [+4] 41 56 49 20 //RIFF????AVI 
+//   History: 
+//   1.2   2016-01-27 SweetScape: Updated header for repository submission, added coloring for header.
+//   1.1   2006-10-02 eb: Added BITMAPINFO and WAVEFORMATEX proper strfHEADER recognition,
+//                      Fixed 'idx1' parsing.
+//   1.0   bl: Initial release.
+//------------------------------------------------
+
+typedef struct
+{ 
+  WORD  wFormatTag;                 // enumerated_values, WAVE_FORMAT_PCM (1) preferred
+  WORD  nChannels;                  // generation_range 1..2
+  DWORD nSamplesPerSec;             // generation_range 8000..48000
+  DWORD nAvgBytesPerSec;            // calculated: nSamplesPerSec * nBlockAlign (dependency 27)
+  WORD  nBlockAlign;                // calculated: nChannels * wBitsPerSample / 8 (dependency 27)
+  WORD  wBitsPerSample;             // enumerated_values; PCM needs a multiple of 8 (dependency 28)
+  WORD  cbSize;                     // fixed_result 0 for PCM, which pins the chunk at 18 (dependencies 25, 26)
+} WAVEFORMATEX; 
+
+// head structure info
+typedef struct 
+{
+    DWORD  dwMicroSecPerFrame;      // calculated: 1000000 * dwScale / dwRate of the video stream (dependency 13)
+    DWORD  dwMaxBytesPerSec;        // calculated: the summed data rate of every stream
+    DWORD  dwReserved1;             // fixed_value 0 - this is dwPaddingGranularity in AVIMAINHEADER
+    DWORD  dwFlags;                 // bitmask_constraint; AVIF_HASINDEX (0x10) obliges an idx1 (dependencies 29, 30)
+    DWORD  dwTotalFrames;           // calculated: must equal the video stream's dwLength and the ##db count (dependency 14)
+    DWORD  dwInitialFrames;         // fixed_value 0 for a non-interleaved file (dependency 37)
+    DWORD  dwStreams;               // calculated: the number of strl lists actually written (dependency 35)
+    DWORD  dwSuggestedBufferSize;   // calculated: the largest chunk in the movi list
+    DWORD  dwWidth;                 // calculated: must equal BITMAPINFOHEADER.biWidth (dependency 21)
+    DWORD  dwHeight;                // calculated: must equal BITMAPINFOHEADER.biHeight (dependency 21)
+    DWORD  dwScale;                 // fixed_value 0 - template_deviations #5: this and the next three
+    DWORD  dwRate;                  //   are AVIMAINHEADER's dwReserved[4], not timing fields; the real
+    DWORD  dwStart;                 //   scale/rate/start/length live in AVIStreamHeader
+    DWORD  dwLength;                // fixed_value 0
+} MainAVIHeader;
+
+typedef struct
+{
+  uint32 biSize;                    // fixed_result 40 - any other size desynchronises the exData
+                                    //   subtraction below (dependency 16, template_deviations #12)
+  uint32 biWidth;                   // generation_range 1..640, kept small so a frame stays cheap
+  uint32 biHeight;                  // generation_range 1..480
+  uint16 biPlanes;                  // fixed_value 1
+  uint16 biBitCount;                // enumerated_values; BI_RGB needs a real depth (dependency 17)
+  uint32 biCompression;             // enumerated_values, BI_RGB (0) preferred and required by the
+                                    //   'DIB ' stream handler (dependency 15)
+  uint32 biSizeImage;               // calculated: biHeight * ((biWidth * biBitCount + 31) / 32) * 4 (dependency 20)
+  uint32 biXPelsPerMeter;
+  uint32 biYPelsPerMeter;
+  uint32 biClrUsed;                 // 0 at a direct-colour depth (dependency 19), else the palette size
+  uint32 biClrImportant;
+} BITMAPINFOHEADER;
+
+typedef struct 
+{
+  unsigned char rgbBlue;
+  unsigned char rgbGreen;
+  unsigned char rgbRed;
+  unsigned char rgbReserved;        // fixed_value 0 - reserved in a colour table entry
+} RGBQUAD;
+
+// template_deviations #8: BITMAPINFO is declared but never instantiated - strfHEADER_BIH
+// declares its own bmiHeader and bmiColors inline instead.  Left in place, still unused.
+typedef struct 
+{
+  BITMAPINFOHEADER bmiHeader;
+  RGBQUAD bmiColors;
+} BITMAPINFO;
+
+typedef struct 
+{
+  char id[4] = { "avih" };          // fixed_value 'avih'
+  uint32 datalen;                   // fixed_result 56 - the struct below is read at that size
+                                    //   whatever this field says (template_deviations #12)
+  MainAVIHeader data;
+} avihHEADER;
+
+
+// header stream structure info
+typedef struct 
+{
+    char   fccType[4];              // enumerated_values 'vids'/'auds'/'txts'/'mids', 'vids' preferred
+    char   fccHandler[4];           // enumerated_values; 'DIB ' pairs with BI_RGB (dependency 15)
+    DWORD  dwFlags;
+    DWORD  dwReserved1;             // fixed_value 0 - template_deviations #7: really wPriority + wLanguage
+    DWORD  dwInitialFrames;         // fixed_value 0
+    DWORD  dwScale;                 // video: 1; audio: nBlockAlign (dependency 12)
+    DWORD  dwRate;                  // video: frames per second; audio: nAvgBytesPerSec (dependency 12)
+    DWORD  dwStart;                 // fixed_value 0
+    DWORD  dwLength;                // calculated: frames for video (dependency 14), blocks for audio
+    DWORD  dwSuggestedBufferSize;
+    DWORD  dwQuality;               // range_constraint 0..10000
+    DWORD  dwSampleSize;            // video: fixed_value 0 (dependency 10); audio: nBlockAlign (dependency 11)
+    DWORD  xdwQuality;              // fixed_result 0 - template_deviations #6: these two are really
+    DWORD  xdwSampleSize;           //   AVISTREAMHEADER's RECT rcFrame, eight bytes of coordinates
+} AVIStreamHeader;
+
+typedef struct 
+{
+  char id[4] = { "strh" };          // fixed_value 'strh'
+  uint32  datalen;                  // fixed_result 56 - the size of the struct below, which every
+                                    //   real AVI writes and which the template reads unconditionally
+  AVIStreamHeader data;
+}strhHEADER;
+
+
+// Generic strfHEADER
+typedef struct 
+{
+  char id[4];
+  uint32  datalen;
+  if (datalen % 2)
+	  char data[datalen+1];
+  else
+	  char data[datalen];
+} strfHEADER;
+
+// strfHEADER with BITMAPINFOHEADER
+typedef struct 
+{
+  char id[4] = { "strf" };          // fixed_value 'strf'
+  uint32  datalen;                  // calculated: 40, or 44 when a single colour entry follows
+  BITMAPINFOHEADER bmiHeader;
+  local int sz = sizeof(bmiHeader);
+  if (datalen == 44)
+  {
+    // dependency 22: an exact size of 44 is the template's ONLY trigger for a colour
+    // table entry, and it reads exactly one (template_deviations #4)
+    RGBQUAD bmiColors;
+    sz += 4;
+  }
+  Printf("left: %d\n", sz);
+  // dependency 23: datalen below sz makes this length negative; the generator only ever
+  // emits 40 or 44, which are exactly the two values that make it zero
+  char exData[datalen - sz];
+} strfHEADER_BIH;
+
+
+// strfHEADER with WAVEFORMAT
+typedef struct 
+{
+  char id[4] = { "strf" };          // fixed_value 'strf'
+  uint32  datalen;                  // calculated: 18 + cbSize, and cbSize is 0 for PCM (dependencies 25, 26)
+  WAVEFORMATEX wave;
+  // dependency 24: datalen below 18 makes this length negative - a 16-byte strict
+  // WAVEFORMAT chunk, which many real AVIs write for PCM, triggers exactly that
+  char exData[datalen - 18];
+} strfHEADER_WAVE;
+
+//
+typedef struct 
+{
+  char id[4] = { "strn" };          // fixed_value 'strn'
+  uint32  datalen;
+  if ( datalen % 2 )
+    char data[datalen+1];           // the RIFF pad byte is folded into the payload array
+  else
+    char data[datalen];
+} strnHEADER;
+
+//
+typedef struct 
+{
+  char id[4];                       // pattern_constraint: two ASCII digits of stream index then
+                                    //   'db'/'dc'/'wb'/'pc'/'tx' (dependency 36)
+  uint32  datalen;                  // calculated - see dependency 38: the padded sizes of every
+                                    //   chunk must sum to the movi list's size EXACTLY
+  if ( datalen % 2 )
+    char data[datalen+1];           // dependency 40: the pad byte is counted by the movi walk
+  else
+    char data[datalen];
+} genericblock;
+
+
+
+typedef struct 
+{
+  char id[4] = { "LIST" };          // fixed_value 'LIST'
+  uint32 datalen;                   // calculated: 4 + the size of every child
+  char type[4];                     // enumerated_values 'hdrl'/'strl'/'movi'/'rec '/'odml'/'INFO'
+
+  if (!Memcmp(type,"hdrl",4))
+  {
+    // dependency 2 / structure rule 2: the header list opens with the main header.
+    // template_deviations #1: the strl lists this same hdrl contains are NOT read here -
+    // the struct ends and the top-level loop picks them up as if they were siblings.
+    // The generator lays them out inside the hdrl and sizes the hdrl to cover them, so
+    // the file is conforming and this walk still lands on them.
+    avihHEADER avhi;
+  }
+  else if (!Memcmp(type,"strl",4))
+  {
+    // structure rule 4: a stream list is the fixed sequence strh, strf, strn
+    strhHEADER strh;
+
+    // Printf("->%c%c%c%c\n", strh.data.fccHandler[0], strh.data.fccHandler[1],strh.data.fccHandler[2],strh.data.fccHandler[3]);
+    // structure rule 17 / dependencies 7, 8, 9: fccType selects one of three layouts
+    if (Memcmp(strh.data.fccType, "vids", 4) == 0)
+    {
+      strfHEADER_BIH strf;
+    }
+    else if (Memcmp(strh.data.fccType, "auds", 4) == 0)
+    {
+      strfHEADER_WAVE strf;
+    }
+    else
+    {
+      strfHEADER strf;
+    }
+    // template_deviations #2: strn is optional in the specification but read
+    // unconditionally here, so the generator always writes one
+    strnHEADER strn;
+  }
+  else if (Memcmp(type,"movi",4) == 0)
+  {
+    local int32 pointer = 0;
+    local int32 stop = datalen - 4;
+    
+    //Printf("stop=%d\n", stop);
+
+    aviBlockIndex = 0;
+    do
+    {
+      aviPlantBlock();              // plant this chunk's identifier and size (dependency 38)
+      genericblock gb;
+      pointer += sizeof(gb);
+      //Printf("+%x = %d\n", gb.datalen, pointer);
+      // template_deviations #0: the original exit test is `pointer != stop`, an exact
+      // equality that can never be reached once the chunk sizes overshoot - the loop then
+      // reads chunk after chunk off the end of the file.  `<` exits on the same iteration
+      // for every file whose sizes sum exactly, and terminates instead of running away
+      // when they do not (dependencies 38, 39).
+    } while (pointer < stop);
+  }
+  else
+  {
+    // dependency 5: an unrecognised form type is swallowed whole and never descended into
+    char data[datalen-4];
+  }
+} LISTHEADER;
+
+
+// junk structure info
+typedef struct 
+{
+  char id[4] = { "JUNK" };          // fixed_value 'JUNK'
+  uint32  datalen;
+  if ( datalen % 2 )
+    char data[datalen+1];
+  else
+    char data[datalen];
+} JUNKHEADER;
+
+
+// aviindex structure info
+typedef struct 
+{
+    DWORD  ckid;                    // pattern_constraint: the identifier of the chunk it points at (dependency 32)
+    DWORD  dwFlags;                 // bitmask_constraint; AVIIF_KEYFRAME (0x10) preferred
+    DWORD  dwChunkOffset;           // calculated: measured from the 'movi' four-character code
+    DWORD  dwChunkLength;           // calculated: the genericblock.datalen it points at (dependency 33)
+} AVIINDEXENTRY;
+
+const DWORD AVIINDEXENTRYLEN = 16;
+
+typedef struct 
+{
+  char id[4] = { "idx1" };          // fixed_value 'idx1'
+  uint32  datalen;                  // calculated: an exact multiple of 16, since the count below
+                                    //   is a truncating division (dependency 34)
+  AVIINDEXENTRY data[datalen/AVIINDEXENTRYLEN];
+} idx1HEADER;
+
+// root structure info
+typedef struct xroot 
+{
+  // fixed_value with corruption_risk high on both four-character codes: these two are the
+  // only fields in the file protected by SetEvilBit rather than by a plant, so that a
+  // lookahead escape can never cost the file its signature (structure rules 0 and 16).
+  // The suppression has to be lifted again immediately: ffcompile mines the
+  // `datalen == 44` test in strfHEADER_BIH into a known value for EVERY field named
+  // datalen, so leaving the evil bit off across the one below would make any container
+  // size other than 44 unparseable.
+  local int aviEvil = SetEvilBit(false);
+  char id[4] = { "RIFF" }; // RIFF     enumerated_values 'RIFF'/'RIFX'; the generator emits 'RIFF'
+  SetEvilBit(aviEvil);
+  if (root.id[3] == 'X')
+  {
+    Printf("Motorola format\n");
+    BigEndian();
+  }
+  else
+  {
+    Printf("Intel format\n");
+    LittleEndian();
+  }
+
+  uint32  datalen;                  // calculated: the file size minus 8 (structure rules 0, 15)
+  aviEvil = SetEvilBit(false);
+  char form[4] = { "AVI " };        // fixed_value 'AVI ' - note the significant trailing space
+  SetEvilBit(aviEvil);
+
+  if (Strcmp(form, "AVI "))
+  {
+    Warning("Not a valid AVI file");
+    return -1;
+  }
+} ROOT <bgcolor=cLtGray>;
+
+//---------------------------------------------
+// Generation planner
+//
+// RIFF is a container of nested length-prefixed chunks with NO terminator
+// (meta.structure_note): every size is written before the bytes it measures, the movi
+// list's size must equal the summed padded sizes of its children EXACTLY - the walk above
+// exits on that equality - and the idx1 offsets are measured from a list that has not been
+// written yet.  The planner below decides one complete layout up front and PLANTS every
+// header byte through ffcompile's lookahead, so each size is correct the first time it is
+// written and no field ever has to be seeked back to.  A planted byte is copied back over
+// every write path in file_accessor.h, the evil-bit one included, so the plants are exact.
+//
+// The planner runs in generation only.  Its numbers are derived from a layout it chose,
+// not from the file in front of it, so replaying them while parsing a real AVI - whose
+// frames are compressed and whose chunk sizes are its own - would be meaningless, and the
+// two plants that write BACKWARDS over an already-parsed size field would fail outright.
+// With aviPlanned clear every function here returns immediately and the parse walks the
+// file exactly as the original does.
+
+const local string ReadBytesInitValues[0];   // per-call-site value sets win over mined ones
+
+local int    aviPlanned = 0;
+local char   aviPeek[512];
+local string aviOne[1];
+
+local int aviW = 16;            // frame geometry, and the pixel depth it carries
+local int aviH = 16;
+local int aviBits = 24;
+local int aviStride = 48;
+local int aviFrameLen = 768;
+local int aviFrames = 4;
+local int aviStreams = 1;
+local int aviFlags = 16;
+local int aviIdx = 1;
+local int aviJunk = 0;
+local int aviClrUsed = 0;
+local int aviStrfLen = 40;
+
+local int aviAudioCh = 2;       // WAVEFORMATEX, all of it derived from the block alignment
+local int aviAudioBits = 16;
+local int aviAudioRate = 44100;
+local int aviAudioAlign = 4;
+local int aviAudioBps = 176400;
+local int aviAudioLen = 132;
+local int aviAudioSamples = 33;
+
+local int aviStrl0Chunk = 146;  // measured sizes of every region
+local int aviStrl1Chunk = 122;
+local int aviHdrlLen = 0;
+local int aviMoviBody = 0;
+local int aviChunks = 0;
+local int aviIdxLen = 0;
+local int aviFileSize = 0;
+local int aviMoviPos = 0;
+
+local int aviTopIndex = 0;      // top-level walk state
+local int aviTopCount = 4;
+local int aviEofP = 0;
+local int aviBlockIndex = 0;
+
+// The decision menus.  Each plant picks uniformly from the set it is given and the value
+// it planted is then read back out of the buffer, so these are the generator's only
+// source of entropy.
+local string aviFlagVals[] = { "\x10\x00\x00\x00", "\x10\x00\x00\x00", "\x10\x00\x00\x00",
+                               "\x10\x01\x00\x00", "\x10\x09\x00\x00", "\x00\x00\x00\x00" };
+local string aviFrameVals[] = { "\x01\x00\x00\x00", "\x02\x00\x00\x00", "\x03\x00\x00\x00",
+                                "\x04\x00\x00\x00", "\x05\x00\x00\x00", "\x06\x00\x00\x00",
+                                "\x07\x00\x00\x00", "\x08\x00\x00\x00" };
+// dwInitialFrames is fixed at 0 (dependency 37) and rides in the same eight bytes as the
+// stream count, so structure rule 18's "1 to 2 strl lists" is planted as one decision.
+local string aviStreamVals[] = { "\x00\x00\x00\x00\x01\x00\x00\x00",
+                                 "\x00\x00\x00\x00\x01\x00\x00\x00",
+                                 "\x00\x00\x00\x00\x02\x00\x00\x00" };
+// dwWidth and dwHeight together.  The widths cover all four residues mod 4 because the
+// pixel depth rides on them - see aviPlanMain - and the odd ones exercise the row stride
+// rounding that biSizeImage depends on (dependency 20).
+local string aviGeomVals[] = {
+    "\x10\x00\x00\x00\x10\x00\x00\x00", "\x11\x00\x00\x00\x10\x00\x00\x00",
+    "\x12\x00\x00\x00\x0c\x00\x00\x00", "\x13\x00\x00\x00\x0c\x00\x00\x00",
+    "\x18\x00\x00\x00\x10\x00\x00\x00", "\x19\x00\x00\x00\x0c\x00\x00\x00",
+    "\x1a\x00\x00\x00\x10\x00\x00\x00", "\x1b\x00\x00\x00\x0c\x00\x00\x00",
+    "\x20\x00\x00\x00\x18\x00\x00\x00", "\x21\x00\x00\x00\x10\x00\x00\x00",
+    "\x22\x00\x00\x00\x10\x00\x00\x00", "\x23\x00\x00\x00\x0c\x00\x00\x00" };
+
+// SPrintf writes through `s = res`, which stops at the first NUL, so a computed byte
+// cannot be formatted directly when it is zero; the literal covers that case.
+string aviChr( int b )
+{
+    local string r;
+    if( b == 0 )
+        r = "\x00";
+    else
+        SPrintf( r, "%c", b );
+    return r;
+}
+
+string aviLE32( int v )
+{
+    return aviChr( v & 0xff ) + aviChr( (v >> 8) & 0xff ) + aviChr( (v >> 16) & 0xff ) + aviChr( (v >> 24) & 0xff );
+}
+
+string aviLE16( int v )
+{
+    return aviChr( v & 0xff ) + aviChr( (v >> 8) & 0xff );
+}
+
+// Plant one byte image.  Every plant is a single ReadBytes call with the preferred and
+// possible sets equal and p = 1.0, which writes the chosen value with the evil bit
+// suppressed for that call only.
+void aviPlant( int64 pos, string img )
+{
+    aviOne[0] = img;
+    ReadBytes( aviPeek, pos, Strlen( img ), aviOne, aviOne, 1.0 );
+}
+
+// The complete strl list for the video stream, as one contiguous byte image.
+string aviVideoStrl()
+{
+    local string s;
+    s = "LIST" + aviLE32( aviStrl0Chunk - 8 ) + "strl";
+    s = s + "strh" + aviLE32( 56 );
+    s = s + "vids" + "DIB " + aviLE32( 0 ) + aviLE32( 0 ) + aviLE32( 0 )
+          + aviLE32( 1 ) + aviLE32( 25 ) + aviLE32( 0 ) + aviLE32( aviFrames )
+          + aviLE32( aviFrameLen ) + aviLE32( 10000 ) + aviLE32( 0 )
+          + aviLE32( 0 ) + aviLE32( 0 );
+    s = s + "strf" + aviLE32( aviStrfLen );
+    s = s + aviLE32( 40 ) + aviLE32( aviW ) + aviLE32( aviH ) + aviLE16( 1 ) + aviLE16( aviBits )
+          + aviLE32( 0 ) + aviLE32( aviFrameLen ) + aviLE32( 0 ) + aviLE32( 0 )
+          + aviLE32( aviClrUsed ) + aviLE32( 0 );
+    if( aviBits == 8 )
+        s = s + "\x10\x20\x30\x00";      // one RGBQUAD, rgbReserved zero
+    s = s + "strn" + aviLE32( 13 ) + "video stream" + "\x00" + "\x00";
+    return s;
+}
+
+// The complete strl list for the PCM audio stream.
+string aviAudioStrl()
+{
+    local string s;
+    s = "LIST" + aviLE32( aviStrl1Chunk - 8 ) + "strl";
+    s = s + "strh" + aviLE32( 56 );
+    s = s + "auds" + "\x01\x00\x00\x00" + aviLE32( 0 ) + aviLE32( 0 ) + aviLE32( 0 )
+          + aviLE32( aviAudioAlign ) + aviLE32( aviAudioBps ) + aviLE32( 0 )
+          + aviLE32( aviAudioSamples ) + aviLE32( aviAudioLen ) + aviLE32( 10000 )
+          + aviLE32( aviAudioAlign ) + aviLE32( 0 ) + aviLE32( 0 );
+    s = s + "strf" + aviLE32( 18 );
+    s = s + aviLE16( 1 ) + aviLE16( aviAudioCh ) + aviLE32( aviAudioRate )
+          + aviLE32( aviAudioBps ) + aviLE16( aviAudioAlign ) + aviLE16( aviAudioBits ) + aviLE16( 0 );
+    s = s + "strn" + aviLE32( 12 ) + "sound track" + "\x00";
+    return s;
+}
+
+// The whole index, rebuilt from the layout rather than recorded while writing it:
+// one entry per movi chunk, in order, offsets measured from the 'movi' four-character
+// code (structure rules 10, 11 and dependencies 32, 33).
+string aviIdxImage()
+{
+    local string s;
+    local int k = 0;
+    local int off = 4;
+    local int ln = 0;
+    s = "idx1" + aviLE32( aviIdxLen );
+    while( k < aviChunks )
+    {
+        if( aviStreams == 2 && (k % 2) == 1 )
+        {
+            ln = aviAudioLen;
+            s = s + "01wb";
+        }
+        else
+        {
+            ln = aviFrameLen;
+            s = s + "00db";
+        }
+        s = s + aviLE32( 16 ) + aviLE32( off ) + aviLE32( ln );
+        off = off + 8 + ln + (ln % 2);
+        k++;
+    }
+    return s;
+}
+
+// Decide the whole layout, then plant the rest of the main header and the two size fields
+// that were already written before their values could be known.
+// `base` is where MainAVIHeader begins - always offset 32 in a generated file, since
+// everything before it is fixed-width.  It is passed in rather than read from FTell()
+// because this runs from aviPlantTop() below, twenty bytes before the header it fills in.
+void aviPlanMain( int64 base )
+{
+    if( !aviPlanned )
+        return;
+
+    // --- the frame geometry.  The pixel depth rides on the width because AVIMAINHEADER
+    //     has no free field to carry it and the format chunk that does is 140 bytes away -
+    //     a forward plant that far would read past the end of a short file while parsing.
+    //     24 is the preferred_value and takes one of the four residues (dependency 17).
+    ReadBytes( aviPeek, base + 32, 8, aviGeomVals, aviGeomVals, 1.0 );
+    aviW = ReadUInt( base + 32 );
+    aviH = ReadUInt( base + 36 );
+    // generation_range for dwWidth/biWidth and dwHeight/biHeight.  The clamps are the
+    // safety net under the 1-in-32768 lookahead escape: without them one bad draw here
+    // is a multi-megabyte frame (template_deviations #4 has the same hazard in reverse).
+    if( aviW < 1 || aviW > 64 )
+        aviW = 16;
+    if( aviH < 1 || aviH > 64 )
+        aviH = 16;
+    if( (aviW % 4) == 0 )
+        aviBits = 24;
+    else if( (aviW % 4) == 1 )
+        aviBits = 32;
+    else if( (aviW % 4) == 2 )
+        aviBits = 16;
+    else
+        aviBits = 8;
+
+    // dependency 19: a direct-colour depth has no colour table and a bare 40-byte format
+    // chunk; the palettised depth takes the one entry the template models, which is the
+    // only thing that makes its datalen == 44 branch reachable (dependency 22)
+    if( aviBits == 8 )
+    {
+        aviClrUsed = 1;
+        aviStrfLen = 44;
+    }
+    else
+    {
+        aviClrUsed = 0;
+        aviStrfLen = 40;
+    }
+    aviStride = ( (aviW * aviBits + 31) / 32 ) * 4;
+    aviFrameLen = aviH * aviStride;              // dependency 20
+
+    // --- the flags, which decide whether an index follows (dependencies 29, 30)
+    ReadBytes( aviPeek, base + 12, 4, aviFlagVals, aviFlagVals, 1.0 );
+    aviFlags = ReadUInt( base + 12 );
+    if( aviFlags & 0x10 )
+        aviIdx = 1;
+    else
+        aviIdx = 0;
+
+    // --- the frame count and the stream count
+    ReadBytes( aviPeek, base + 16, 4, aviFrameVals, aviFrameVals, 1.0 );
+    aviFrames = ReadUInt( base + 16 );
+    ReadBytes( aviPeek, base + 20, 8, aviStreamVals, aviStreamVals, 1.0 );
+    aviStreams = ReadUInt( base + 24 );
+    // generation_range: 1 to 8 frames and structure rule 18's 1 to 2 stream lists.  Both
+    // multiply the file size directly, so both are clamped for the same reason as above.
+    if( aviFrames < 1 || aviFrames > 8 )
+        aviFrames = 1;
+    if( aviStreams < 1 || aviStreams > 2 )
+        aviStreams = 1;
+
+    // --- a JUNK chunk one file in three; structure rule 12 allows it anywhere between
+    //     top-level chunks and real writers put it just before the movi list
+    if( (aviH % 3) == 0 )
+        aviJunk = 1;
+    else
+        aviJunk = 0;
+
+    // --- the PCM audio parameters.  Derived rather than planted: WAVEFORMATEX sits inside
+    //     the second strl list, which is emitted as one contiguous image, so a decision
+    //     plant there would have to split it.  dependency 27 fixes the last two from the
+    //     first three and dependency 28 restricts the depth to whole bytes.
+    aviAudioCh = 1 + (aviFrames % 2);
+    if( (aviW % 2) == 1 )
+        aviAudioBits = 8;
+    else
+        aviAudioBits = 16;
+    if( (aviH % 3) == 0 )
+        aviAudioRate = 8000;
+    else if( (aviH % 3) == 1 )
+        aviAudioRate = 22050;
+    else
+        aviAudioRate = 44100;
+    aviAudioAlign = aviAudioCh * aviAudioBits / 8;
+    aviAudioBps = aviAudioRate * aviAudioAlign;
+    aviAudioLen = aviAudioAlign * 33;            // whole blocks, and odd when the block is one byte
+    aviAudioSamples = aviFrames * 33;
+
+    // --- every measured size follows from the decisions above
+    aviStrl0Chunk = 106 + aviStrfLen;
+    aviStrl1Chunk = 122;
+    aviHdrlLen = 4 + 64 + aviStrl0Chunk;
+    if( aviStreams == 2 )
+        aviHdrlLen = aviHdrlLen + aviStrl1Chunk;
+
+    aviChunks = aviFrames;
+    aviMoviBody = aviFrames * (8 + aviFrameLen);
+    if( aviStreams == 2 )
+    {
+        aviChunks = aviFrames * 2;
+        aviMoviBody = aviMoviBody + aviFrames * (8 + aviAudioLen + (aviAudioLen % 2));
+    }
+    aviIdxLen = 16 * aviChunks;                  // dependency 34: an exact multiple of 16
+
+    aviFileSize = 12 + (8 + aviHdrlLen) + (8 + 4 + aviMoviBody);
+    if( aviJunk )
+        aviFileSize = aviFileSize + 8 + 64;
+    if( aviIdx )
+        aviFileSize = aviFileSize + 8 + aviIdxLen;
+
+    aviTopCount = 2 + aviStreams + aviJunk + aviIdx;
+
+    aviMoviPos = 12 + 8 + aviHdrlLen + 8;
+    if( aviJunk )
+        aviMoviPos = aviMoviPos + 8 + 64;
+
+    // --- the rest of the main header
+    aviPlant( base, aviLE32( 1000000 / 25 ) + aviLE32( aviFrameLen * 25 ) + aviLE32( 0 ) );
+    aviPlant( base + 28, aviLE32( aviFrameLen ) );
+    aviPlant( base + 40, aviLE32( 0 ) + aviLE32( 0 ) + aviLE32( 0 ) + aviLE32( 0 ) );
+
+    // --- the two sizes that were written before they could be computed.  Both are plants
+    //     rather than the FSeek-and-rewrite backpatch: a plant needs no SetEvilBit(false),
+    //     so nothing here can make the parse direction reject a file it used to accept.
+    aviPlant( 4, aviLE32( aviFileSize - 8 ) );   // ROOT.datalen, structure rules 0 and 14
+    aviPlant( 16, aviLE32( aviHdrlLen ) );       // the hdrl LIST, which covers the strl lists
+}
+
+// Plant the next top-level chunk before the dispatch below peeks at its identifier.
+void aviPlantTop()
+{
+    if( !aviPlanned )
+        return;
+
+    if( aviTopIndex == 0 )
+    {
+        // the hdrl list and the avih chunk.  Offsets 16..19 are skipped for the same
+        // reason as offsets 4..7 above: the hdrl size covers the strl lists, whose
+        // shapes aviPlanMain is about to choose.
+        local string h = "hdrl";
+        aviPlant( FTell(), "LIST" );
+        aviPlant( FTell() + 8, h + "avih" + aviLE32( 56 ) );
+        aviPlanMain( FTell() + 20 );
+    }
+    else if( aviTopIndex <= aviStreams )
+    {
+        if( aviTopIndex == 1 )
+            aviPlant( FTell(), aviVideoStrl() );
+        else
+            aviPlant( FTell(), aviAudioStrl() );
+    }
+    else if( aviJunk && aviTopIndex == aviStreams + 1 )
+    {
+        aviPlant( FTell(), "JUNK" + aviLE32( 64 ) );
+    }
+    else if( aviTopIndex == aviStreams + 1 + aviJunk )
+    {
+        aviPlant( FTell(), "LIST" + aviLE32( 4 + aviMoviBody ) + "movi" );
+    }
+    else
+    {
+        aviPlant( FTell(), aviIdxImage() );
+    }
+}
+
+// Plant one movi chunk header.  Video and audio alternate when both streams are present,
+// and the two ASCII digits are the stream index the identifier belongs to (dependency 36).
+void aviPlantBlock()
+{
+    if( !aviPlanned )
+        return;
+
+    if( aviStreams == 2 && (aviBlockIndex % 2) == 1 )
+        aviPlant( FTell(), "01wb" + aviLE32( aviAudioLen ) );
+    else
+        aviPlant( FTell(), "00db" + aviLE32( aviFrameLen ) );
+    aviBlockIndex++;
+}
+
+//---------------------------------------------
+
+local char nheader[4];
+
+// The planner owns the layout in generation only; see the note above aviPlanMain.
+// aviEofP of -1 makes FEof's threshold unreachable, so the walk below is bounded by the
+// planned chunk count rather than by a 1-in-8 coin flip at every chunk boundary; a value
+// of 0 leaves FEof exact, which is what the parse direction needs (structure rule 7).
+if (IsParsing() == 0)   // pfp cannot fold `!IsParsing()`; the comparison form emits the same C++
+{
+  aviPlanned = 1;
+  aviEofP = -1;
+  // Offsets 0..11 need no plant: both four-character codes carry their own value set
+  // under SetEvilBit(false), and ROOT.datalen at 4..7 is deliberately left free because
+  // a byte already marked in the lookahead bitmap can never be re-planted - its value is
+  // only knowable once aviPlanMain has chosen the layout, and is planted from there.
+}
+
+ROOT root;
+
+while (!FEof(aviEofP))
+{
+  aviPlantTop();
+  ReadBytes(nheader,FTell(), 4);
+
+  if (Memcmp(nheader,"LIST",4) == 0)
+  {
+    LISTHEADER list;
+  }
+  else if (Memcmp(nheader, "JUNK",4) == 0)
+  {
+    JUNKHEADER junk;
+  }
+  else if (Memcmp(nheader, "idx1",4) == 0)
+  {
+    idx1HEADER idx1;
+  }
+  else
+  {
+    // structure rule 14: at every top-level position the next four bytes must be one of
+    // these three identifiers, and there is nothing to recover from if they are not
+    if (!FEof())
+      Printf("unknown chunk: %c%c%c%c", nheader[0],nheader[1],nheader[2],nheader[3]);
+    return -1;
+  }
+
+  aviTopIndex++;
+  if (aviEofP != 0 && aviTopIndex >= aviTopCount)
+    aviEofP = 1;                    // the planned last chunk has been written
+}

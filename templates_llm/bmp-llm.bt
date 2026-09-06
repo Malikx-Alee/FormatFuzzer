@@ -1,0 +1,375 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: BMP.bt
+//    Author: SweetScape Software
+//   Version: 2.3
+//   Purpose: Parse BMP image files.
+//  Category: Image
+// File Mask: *.bmp
+//  ID Bytes: 42 4D //BM
+//   History:  
+//   2.3   2016-02-26 SweetScape: Allow negative heights.
+//   2.2   2015-10-13 SweetScape: Updated header for repository submission.
+//   2.1   SweetScape: Bug fix for ReadRGBQUAD function.
+//   2.0   SweetScape: Added read functions.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at
+//  https://en.wikipedia.org/wiki/BMP_file_format
+//------------------------------------------------
+
+// RGBQUAD serves two incompatible purposes (template_deviations #10): as a
+// colour table entry its fourth byte is reserved and must be zero, as a 32-bit
+// pixel the same byte is an alpha channel and is free.  bmpInPalette selects
+// which rule applies; see dependencies 31 and 32.
+local int bmpInPalette = 1;
+
+// Define structures used in BMP files
+
+typedef struct {   // bmfh
+    CHAR    bfType[2] = { "BM" };            // fixed_value: the only signature this template accepts
+    DWORD   bfSize <min=58, max=65536>;      // calculated_value: total file size, planted by bmpPlan()
+    WORD    bfReserved1 = { 0 };             // fixed_value: reserved, must be zero
+    WORD    bfReserved2 = { 0 };             // fixed_value: reserved, must be zero
+    DWORD   bfOffBits <min=54, max=1078>;    // calculated_value: 14 + biSize + 4 * palette entries
+} BITMAPFILEHEADER;
+
+typedef struct {    // bmih
+    DWORD   biSize = { 40 };                 // calculated_value/fixed_result: only 40 keeps the parse in sync
+    LONG    biWidth <min=1, max=64>;         // generation_range; spec allows up to 2^31-1
+    LONG    biHeight <min=1, max=64>;        // generation_range for the magnitude; the sign selects row order
+    WORD    biPlanes = { 1 };                // fixed_value: no other plane count has ever been defined
+    WORD    biBitCount;                      // enumerated_values, planted by bmpPlan()
+    DWORD   biCompression;                   // enumerated_values, planted by bmpPlan()
+    DWORD   biSizeImage <min=0, max=65536>;  // calculated_value, planted by bmpPlan()
+    LONG    biXPelsPerMeter <min=0, max=20000>;  // generation_range; 2835 is 72 dpi
+    LONG    biYPelsPerMeter <min=0, max=20000>;  // generation_range; conventionally equal to X
+    DWORD   biClrUsed <min=0, max=256>;      // calculated_value: palette entry count, planted by bmpPlan()
+    DWORD   biClrImportant <min=0, max=256>; // calculated_value: 0 means all entries are important
+} BITMAPINFOHEADER;
+
+typedef struct {   // rgbq
+    UBYTE   rgbBlue;
+    UBYTE   rgbGreen;
+    UBYTE   rgbRed;
+    // dependency 31 / 32: reserved-must-be-zero follows the POSITION, not the type
+    if( bmpInPalette )
+        UBYTE   rgbReserved = { 0 };         // colour table entry: reserved, must be zero
+    else
+        UBYTE   rgbReserved;                 // 32-bit pixel: conventionally alpha, free
+} RGBQUAD <read=ReadRGBQUAD>;
+
+typedef struct {   // rgbt
+    UBYTE   rgbBlue;
+    UBYTE   rgbGreen;
+    UBYTE   rgbRed;
+} RGBTRIPLE <read=ReadRGBTRIPLE>;
+
+//---------------------------------------------
+// Custom read functions for color types - this allows the
+//  color to be displayed without having to open up the structure.
+
+string ReadRGBQUAD( RGBQUAD &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X%02X", a.rgbReserved, a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+string ReadRGBTRIPLE( RGBTRIPLE &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X", a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+//---------------------------------------------
+// Generation planner
+//
+// BMP is marker-free (meta.structure_note): every region is located purely by
+// position and by length fields that describe bytes written much later -
+// bfSize is the size of the whole file and bfOffBits points past a colour table
+// whose size depends on biBitCount, which is emitted 18 bytes after bfOffBits.
+// bmpPlan() resolves that by PLANTING all 54 header bytes through ffcompile's
+// lookahead before any of them is emitted.  A planted byte is copied back over
+// every write path in file_accessor.h, the evil-bit one included, so each plant
+// is exact during generation; during parsing the same call merely reads the
+// file, so the field declarations above keep the original's parse behaviour.
+
+const local string ReadBytesInitValues[0];   // per-call-site value sets win over mined ones
+
+local char   bmpPeek[32];
+local string bmpOne[1];                      // single-entry menu for a computed plant
+
+local uint   bmpComp     = 0;
+local ushort bmpBits     = 24;
+local int    bmpWidth    = 1;
+local int    bmpHeight   = 1;
+local int    bmpRows     = 1;
+local int    bmpClrUsed  = 0;
+local int    bmpOffBits  = 54;
+local int    bmpBytesPerLine = 3;
+local int    bmpPad      = 1;
+local int    bmpImage    = 0;
+local int    bmpFileSize = 54;
+
+// Constant plants.  The literals are little-endian byte images; each menu doubles
+// as this generator's entropy source, because ReadBytes picks uniformly from the
+// set it is given and the value it planted is then read back out of the buffer.
+local string bmpZero1[] = { "\x00" };
+local string bmpZero2[] = { "\x00\x00" };
+local string bmpZero3[] = { "\x00\x00\x00" };
+
+// biPlanes, biBitCount and biCompression, planted together as the eight bytes at
+// offsets 26..33, so the table below IS the set of legal (bit depth, compression)
+// pairs.  biPlanes is 1 in every row (dependency 33).  Dependencies 6 and 7 tie
+// BI_RLE8 to 8 bpp and BI_RLE4 to 4 bpp.  BI_BITFIELDS (3), BI_ALPHABITFIELDS (6),
+// BI_JPEG (4) and BI_PNG (5) have no row here: dependencies 8, 9 and 10 require
+// three or four DWORD channel masks or a complete embedded JPEG/PNG datastream,
+// and this template has a field for neither (structure rule 12,
+// template_deviations #1).  16 bpp has no row either - it has no pixel-row branch
+// at all (template_deviations #2) and it falls into the colour table branch where
+// `1 << 16` allocates a 256 KB palette (template_deviations #3, dependency 23).
+// BI_RGB is weighted 9/11 and 24 bpp is the preferred_value.
+local string bmpDepthComp[] = {
+    "\x01\x00\x18\x00\x00\x00\x00\x00",   // 24 bpp, BI_RGB
+    "\x01\x00\x18\x00\x00\x00\x00\x00",
+    "\x01\x00\x18\x00\x00\x00\x00\x00",
+    "\x01\x00\x20\x00\x00\x00\x00\x00",   // 32 bpp, BI_RGB
+    "\x01\x00\x20\x00\x00\x00\x00\x00",
+    "\x01\x00\x08\x00\x00\x00\x00\x00",   //  8 bpp, BI_RGB
+    "\x01\x00\x08\x00\x00\x00\x00\x00",
+    "\x01\x00\x04\x00\x00\x00\x00\x00",   //  4 bpp, BI_RGB
+    "\x01\x00\x01\x00\x00\x00\x00\x00",   //  1 bpp, BI_RGB
+    "\x01\x00\x08\x00\x01\x00\x00\x00",   //  8 bpp, BI_RLE8  (dependency 6)
+    "\x01\x00\x04\x00\x02\x00\x00\x00" }; //  4 bpp, BI_RLE4  (dependency 7)
+
+// biWidth and biHeight magnitudes, 1..64 (generation_range for both).
+local string bmpDim[] = {
+    "\x01\x00\x00\x00", "\x02\x00\x00\x00", "\x03\x00\x00\x00", "\x04\x00\x00\x00", "\x05\x00\x00\x00", "\x06\x00\x00\x00",
+    "\x07\x00\x00\x00", "\x08\x00\x00\x00", "\x09\x00\x00\x00", "\x0a\x00\x00\x00", "\x0b\x00\x00\x00", "\x0c\x00\x00\x00",
+    "\x0d\x00\x00\x00", "\x0e\x00\x00\x00", "\x0f\x00\x00\x00", "\x10\x00\x00\x00", "\x11\x00\x00\x00", "\x12\x00\x00\x00",
+    "\x13\x00\x00\x00", "\x14\x00\x00\x00", "\x15\x00\x00\x00", "\x16\x00\x00\x00", "\x17\x00\x00\x00", "\x18\x00\x00\x00",
+    "\x19\x00\x00\x00", "\x1a\x00\x00\x00", "\x1b\x00\x00\x00", "\x1c\x00\x00\x00", "\x1d\x00\x00\x00", "\x1e\x00\x00\x00",
+    "\x1f\x00\x00\x00", "\x20\x00\x00\x00", "\x21\x00\x00\x00", "\x22\x00\x00\x00", "\x23\x00\x00\x00", "\x24\x00\x00\x00",
+    "\x25\x00\x00\x00", "\x26\x00\x00\x00", "\x27\x00\x00\x00", "\x28\x00\x00\x00", "\x29\x00\x00\x00", "\x2a\x00\x00\x00",
+    "\x2b\x00\x00\x00", "\x2c\x00\x00\x00", "\x2d\x00\x00\x00", "\x2e\x00\x00\x00", "\x2f\x00\x00\x00", "\x30\x00\x00\x00",
+    "\x31\x00\x00\x00", "\x32\x00\x00\x00", "\x33\x00\x00\x00", "\x34\x00\x00\x00", "\x35\x00\x00\x00", "\x36\x00\x00\x00",
+    "\x37\x00\x00\x00", "\x38\x00\x00\x00", "\x39\x00\x00\x00", "\x3a\x00\x00\x00", "\x3b\x00\x00\x00", "\x3c\x00\x00\x00",
+    "\x3d\x00\x00\x00", "\x3e\x00\x00\x00", "\x3f\x00\x00\x00", "\x40\x00\x00\x00" };
+
+// Top-down bitmaps: a negative biHeight in two's complement.  Dependency 16
+// allows top-down only for BI_RGB and BI_BITFIELDS, so bmpPlan() offers this menu
+// only when the compression method is BI_RGB (dependency 15 is its mirror image).
+local string bmpNegDim[] = { "\xff\xff\xff\xff", "\xfe\xff\xff\xff", "\xfc\xff\xff\xff",
+                             "\xf8\xff\xff\xff", "\xf0\xff\xff\xff", "\xe0\xff\xff\xff",
+                             "\xd0\xff\xff\xff", "\xc0\xff\xff\xff" };
+
+// The RLE geometry is pinned to 8 x 4 so the fixed streams below decode to
+// exactly biWidth * biHeight pixels (structure rule 11).
+local string bmpRleWidth[]  = { "\x08\x00\x00\x00" };
+local string bmpRleHeight[] = { "\x04\x00\x00\x00" };
+
+// Valid RLE payloads: four encoded runs, three of them closed by an end-of-line
+// escape 00 00, then the mandatory end-of-bitmap marker 00 01 (dependency 17,
+// structure rule 11).  An RLE8 run is [pixel count, palette index]; an RLE4 run is
+// [pixel count, two packed nibbles].  Every index used is inside the full palette
+// the header declares.
+local string bmpRle8[] = { "\x08\x05\x00\x00\x08\x06\x00\x00\x08\x07\x00\x00\x08\x08\x00\x01" };
+local string bmpRle4[] = { "\x08\x12\x00\x00\x08\x34\x00\x00\x08\x56\x00\x00\x08\x78\x00\x01" };
+
+// SPrintf writes through `s = res`, which stops at the first NUL, so a computed
+// byte cannot be formatted directly when it is zero; the literal covers that case.
+string bmpChr( int b )
+{
+    local string r;
+    if( b == 0 )
+        r = "\x00";
+    else
+        SPrintf( r, "%c", b );
+    return r;
+}
+
+// Little-endian byte image of a computed DWORD, for the length fields that have no
+// small constant set: bfSize, bfOffBits, biSizeImage and biClrUsed.
+string bmpLE32( int v )
+{
+    return bmpChr( v & 0xff ) + bmpChr( (v >> 8) & 0xff ) + bmpChr( (v >> 16) & 0xff ) + bmpChr( (v >> 24) & 0xff );
+}
+
+// Plant one runtime-computed byte string.  Every plant is a single ReadBytes call
+// with the preferred and possible sets equal and p = 1.0, which writes the chosen
+// value with the evil bit suppressed for that call only.
+void bmpPlant( int64 pos, string img )
+{
+    bmpOne[0] = img;
+    ReadBytes( bmpPeek, pos, Strlen( img ), bmpOne, bmpOne, 1.0 );
+}
+
+void bmpPlan()
+{
+    // --- biPlanes, biBitCount, biCompression at offsets 26..33.  Read forward
+    //     first: the pair decides the whole geometry, yet biCompression sits 12
+    //     bytes AFTER biWidth in the file and biBitCount 10 bytes after it.
+    ReadBytes( bmpPeek, 26, 8, bmpDepthComp, bmpDepthComp, 1.0 );
+    bmpBits = ReadUShort( 28 );
+    bmpComp = ReadUInt( 30 );
+
+    // --- biWidth at offset 18.  Bounded at 64 so biWidth * biBitCount stays far
+    //     inside 32 bits (template_deviations #7) and a row is at most 256 pixel
+    //     bytes (template_deviations #5); the field is a signed LONG used as a raw
+    //     array bound three times, so it must never be left free.
+    if( bmpComp == 0 )
+        ReadBytes( bmpPeek, 18, 4, bmpDim, bmpDim, 1.0 );
+    else
+        ReadBytes( bmpPeek, 18, 4, bmpRleWidth, bmpRleWidth, 1.0 );
+    bmpWidth = ReadUByte( 18 );
+
+    // --- biHeight at offset 22.  Its sign is the row order: positive is bottom-up
+    //     (structure rule 9), negative is top-down.  One BI_RGB width in eight
+    //     takes the top-down menu - the width is the only entropy already on the
+    //     file at this point, and it is independent of the height magnitude.
+    if( bmpComp != 0 )
+        ReadBytes( bmpPeek, 22, 4, bmpRleHeight, bmpRleHeight, 1.0 );
+    else if( (bmpWidth % 8) == 0 )
+        ReadBytes( bmpPeek, 22, 4, bmpNegDim, bmpNegDim, 1.0 );
+    else
+        ReadBytes( bmpPeek, 22, 4, bmpDim, bmpDim, 1.0 );
+    bmpHeight = ReadInt( 22 );
+    if( bmpHeight < 0 )
+        bmpRows = -bmpHeight;
+    else
+        bmpRows = bmpHeight;
+
+    // --- the colour table entry count.  Structure rule 5: set biClrUsed
+    //     explicitly rather than leaning on the `1 << biBitCount` fallback.  The
+    //     FULL palette is always emitted, which makes dependency 24 - every pixel
+    //     index must address an entry that exists - true for any pixel byte the
+    //     generator can produce, at 1, 4 and 8 bits alike.  Dependency 1 requires
+    //     a table at those depths; dependency 2 and structure rule 4 forbid one at
+    //     24 and 32, where the template's guard skips the region entirely.
+    if( bmpBits <= 8 )
+        bmpClrUsed = 1 << bmpBits;
+    else
+        bmpClrUsed = 0;
+    bmpOffBits = 54 + 4 * bmpClrUsed;
+
+    // --- the row geometry.  Repeated here because bfSize has to be written before
+    //     the template reaches its own copy of this arithmetic at file scope.
+    bmpBytesPerLine = ( bmpWidth * bmpBits + 7 ) / 8;
+    bmpPad = 4 - ( bmpBytesPerLine % 4 );
+    if( bmpPad == 4 )
+        bmpPad = 0;
+    if( bmpComp == 0 )
+        bmpImage = bmpRows * ( bmpBytesPerLine + bmpPad );
+    else
+        bmpImage = 16;                       // the fixed RLE stream planted below
+    bmpFileSize = bmpOffBits + bmpImage;
+
+    // --- offsets 0..17 in one plant: the whole file header plus biSize.
+    //     bfSize is dependency 28 (bfOffBits + the pixel byte count) and structure
+    //     rule 13 (nothing follows the pixel data); bfOffBits is dependency 27,
+    //     which the template itself never checks (template_deviations #8); biSize
+    //     must be 40 or the 40-byte layout the template reads desynchronises from
+    //     the header the field describes (dependency 29, template_deviations #0).
+    bmpPlant( 0, "BM" + bmpLE32( bmpFileSize ) + "\x00\x00\x00\x00" + bmpLE32( bmpOffBits ) + bmpLE32( 40 ) );
+
+    // --- biSizeImage at offset 34.  Dependency 11 forbids zero for a compressed
+    //     bitmap.  For BI_RGB dependencies 12 and 26 allow the sentinel 0 or
+    //     exactly the row geometry and nothing else, so alternate on the parity of
+    //     the height rather than draw an independent third value.
+    if( bmpComp != 0 )
+        bmpPlant( 34, bmpLE32( bmpImage ) );
+    else if( (bmpHeight & 1) != 0 )
+        bmpPlant( 34, bmpLE32( 0 ) );
+    else
+        bmpPlant( 34, bmpLE32( bmpImage ) );
+
+    // --- biClrUsed and biClrImportant at offsets 46..53.  Dependency 5 caps the
+    //     important count at the entry count; 0 is its sentinel for "all of them".
+    bmpPlant( 46, bmpLE32( bmpClrUsed ) + "\x00\x00\x00\x00" );
+}
+
+//---------------------------------------------
+
+// Define the headers
+LittleEndian(); 
+SetBackColor( cLtGray );
+bmpPlan();                                   // plant the 54-byte header region
+BITMAPFILEHEADER bmfh;
+BITMAPINFOHEADER bmih;
+
+// Check for header
+if( bmfh.bfType != "BM" )
+{
+    Warning( "File is not a bitmap. Template stopped." );
+    return -1;
+}
+
+// Define the color table
+if( (bmih.biBitCount != 24) && (bmih.biBitCount != 32) )
+{
+    SetBackColor( cLtAqua );
+    bmpInPalette = 1;                        // dependency 31: rgbReserved must be zero here
+    if( bmih.biClrUsed > 0 )
+        RGBQUAD aColors[ bmih.biClrUsed ];
+    else
+        RGBQUAD aColors[ 1 << bmih.biBitCount ];
+}
+
+// Define the bytes of the data
+SetBackColor( cNone );
+bmpInPalette = 0;                            // dependency 32: past the palette rgbReserved is alpha
+if( bmih.biCompression > 0 )
+{
+    // Bytes are compressed
+    // structure rule 11: the stream must end with the end-of-bitmap marker 00 01
+    // and decode to exactly biWidth * biHeight pixels, so it is planted whole
+    // rather than left as uniform random bytes.
+    if( bmih.biCompression == 1 )
+        ReadBytes( bmpPeek, FTell(), 16, bmpRle8, bmpRle8, 1.0 );
+    else if( bmih.biCompression == 2 )
+        ReadBytes( bmpPeek, FTell(), 16, bmpRle4, bmpRle4, 1.0 );
+    if( bmih.biSizeImage > 0 )
+        UBYTE rleData[ bmih.biSizeImage ];
+    else
+        UBYTE rleData[ bmfh.bfSize - FTell() ];
+}
+else
+{
+    // Calculate bytes per line and padding required
+    local int bytesPerLine = ( bmih.biWidth * bmih.biBitCount + 7 ) / 8;
+    local int padding      = 4 - (bytesPerLine % 4);
+    if( padding == 4 )
+        padding = 0;
+
+    // Define each line of the image
+    struct BITMAPLINE {
+
+        // Define color data
+        if( bmih.biBitCount < 8 )
+             UBYTE     imageData[ bytesPerLine ];
+        else if( bmih.biBitCount == 8 )
+             UBYTE     colorIndex[ bmih.biWidth ];
+        else if( bmih.biBitCount == 24 )
+             RGBTRIPLE colors[ bmih.biWidth ];
+        else if( bmih.biBitCount == 32 )
+             RGBQUAD   colors[ bmih.biWidth ];
+
+        // Pad if necessary        
+        if( padding != 0 ) {
+             // fixed_value: the pad bytes are conventionally zero.  ffcompile mines
+             // array value sets only from == comparisons, so the set is applied by
+             // planting the 1 to 3 bytes instead (array_length_range 0..3).
+             if( padding == 1 )
+                  ReadBytes( bmpPeek, FTell(), 1, bmpZero1, bmpZero1, 1.0 );
+             else if( padding == 2 )
+                  ReadBytes( bmpPeek, FTell(), 2, bmpZero2, bmpZero2, 1.0 );
+             else
+                  ReadBytes( bmpPeek, FTell(), 3, bmpZero3, bmpZero3, 1.0 );
+             UBYTE padBytes[ padding ];
+        }
+
+    } lines[ (bmih.biHeight < 0) ? -bmih.biHeight : bmih.biHeight] <optimize=true>;
+} 

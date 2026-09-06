@@ -1,0 +1,711 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: MIDI.bt
+//   Authors: Jack Andersen
+//   Version: 1.2
+//   Purpose: General MIDI sound file template. Complete with 
+//            delta-time and BPM evaluation into local variables. 
+//  Category: Audio
+// File Mask: *.mid
+//  ID Bytes: 4D 54 68 64 //MThd
+//   History: 
+//   1.2   2016-05-17 J Andersen: Correctly interpret unset status-bit as repeat message.
+//   1.1   2016-02-12 SweetScape Software: Updated header for repository submission.
+//   1.0   J Andersen: Initial release.
+//------------------------------------------------
+//
+// FormatFuzzer generative rewrite of templates_originals/midi-orig.bt.
+// Every edit implements a rule from
+// llm_learned_specification/llm_reterived_constraints_midi-llm_opus5.json and is
+// tagged with that rule's identifier: Cxx = constraints entry, Dnn =
+// dependencies[nn], Snn = structure[nn], DEVnn = template_deviations[nn].
+// The parse direction is preserved throughout - the field declarations the
+// original reads are unchanged in shape, and every value set steers generation
+// only, so a real file whose bytes fall outside a set is read back unconstrained.
+//------------------------------------------------
+
+BigEndian();
+// DEV07: `uint m_usecPerQuarterNote : 24` is a 24-bit bitfield of a uint, so with
+// 010's default padded bitfields it claims the storage of a whole uint - four
+// bytes - and leaves eight bits pending that the runtime only flushes on the next
+// write.  The original compensates for the extra byte with FSeek(FTell() - 1)
+// further down, which works but leaves FTell() reporting a position four bytes
+// behind reality until the flush happens; every lookahead below is placed by
+// FTell(), so they would all land on already-written bytes.  Disabling padding
+// makes the 24-bit field occupy exactly the three bytes the format defines, which
+// is what the specification says and what the seek was emulating.  The net effect
+// on a parse is identical: three bytes consumed either way.
+BitfieldDisablePadding();
+
+//------------------------------------------------------------------------------
+// FormatFuzzer generation state.
+//
+// ffcompile mines one global value set per lookahead function and applies it at
+// every call site; clearing the mined sets makes the per-call-site pins below
+// authoritative.
+//
+// The pins themselves are all ReadBytes() with preferred == possible and p = 1.0.
+// That writes the preferred value with the evil bit switched off 255 times out of
+// 256 AND marks the bytes in the lookahead bitmap, so the field declared over them
+// is forced to that value even when its own evil roll fires - file_integer copies
+// a bitmap-marked byte back out of the buffer on every path.  Parsing is
+// unaffected: a real file whose bytes differ leaves no compatible candidate and
+// file_integer short-circuits on that before it ever consults the evil bit.
+// Pinning is what lets the field declarations below stay byte-for-byte identical
+// to the original while still generating exactly.
+//------------------------------------------------------------------------------
+const local string ReadBytesInitValues[0];
+local char   midiPeek[8];
+
+// C00 + C01 + D45 + DEV03 + S00: 'MThd' and the header length, which is invariably
+// 6 because the header data is three 16-bit fields.
+local string midiHdrMagic[] = { "MThd\x00\x00\x00\x06" };
+// C02 + C03 + D00 + D01 + D03 + S02: the format word and the track count, pinned
+// together so the pair can never disagree.  Format 0 is by definition a single
+// multi-channel track, so it is only ever paired with a count of 1; format 1 is
+// always given at least two tracks because its first track is a tempo map that
+// carries no channel voice events (S13), and a one-track format 1 file would
+// therefore hold no music at all.
+local string midiFmtTracks[] = {
+	"\x00\x01\x00\x02", "\x00\x01\x00\x02", "\x00\x01\x00\x03", "\x00\x01\x00\x04",
+	"\x00\x00\x00\x01", "\x00\x00\x00\x01", "\x00\x02\x00\x02" };
+// C04 + D04 + D05 + S14: the division word.  Metrical mode (bit 15 clear) is
+// preferred - it is what nearly every file uses and the tick resolution is the
+// denominator of every delta time in the file.  The last two entries are timecode
+// mode: a negative SMPTE frame rate in the high byte and ticks per frame in the
+// low byte.  Generation stays inside 24-960 ticks per quarter note in metrical
+// mode; 0 is excluded because it is a division by zero for any player converting
+// ticks to seconds.
+local string midiTickDiv[] = {
+	"\x00\x60", "\x00\x78", "\x00\xc0", "\x00\xf0", "\x01\x80", "\x01\xe0",
+	"\x01\xe0", "\x01\xe0", "\x03\xc0", "\xe7\x28", "\xe2\x50" };
+// C48 + DEV02 + S04: 'MTrk' opens every track chunk.
+local string midiTrkMagic[] = { "MTrk" };
+
+// S16 + D06-D15 + DEV09: the status bytes a generated event may carry.  SMF 1.0
+// permits only 0x80-0xEF, 0xF0, 0xF7 and 0xFF; every other 0xFn value is a System
+// Common or System Real Time message that exists on the wire but has no file
+// encoding, and this template would route all of them to the sysex_event branch
+// and read a length field that is not there.  Repeated entries are weights.
+local string midiStFirst[] = {
+	"\x90", "\x90", "\x91", "\x92", "\x93", "\x80", "\x81",
+	"\xb0", "\xb1", "\xc0", "\xd0", "\xa0", "\xe0", "\xff", "\xf0", "\xf7" };
+// S09 + S10 + D16 + D17 + D18: a byte with bit 7 clear is not a status byte - it
+// is the first data byte of a running-status message, which reuses the previous
+// channel voice status.  These are the key numbers a running-status event may
+// open with; every one of them is also a legal controller number, program number
+// and pitch-bend LSB, so the same set serves whichever status is being repeated.
+local string midiStAny[] = {
+	"\x90", "\x91", "\x80", "\xb0", "\xc0", "\xd0", "\xa0", "\xe0", "\xff", "\xf0",
+	"\x24", "\x30", "\x3c", "\x40", "\x48", "\x54", "\x3c", "\x40" };
+// S13: in a format 1 file the first track is the tempo map - it carries the
+// timing meta-events for the whole sequence and no channel voice events.
+local string midiStMeta[]  = { "\xff" };
+local string midiSt[]      = { "\x90" };   // live menu, rebuilt before every event
+
+// C24 + D23-D32 + S05 + S11 + S12 + DEV08: the meta-event type menus.
+local string midiMtEot[]   = { "\x2f" };
+// S11 + S12: the Sequence Number event must be the very first event of a track and
+// the Copyright Notice the first event of the FIRST track, so the opening menu is
+// split by track - and, in timecode mode, without Set Tempo (D37).
+local string midiMtFirst0[]  = { "\x00", "\x02", "\x03", "\x51", "\x58" };
+local string midiMtFirst0S[] = { "\x00", "\x02", "\x03", "\x58" };
+local string midiMtFirstN[]  = { "\x00", "\x03", "\x01" };
+// S13 + D37: the tempo map's own repertoire.  META_TEMPO is dropped in timecode
+// mode, where delta times are already absolute subdivisions of a second and SMF
+// 1.0 advises against Set Tempo events.
+local string midiMtTempo[] = { "\x51", "\x51", "\x58", "\x59", "\x54", "\x01", "\x03", "\x06" };
+local string midiMtSmpte[] = { "\x58", "\x59", "\x54", "\x01", "\x03", "\x06" };
+local string midiMtOther[] = { "\x01", "\x04", "\x05", "\x06", "\x07", "\x08", "\x09", "\x20", "\x21", "\x7f" };
+local string midiMt[]      = { "\x2f" };   // live menu, rebuilt before every meta event
+
+// C25 + C27-C35 + D31: the payload of a text-carrying meta event.  SMF 1.0 asks
+// for printable ASCII with no terminating NUL - the length alone delimits it - so
+// all of these are exactly twelve printable characters and the length field is
+// pinned to 12 to match.
+local string midiTextVals[] = {
+	"FormatFuzzer", "Track name  ", "Instrument 1", "Lyric text  ", "Marker point" };
+// C50 + S15 + D32: a System Exclusive payload.  A normal F0 message is
+// self-terminating, so the last byte must be the 0xF7 terminator and the length
+// counts it; the leading byte is a manufacturer ID.
+local string midiSysexVals[] = { "\x7d\x01\x02\xf7" };
+
+// C05-C09 + S07 + S08 + D38-D42: the variable-length quantity pin.  midiVlq holds
+// the value the next DeltaTime must encode and midiVlqVals its canonical
+// encoding - no redundant leading zero group, every byte but the last with bit 7
+// set, and at most two bytes so the 4-byte form the template's own missing
+// fifth-byte guard mishandles is never generated.
+local string midiVlqZero[] = { "\x00" };
+local string midiVlqVals[1];
+local string midiVlqStr;
+local uint   midiVlq = 0;
+local char   midiVlqB0 = 0;
+local char   midiVlqB1 = 0;
+
+// Generation state, all of it write-only during a parse.
+local int  midiEvents      = 0;    // events emitted so far in the current track
+local int  midiNeedStatus  = 1;    // S09/S10: next event must carry an explicit status
+local int  midiEotSeen     = 0;    // S05/D44
+local int  midiTrackIndex  = 0;    // S13: the format 1 tempo map is track 0
+local int  midiFormat      = 1;
+local int  midiSmpte       = 0;    // S14/D37: timecode rather than metrical division
+local int  midiMinEvents   = 4;    // S06 generation_bound: 4 events before EOT is offered
+local int  midiMaxEvents   = 14;   // S06 generation_bound: EOT is forced here
+
+//------------------------------------------------------------------------------
+// S08 + D38-D42: pin the canonical encoding of midiVlq.  A wrong continuation bit
+// is the most destructive single-bit error in the format - it moves the boundary
+// between a delta time and the status byte that follows it - so this is pinned
+// rather than merely given a value set.  Values congruent to 0 modulo 128 are
+// avoided by the callers because SPrintf cannot build a string with an embedded
+// NUL, and the one value that needs one, zero itself, has a constant.
+//------------------------------------------------------------------------------
+void midiVlqEncode() {
+	if( midiVlq < 128 ) {
+		midiVlqB0 = (char) midiVlq;
+		midiVlqB1 = 0;
+	} else {
+		midiVlqB0 = (char) (0x80 | (midiVlq >> 7));
+		midiVlqB1 = (char) (midiVlq & 0x7f);
+	}
+}
+
+void midiPinVlq() {
+	midiVlqEncode();
+	if( midiVlq == 0 ) {
+		midiVlqVals[0] = midiVlqZero[0];
+	} else if( midiVlq < 128 ) {
+		SPrintf( midiVlqStr, "%c", (int) midiVlq );
+		midiVlqVals[0] = midiVlqStr;
+	} else {
+		SPrintf( midiVlqStr, "%c%c", (int) (0x80 | (midiVlq >> 7)), (int) (midiVlq & 0x7f) );
+		midiVlqVals[0] = midiVlqStr;
+	}
+	ReadBytes(midiPeek, FTell(), Strlen( midiVlqVals[0] ), midiVlqVals, midiVlqVals, 1.0);
+}
+
+//------------------------------------------------------------------------------
+// C10 + S06 + S09 + S10 + S13 + S16 + D17 + D18: choose the delta time and the
+// status byte of the event about to be written, then plant both.  The original
+// reads an unconstrained byte here and dispatches on it, which during generation
+// writes a random status - most often one of the thirteen System Common and
+// System Real Time codes that have no file encoding at all and send the SysEx
+// branch looking for a length field that does not exist.
+//------------------------------------------------------------------------------
+void midiPinDelta() {
+	// C10: delta time.  The encodable maximum is 0x0FFFFFFF ticks, which at 480
+	// ticks per quarter note schedules an event days into the future; these are
+	// all within four quarter notes.  Every fifth event uses a two-byte quantity
+	// so the continuation-bit path (D38) is exercised, and no value is congruent
+	// to 0 modulo 128, which would need a NUL inside the encoded string.
+	if( midiEvents == 0 ) {
+		midiVlq = 0;                       // S11/S12: the first event is at time 0
+	} else if( (midiEvents % 5) == 4 ) {
+		midiVlq = 240;                     // two-byte quantity: 0x81 0x70
+	} else {
+		midiVlq = midiEvents * 12;         // 12, 24, 36, ... ticks, one byte
+	}
+	midiPinVlq();
+}
+
+//------------------------------------------------------------------------------
+// S05 + S09 + S10 + S13 + S16 + D06-D18 + D44: choose and plant the status byte of
+// the event, at the position the delta time just written leaves behind.
+//------------------------------------------------------------------------------
+void midiPinStatus() {
+	// S05/D44: every track ends with the End of Track meta-event, so once the
+	// event budget is spent only 0xFF is on the menu and the meta type menu below
+	// is narrowed to META_END_OF_TRACK.
+	if( midiEvents >= midiMaxEvents ) {
+		midiSt = midiStMeta;
+	} else if( midiFormat == 1 && midiTrackIndex == 0 ) {
+		// S13: the format 1 tempo map carries meta-events only.
+		midiSt = midiStMeta;
+	} else if( midiNeedStatus ) {
+		// S09/S10/D17/D18: running status has nothing to inherit at the start of a
+		// track, and a meta or SysEx event cancels it, so an explicit status byte
+		// is mandatory here.
+		midiSt = midiStFirst;
+	} else {
+		midiSt = midiStAny;
+	}
+	ReadBytes(midiPeek, FTell(), 1, midiSt, midiSt, 1.0);
+}
+
+//------------------------------------------------------------------------------
+// C24 + S05 + S11 + S12 + S13 + D37: choose and plant the meta-event type byte.
+//------------------------------------------------------------------------------
+void midiPinMeta() {
+	if( midiEvents >= midiMaxEvents ) {
+		midiMt = midiMtEot;
+	} else if( midiEvents == 0 ) {
+		// S11: Sequence Number must be the very first event of a track; S12: the
+		// Copyright Notice the first event of the first track; S13: no track but
+		// the tempo map may open with a timing meta-event.
+		if( midiTrackIndex > 0 ) {
+			midiMt = midiMtFirstN;
+		} else if( midiSmpte ) {
+			midiMt = midiMtFirst0S;
+		} else {
+			midiMt = midiMtFirst0;
+		}
+	} else if( midiFormat == 1 && midiTrackIndex == 0 ) {
+		// S13/D37: the tempo map's timing events, less Set Tempo in timecode mode,
+		// where delta times are already absolute subdivisions of a second.
+		if( midiSmpte ) { midiMt = midiMtSmpte; } else { midiMt = midiMtTempo; }
+	} else {
+		midiMt = midiMtOther;
+	}
+	// S06: End of Track joins the menu once the track has enough events to be
+	// worth closing - the growing-value-set idiom, so track lengths vary.
+	if( midiEvents >= midiMinEvents && midiEvents < midiMaxEvents ) {
+		midiMt += "\x2f";
+		midiMt += "\x2f";
+		midiMt += "\x2f";
+	}
+	ReadBytes(midiPeek, FTell(), 1, midiMt, midiMt, 1.0);
+}
+
+struct MidiHeader
+{
+    // C38/D36: pfp drops <min=>/<max=> and <values=> from any declaration inside a
+    // conditional block, and a bitfield cannot take an init list at all, so the
+    // Set Tempo value - which lives inside an if/else chain - cannot be constrained
+    // where it stands.  Ranges are registered per variable NAME and stored in the
+    // generated object rather than passed at the call, so declaring the field once
+    // here, at struct top level where the attribute survives, applies the range to
+    // the real declaration too.  The three bytes it writes are reclaimed by the
+    // seek on the next line and overwritten by the magic below.  250000-1500000
+    // microseconds per quarter note is 40-240 BPM; 0 would be a division by zero
+    // in the BPM computation the original itself sketches.
+    local int64 midiRangeAnchor = FTell();
+    uint m_usecPerQuarterNote : 24 <min=250000, max=1500000>;
+    FSeek(midiRangeAnchor);
+    // C00/S00/DEV02: the four bytes that identify the file, and the header length,
+    // which the original reads and then ignores entirely.  Neither is checked
+    // anywhere in this template, so both are planted rather than merely valued.
+    ReadBytes(midiPeek, FTell(), 8, midiHdrMagic, midiHdrMagic, 1.0);
+    char m_magic[4] <format = hex>;
+    // The range attribute does not describe THIS field, which the plant above fixes
+    // at 6.  Ranges are registered per variable NAME on the first declaration and
+    // stored in the generated object rather than passed at the call, and MidiTrack
+    // below reuses the name for its own chunk length - which has to start out large
+    // enough to serve as an event budget (DEV04).  Registering it here is the only
+    // place the attribute is seen first.
+    uint m_seclen <min=4096, max=65535>;
+    // C02/C03/D00/D01/D03/S02: format and track count, planted as a pair.
+    ReadBytes(midiPeek, FTell(), 4, midiFmtTracks, midiFmtTracks, 1.0);
+    enum <short> 
+    {
+        MIDI_SINGLE = 0,
+        MIDI_MULTIPLE = 1,
+        MIDI_PATTERN = 2
+    } m_format;
+    // DEV01: declared signed, where SMF 1.0 defines an unsigned 16-bit count; the
+    // pin keeps it inside 1-4 so it can never become a negative array bound.
+    short m_ntracks;
+    // C04/D04/D05/S14/DEV01: the division word, likewise signed here, so every
+    // timecode-mode value reads as negative.
+    ReadBytes(midiPeek, FTell(), 2, midiTickDiv, midiTickDiv, 1.0);
+    short m_tickdiv;
+};
+
+struct DeltaTime
+{
+    // C05-C08/S08/D38-D42: a variable-length quantity, 1 to 4 bytes, every byte but
+    // the last carrying bit 7.  The bytes are left exactly as the original declares
+    // them: midiPinVlq() has already planted the canonical encoding of midiVlq over
+    // them, so the accumulation below reproduces that value byte for byte, while a
+    // real file is still decoded exactly as before.
+    local uint total = 0;
+    // The value sets carry the same encoding the pin plants, so a quantity that
+    // cannot be pinned - see the Set Tempo length below - is still generated
+    // correctly; where a pin is present the lookahead bitmap wins over both.
+    char t0 = { midiVlqB0 };
+    total += t0 & 0x7f;
+    if (!(t0 & 0x80))
+        break;
+
+    total <<= 7;
+    char t1 = { midiVlqB1 };
+    total += t1 & 0x7f;
+    if (!(t1 & 0x80))
+        break;
+
+    total <<= 7;
+    char t2;
+    total += t2 & 0x7f;
+    if (!(t2 & 0x80))
+        break;
+
+    total <<= 7;
+    // DEV05/D42: the guard below breaks when t3's continuation bit is CLEAR; when
+    // it is SET the struct falls off its end and the fifth byte is never read, so
+    // an over-long quantity is silently truncated.  Generation never reaches this
+    // byte - midiPinVlq() emits at most two.
+    char t3;
+    total += t3 & 0x7f;
+    if (!(t3 & 0x80))
+        break;
+};
+
+local char lastStatus = 0;
+
+struct MidiMessage
+{
+    // S07: every event in every track carries a delta time, including End of Track.
+    // C10: plant the delta time, then - once it has been written and FTell() has
+    // moved past it - the status byte that dispatches the event (S16/D06-D15).
+    midiPinDelta();
+    DeltaTime m_dtime;
+    midiPinStatus();
+    char m_status;
+    if (m_status & 0x80)
+        lastStatus = m_status;
+    else
+        FSeek(FTell()-1);
+    
+    local char m_channel = lastStatus & 0xf;
+    if ((lastStatus & 0xf0) == 0x80)
+    {
+        // D06: exactly two data bytes follow, each 0-127.
+        struct 
+        {
+            // C11: the full 0-127 range is legal, but 36-96 is the five-octave span
+            // a General MIDI instrument actually sounds.
+            char m_note = { 36, 48, 60, 60, 62, 64, 67, 72, 84, 96 };
+            char m_velocity = { 0, 64, 64, 100 };
+        } note_off_event;
+    }
+    else if ((lastStatus & 0xf0) == 0x90) 
+    {
+        // D07: exactly two data bytes follow, each 0-127.
+        struct 
+        {
+            char m_note = { 36, 48, 60, 60, 62, 64, 67, 72, 84, 96 };
+            // C14/D22: velocity 0 is defined to mean Note Off for the same key, so
+            // 1-127 keeps a generated Note On an actual Note On.
+            char m_velocity = { 1, 64, 64, 80, 100, 127 };
+        } note_on_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xA0) 
+    {
+        // D08: exactly two data bytes follow, each 0-127.
+        struct 
+        {
+            char m_note = { 36, 48, 60, 60, 62, 64, 67, 72, 84, 96 };
+            char m_pressure = { 0, 32, 64, 64, 96, 127 };
+        } note_pressure_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xB0) 
+    {
+        // D09: exactly two data bytes follow, each 0-127.
+        struct 
+        {
+            // C17: 0-119 are the ordinary continuous controllers; 120-127 are the
+            // Channel Mode messages, whose value byte is not free.
+            char m_controller = { 1, 7, 7, 10, 11, 64, 91, 93, 120, 121, 122, 126, 127 };
+            // D20: Local Control defines only the two values 0 and 127.
+            if (m_controller == 122)
+            {
+                char m_value = { 0, 127 };
+            }
+            // D21: Mono Mode On uses its value byte as a channel count, 0-16.
+            else if (m_controller == 126)
+            {
+                char m_value = { 0, 1, 2, 16 };
+            }
+            // D19: All Sound Off, Reset All Controllers, All Notes Off, Omni Off
+            // and Omni On all require a value byte of zero.
+            else if (m_controller >= 120)
+            {
+                char m_value = { 0 };
+            }
+            else
+            {
+                char m_value = { 0, 32, 64, 100, 100, 127 };
+            }
+        } controller_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xC0) 
+    {
+        // D10: exactly one data byte follows, 0-127.
+        struct 
+        {
+            char m_program = { 0, 0, 1, 4, 24, 33, 40, 48, 56, 73, 127 };
+        } program_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xD0) 
+    {
+        // D11: exactly one data byte follows, 0-127.
+        struct 
+        {
+            char m_pressure = { 0, 32, 64, 64, 96, 127 };
+        } channel_pressure_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xE0) 
+    {
+        // D12: exactly two data bytes follow; lsb 0 with msb 64 is the neutral
+        // centre position.
+        struct 
+        {
+            char m_lsb = { 0, 0, 32, 64 };
+            char m_msb = { 64, 64, 0, 96, 127 };
+        } pitch_bend_event;
+    }
+    else if (lastStatus == -1) 
+    {
+        // D13: 0xFF is a meta-event, not a System Exclusive message, even though it
+        // satisfies the 0xF0 mask test below.  The test is `== -1` because the field
+        // is a signed char (DEV00).
+        midiPinMeta();
+        struct 
+        {
+            enum <char> 
+            {
+                META_SEQUENCE_NUM = 0,
+                META_TEXT = 1,
+                META_COPYRIGHT = 2,
+                META_SEQUENCE_NAME = 3,
+                META_INSTRUMENT_NAME = 4,
+                META_LYRIC = 5,
+                META_MARKER = 6,
+                META_CUE_POINT = 7,
+                META_PROGRAM_NAME = 8,
+                META_DEVICE_NAME = 9,
+                META_MIDI_CHANNEL_PREFIX = 0x20,
+                META_MIDI_PORT = 0x21,
+                META_END_OF_TRACK = 0x2f,
+                META_TEMPO = 0x51,
+                META_SMPTE_OFFSET = 0x54,
+                META_TIME_SIGNATURE = 0x58,
+                META_KEY_SIGNATURE = 0x59,
+                META_SEQUENCER_EVENT = 0x7f
+            } m_type;
+            // C25/D23-D31: only the nine text-carrying types leave the length free;
+            // every other defined type pins it to the size of its fixed-shape body.
+            if (m_type == META_SEQUENCE_NUM)        { midiVlq = 2; }
+            else if (m_type == META_MIDI_CHANNEL_PREFIX) { midiVlq = 1; }
+            else if (m_type == META_MIDI_PORT)      { midiVlq = 1; }
+            else if (m_type == META_END_OF_TRACK)   { midiVlq = 0; }
+            else if (m_type == META_TEMPO)          { midiVlq = 3; }
+            else if (m_type == META_SMPTE_OFFSET)   { midiVlq = 5; }
+            else if (m_type == META_TIME_SIGNATURE) { midiVlq = 4; }
+            else if (m_type == META_KEY_SIGNATURE)  { midiVlq = 2; }
+            else if (m_type == META_SEQUENCER_EVENT){ midiVlq = 4; }
+            else                                    { midiVlq = 12; }
+            midiPinVlq();
+            DeltaTime m_length;
+            // C27-C35/D31/D32: plant the payload of the length-delimited types.
+            // Everything else has a fixed-shape body with its own value sets below.
+            // The type test is what keeps this away from META_TEMPO: its payload is
+            // a 24-bit bitfield, and file_integer asserts outright the moment the
+            // lookahead bitmap covers a bitfield.
+            if (m_type >= META_TEXT && m_type <= META_DEVICE_NAME && m_length.total == 12)
+            {
+                ReadBytes(midiPeek, FTell(), 12, midiTextVals, midiTextVals, 1.0);
+            }
+            else if (m_type == META_SEQUENCER_EVENT && m_length.total == 4)
+            {
+                // D32/DEV08: Sequencer Specific data opens with a manufacturer ID.
+                ReadBytes(midiPeek, FTell(), 4, midiSysexVals, midiSysexVals, 1.0);
+            }
+            if (m_type == META_SEQUENCE_NUM)
+            {
+                // C26/D33: a sequence identifier; large values are meaningless.
+                short m_seqNum = { 0, 1, 2, 16 };
+            }
+            else if (m_type == META_TEXT)
+            {
+                char m_text[m_length.total];
+            }
+            else if (m_type == META_COPYRIGHT)
+            {
+                char m_copyright[m_length.total];
+            }
+            else if (m_type == META_SEQUENCE_NAME)
+            {
+                char m_name[m_length.total];
+            }
+            else if (m_type == META_INSTRUMENT_NAME)
+            {
+                char m_name[m_length.total];
+            }
+            else if (m_type == META_LYRIC)
+            {
+                char m_lyric[m_length.total];
+            }
+            else if (m_type == META_MARKER)
+            {
+                char m_marker[m_length.total];
+            }
+            else if (m_type == META_CUE_POINT)
+            {
+                char m_cuePoint[m_length.total];
+            }
+            else if (m_type == META_PROGRAM_NAME)
+            {
+                char m_programName[m_length.total];
+            }
+            else if (m_type == META_DEVICE_NAME)
+            {
+                char m_deviceName[m_length.total];
+            }
+            else if (m_type == META_MIDI_CHANNEL_PREFIX)
+            {
+                // C36: a channel index, 0-15.
+                char m_channelPrefix = { 0, 0, 1, 2, 9, 15 };
+            }
+            else if (m_type == META_MIDI_PORT)
+            {
+                // C37: a port index; hardware rarely exposes more than a handful.
+                char m_port = { 0, 0, 1, 2, 3 };
+            }
+            else if (m_type == META_END_OF_TRACK)
+            {
+            }
+            else if (m_type == META_TEMPO)
+            {
+                // C38/D36/DEV07: three bytes on disk, declared here as a 24-bit
+                // bitfield of a uint - which occupies four - and compensated with
+                // the FSeek below.  250000-1500000 microseconds is 40-240 BPM; 0
+                // would be a division by zero in the BPM computation sketched at
+                // the next line.
+                uint m_usecPerQuarterNote : 24;
+                // local uint m_bpm = 60000000 / m_usecPerQuarterNote;
+                // BitfieldDisablePadding() above makes the field exactly three
+                // bytes wide, so the original's compensating rewind is no longer
+                // needed and FTell() stays accurate for the lookaheads that follow.
+            }
+            else if (m_type == META_SMPTE_OFFSET)
+            {
+                // C39/D35/DEV11: bits 6-5 of the hour byte carry the frame rate and
+                // bits 4-0 the hour, and m_fps is a frame INDEX bounded by that
+                // rate - not a frame rate, whatever its name suggests.
+                char m_hours = { 0, 0, 1, 2, 32, 64, 96 };
+                char m_mins = { 0, 0, 15, 30, 59 };
+                char m_secs = { 0, 0, 15, 30, 59 };
+                char m_fps = { 0, 0, 1, 12, 23 };
+                char m_fracFrames = { 0, 0, 50, 99 };
+            }
+            else if (m_type == META_TIME_SIGNATURE)
+            {
+                // C44-C47: the denominator is a power-of-two exponent, so 2 means 4;
+                // the clocks-per-click unit is 24 per quarter note; and the last
+                // byte is 8 in every file that does not deliberately renotate.
+                char m_numerator = { 2, 3, 4, 4, 6, 12 };
+                char m_denominator = { 2, 2, 3 };
+                char m_clocksPerClick = { 24, 24, 12, 48, 96 };
+                char m_32ndPer4th = { 8 };
+            }
+            else if (m_type == META_KEY_SIGNATURE)
+            {
+                // C48/C49: -7 to 7 flats or sharps, then major or minor.
+                char m_flatsSharps = { 0, 0, 1, 2, 3, -1, -2, -3, 7, -7 };
+                char m_majorMinor = { 0, 0, 1 };
+            }
+            else
+            {
+                char m_data[m_length.total];
+            }
+        } meta_event;
+        // S05/D44: remember that the track's closing event has been written.
+        if (meta_event.m_type == 0x2f)
+            midiEotSeen = 1;
+    }
+    else if ((lastStatus & 0xf0) == 0xF0) 
+    {
+        // D14: 0xF0 is a normal SysEx message and 0xF7 an escape or continuation
+        // packet; DEV09 - every other 0xFn value reaches this branch too and has a
+        // length read for it that is not there, which is why the status menu never
+        // offers one.
+        // C50/S15: the payload ends with the 0xF7 terminator and the length counts
+        // it, so both are planted together.
+        midiVlq = 4;
+        midiPinVlq();
+        ReadBytes(midiPeek, FTell() + 1, 4, midiSysexVals, midiSysexVals, 1.0);
+        struct 
+        {
+            DeltaTime m_length;
+            char m_message[m_length.total];
+        } sysex_event;
+    }
+    // S10/D18/DEV06: a meta or SysEx event cancels running status, so the next
+    // event must carry an explicit status byte.  The original never clears
+    // lastStatus, so it would silently reuse a stale channel status here.
+    if (lastStatus == -1 || (lastStatus & 0xf0) == 0xF0)
+        midiNeedStatus = 1;
+    else
+        midiNeedStatus = 0;
+    midiEvents++;
+};
+
+struct MidiTrack
+{
+    // S09/D17/DEV06: SMF 1.0 requires running status to be reset at the start of
+    // every track.  The original's lastStatus is file-scope and never cleared, so
+    // generation instead guarantees an explicit status byte on the first event.
+    midiEvents = 0;
+    midiEotSeen = 0;
+    midiNeedStatus = 1;
+    // C48/DEV02/S04: 'MTrk' is never compared against anything by this template.
+    ReadBytes(midiPeek, FTell(), 4, midiTrkMagic, midiTrkMagic, 1.0);
+    char m_magic[4] <format = hex>;
+    // C49/DEV04/S04: a placeholder large enough that `remaining` below cannot reach
+    // zero before the track's End of Track event is written; it is back-patched to
+    // the measured length once the events exist.  It is deliberately NOT planted -
+    // a byte carrying a lookahead mark cannot be rewritten, and this one has to be.
+    // The 4096-65535 generation range comes from the attribute in MidiHeader; even
+    // the evil path lands on a uniform 32-bit value, which is large with
+    // probability essentially one, so the budget survives either way.
+    uint m_seclen;
+    local uint remaining = m_seclen;
+    local int64 midiTrkStart = FTell();
+    // S05/S06/D43/DEV04: the original loop is `while (remaining)` alone.  During
+    // generation m_seclen is not yet known, so the loop is bounded by the End of
+    // Track event instead - which S05 requires to be the last event of the chunk
+    // anyway, and which the status and meta-type menus steer the generator towards
+    // once the track has at least midiMinEvents events.  During a parse the two
+    // conditions coincide, because a conforming track's End of Track event is
+    // exactly where `remaining` reaches zero.
+    while (remaining && !midiEotSeen) {
+        MidiMessage message;
+        remaining -= sizeof(message);
+    }
+    // C49/D43/DEV04: back-patch the length from the events actually written.  The
+    // subtraction at the top of the loop is unsigned, so a track length chosen
+    // independently of the events does not merely mis-parse - an overshoot of one
+    // byte wraps the counter towards 2^32 and the loop runs essentially forever.
+    local int64 midiTrkEnd = FTell();
+    local uint midiTrkLen = midiTrkEnd - midiTrkStart;
+    if (m_seclen != midiTrkLen) {
+        FSeek(midiTrkStart - 4);
+        local int midiEvil = SetEvilBit(false);
+        uint m_seclen = { midiTrkLen };
+        SetEvilBit(midiEvil);
+        FSeek(midiTrkEnd);
+    }
+    midiTrackIndex++;
+};
+
+struct 
+{
+    MidiHeader header;
+    // S13/S14/D37: record the two header choices the event generator depends on -
+    // which track is the tempo map, and whether delta times are metrical ticks or
+    // SMPTE subdivisions (bit 15 set, which reads as negative in a signed short).
+    midiFormat = header.m_format;
+    if (header.m_tickdiv < 0) { midiSmpte = 1; } else { midiSmpte = 0; }
+    midiTrackIndex = 0;
+    // S01/S02/S03/D03: exactly m_ntracks chunks follow the header, back to back,
+    // and the count is planted at 1-4 so it can never exceed the chunks written.
+    // DEV01: the field is a signed short where SMF 1.0 defines an unsigned 16-bit
+    // count, so a count above 32767 reads negative and the original would use it
+    // as a negative array bound; and were the plant above ever to lose its roll,
+    // an unclamped count would ask for tens of thousands of chunks.  No Standard
+    // MIDI File carries anything like 256 tracks.
+    local int midiNTracks = header.m_ntracks;
+    if (midiNTracks < 0) { midiNTracks = 0; } else if (midiNTracks > 256) { midiNTracks = 1; }
+    MidiTrack tracks[midiNTracks] <optimize=false>;
+} file;

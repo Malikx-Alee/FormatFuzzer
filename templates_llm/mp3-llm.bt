@@ -1,0 +1,1099 @@
+//------------------------------------------------
+//--- 010 Editor v1.3.2 Binary Template
+//
+//      File: MP3.bt
+//   Authors: Ivan Getta
+//    E-mail: ivanitto@ukr.net
+//   Version: 1.2
+//   Purpose: Parse an MP3 music file.
+//  Category: Audio
+// File Mask: *.mp3
+//  ID Bytes: 49 44 33, FF
+//   History:
+//   1.2   2018-01-31 Bartosz Dziewonski: Added probably partial and incomplete support for ID3v2.4 tags.
+//   1.1   2016-01-29 SweetScape: Updated header for repository submission.
+//   1.0   2005-02-18 I Getta: Initial release.
+//
+//--- Template features ----------------
+//
+//   1) MPEG frames support:
+//        * MPEG-1, MPEG-2
+//        * Layer 1,2,3
+//   2) ID3v1 tags support
+//   3) ID3v1.1 tags support
+//   4) ID3v2.3 tags support
+//
+//--- Notes ----------------------------
+//
+// TODO:
+//   1) MPEG 2.5 support
+//   2) Resolve known bugs (see below)
+//
+// KNOWN BUGS (STILL PRESENT):
+//   1) Incorrect frame size detection for MPEG 1.0 layer 3
+//      mono files with low bitrate (for example 56k, 64k).
+//      Frame size must be detected twice long.
+//   2) Mp3pro files have some problems
+//
+//--- References -----------------------
+//
+//   1. "010 Editor templates"
+//          http://www.sweetscape.com/010editor/templates.html
+//
+//   2. "The private life of MP3 frames"
+//          http://www.id3.org/mp3frame.html
+//
+//   3. "ID3 made easy (ID3v1 & ID3v1.1)"
+//          http://www.id3.org/id3v1.html
+//
+//   4. "ID3 tag version 2.3.0 (Informal standard)"
+//          http://www.id3.org/id3v2.3.0.html
+//
+//------------------------------------------------
+
+
+local uint32 bitrate, frame_size, sampling_freq, frames_count = 0;
+local quad frame_header_offset, seek_pos, sum_bitrate = 0;
+local uint16 data;
+local byte was_bad_sync, id3v1_tag_found = 0;
+local uchar buf[3];
+
+
+//------------------------------------------------------------------------------
+// GENERATION STATE
+//
+// Why the original cannot generate, and cannot parse either.
+//
+// FormatFuzzer's accessor keeps a bitmap of every byte a LOOKAHEAD has touched -
+// ReadBytes, ReadUShort, ReadByte and ReadUByte all write through it - and
+// file_integer refuses outright, "bitfield lookahead not implemented", as soon
+// as a marked byte overlaps a field declared with a bit width.  MPEG_HEADER is
+// thirteen bitfields over one uint32, so a mark anywhere in its four bytes is
+// fatal.  The original marks exactly those bytes twice over: the sync scan reads
+// a ushort at every candidate frame position, and the ID3v2 probe reads three
+// bytes at absolute offset 0, which is where the audio starts when there is no
+// prepended tag.  That is why the unmodified template fails on every real MP3
+// file - not on some of them, on all of them.
+//
+// The rewrite removes both lookaheads from the audio path and replaces them with
+// ordinary reads followed by FSeek, which mark nothing:
+//
+//   * the prepended tag is detected by reading ID3v2_HEADER and rewinding to 0
+//     when its signature is not "ID3" (structure rule 0, dependency 43);
+//   * the appended tag is detected by re-assembling MPEG_HEADER's first three
+//     bytes out of the bitfields that were just read and comparing them with
+//     "TAG" (constraints[ID3v1_TAG.id], structure rule 3).
+//
+// Lookahead is still used, but only inside the ID3v2 tag, where every byte it
+// touches is read back by a char or ubyte array rather than by a bitfield.
+// There it does the planting this format otherwise has no way to express: a
+// value set escapes the evil bit once in 128 draws and the escape distribution
+// is biased small, which for a frame size or a tag size means the frame stream
+// silently desynchronises.  ReadBytes(buf, pos, n, menu, menu, 1.0) writes one
+// menu entry with the evil bit suppressed for that call and marks it; the plain
+// field that follows copies the marked bytes back over whatever it drew, so
+// generation takes a menu entry 32767 times in 32768 while the field itself
+// stays completely unconstrained in the parse direction.
+//------------------------------------------------------------------------------
+
+// structure rule 2, generation_bound "4 to 64 frames": the audio loop needs a
+// bound, and FEof's probability is the only decision primitive that is exact in
+// the parse direction - feof returns 255 at end of file and 0 elsewhere, and the
+// threshold 255*(1-p) separates them for any 0 < p < 1 - while remaining
+// steerable in the generate direction.  Only the assignments to these two are
+// gated on IsParsing(); they decide nothing and so cost no randomness, which
+// keeps the two directions drawing the same values in the same order.
+local double mp3EofP = 0.125;
+local double mp3CutP = 0.125;
+
+// How many frames before the file ends, and whether an ID3v1 tag closes it.
+// Both are derived from bits of the first frame header rather than from a
+// separate draw, so parsing recomputes them identically - see the main loop.
+local int mp3FrameGoal = 12;
+local int mp3WantId3v1 = 0;
+
+// Hard loop guards.  Neither loop in this format has a terminator - the audio
+// stream ends only at end of file and the ID3v2 frame run only when the declared
+// tag size is used up - so both need a ceiling that no file this accessor can
+// hold could reach (MAX_FILE_SIZE is 65536 and the smallest MPEG frame is 24
+// bytes, so 4096 audio frames and 1024 tag frames are unreachable in practice),
+// plus a progress test: an iteration that consumes no bytes can only repeat
+// itself.  The progress test is also what terminates ffcompile's dry run, which
+// interprets the template against an empty file where FTell() never advances.
+local uint32 mp3Iter = 0;
+local uint32 mp3TagFrames = 0;
+local uint32 mp3Hdr3 = 0;          // the first three header bytes, re-assembled
+local byte   mp3NextId = 0;        // first letter of the next ID3v2 frame id
+local quad   mp3Prev = -1;
+local quad   mp3PrevTag = -1;
+
+// Lookahead scratch and menus.  All of these sit inside the ID3v2 tag.
+local char   mp3Peek[8];
+local string mp3One[1];
+local string mp3TagSzMenu[6];      // ID3v2_HEADER.size
+local string mp3FrSzMenu[1];       // ID3v2_4_FRAME.size
+local string mp3PadMenu[1];        // ID3v2_TAG.id3v2_padding
+local int    mp3SynchSel = 0;      // 0 = tag size, 1 = frame size
+// A lookahead mark is never cleared, and ID3v2_TAG rewinds to offset 0 when the
+// signature turns out not to be "ID3" - so a plant inside the header it just
+// abandoned would leave four marked bytes sitting in the middle of the first MPEG
+// frame, where they both freeze stale content and make every later plant over
+// them fall back to free bytes.  The synchsafe plant is therefore only armed once
+// the signature has been read and matches.
+local int    mp3PlantSynch = 0;
+local uint32 mp3FrSize = 16;       // the ID3v2 frame payload size being emitted
+// First letters of the ID3v2 frame identifiers the run may continue with:
+// 'T' (text frames), 'C'OMM, 'A'PIC, 'P'RIV, 'W'XXX, 'M'CDI.
+local byte   mp3ContValues[] = { 84, 84, 84, 84, 67, 65, 80, 87, 77 };
+// constraints[ID3v2_FRAME.id_asciiz_str]: fixed_value 0, evil_bit_safe false.
+// The original's probe at this site draws from the global {0,1} pool, and a 1
+// makes the encoding byte fall inside frame_data, where a reader takes it as
+// "UTF-16 with BOM" and then rejects the frame - ffmpeg reports "Incorrect BOM
+// value".  Only 0 keeps the template's field layout and the specification's in
+// agreement.
+local byte   mp3EncValues[] = { 0 };
+local string mp3SideMenu[1];       // MPEG_FRAME.mpeg_frame_data side information
+local uint32 mp3TagEnd = 0;        // tag_sz + sizeof(hdr), the end of the tag body
+
+// constraints[FLAGS.*], [FRAME_FLAGS.*] and all four entries of the JSON's
+// unnamed_bitfields section say "must be zero"; ffcompile accepts a <values=>
+// attribute on an ANONYMOUS bitfield, so the reserved runs are pinned without
+// inventing an identifier for them.
+local ubyte  mp3Zero8[]  = { 0 };
+local uint16 mp3Zero16[] = { 0 };
+local ubyte  mp3ExtHdr[] = { 0, 0, 0, 0, 0, 1 };   // FLAGS.EXTENDED_HEADER_PRESENT
+local uint16 mp3CrcFlag[] = { 0 };                 // ID3v2_EXTENDED_HEADER.FLAG_CRC_PRESENT
+
+// ffcompile lifts every `local` into one global namespace, so two functions that
+// both declare `r` share the same variable and a self-referential concatenation
+// such as r = r + f() silently aliases.  Every helper local below is therefore
+// given a name of its own.
+string mp3Chr( int b )
+{
+    local string mp3ChrBuf;
+    if( b == 0 )
+        mp3ChrBuf = "\x00";
+    else
+        SPrintf( mp3ChrBuf, "%c", b );
+    return mp3ChrBuf;
+}
+string mp3BE32( uint32 v )
+{
+    return mp3Chr( (v >> 24) & 0xff ) + mp3Chr( (v >> 16) & 0xff ) + mp3Chr( (v >> 8) & 0xff ) + mp3Chr( v & 0xff );
+}
+// constraints[synchsafe_integer.raw].byte_layout: seven bits per byte, most
+// significant group first, every byte below 0x80.
+string mp3Synch( uint32 v )
+{
+    return mp3Chr( (v >> 21) & 0x7f ) + mp3Chr( (v >> 14) & 0x7f ) + mp3Chr( (v >> 7) & 0x7f ) + mp3Chr( v & 0x7f );
+}
+string mp3Zeroes( int n )
+{
+    local string mp3ZeroBuf = "";
+    local int mp3ZeroI = 0;
+    while( mp3ZeroI < n )
+    {
+        mp3ZeroBuf = mp3ZeroBuf + mp3Chr( 0 );
+        mp3ZeroI = mp3ZeroI + 1;
+    }
+    return mp3ZeroBuf;
+}
+
+
+typedef struct {
+    // constraints[synchsafe_integer.raw]: every byte 0..127, evil_bit_safe false,
+    // and the value it encodes is a length that positions everything after it.
+    // A ubyte[4] array takes no per-call-site value list, so the four bytes are
+    // planted instead; the caller picks the menu with mp3SynchSel.
+    if( mp3PlantSynch )
+    {
+        if( mp3SynchSel == 0 )
+            ReadBytes( mp3Peek, FTell(), 4, mp3TagSzMenu, mp3TagSzMenu, 1.0 );
+        else
+            ReadBytes( mp3Peek, FTell(), 4, mp3FrSzMenu, mp3FrSzMenu, 1.0 );
+    }
+    ubyte raw[4];
+
+    local uint32 computed = raw[0];
+    computed <<= 7;
+    computed |= raw[1];
+    computed <<= 7;
+    computed |= raw[2];
+    computed <<= 7;
+    computed |= raw[3];
+
+    if (raw[0] >= 0x80  ||  raw[1] >= 0x80  ||
+        raw[2] >= 0x80  ||  raw[3] >= 0x80)
+    {
+        Printf("MP3: warning: invalid ID3v2 synchsafe integer\n");
+    }
+} synchsafe_integer <read=read_synchsafe_integer>;
+
+string read_synchsafe_integer( synchsafe_integer &v )
+{
+    string s;
+    SPrintf( s, "%u", v.computed );
+    return s;
+}
+
+
+enum <ubyte> ID3_GENRES
+{
+    Blues, Classic_Rock, Country, Dance, Disco, Funk, Grunge, Hip_Hop, // 7
+    Jazz, Metal, New_Age, Oldies, Other, Pop, R_and_B, Rap, // 15
+    Reggae, Rock, Techno, Industrial, Alternative, Ska, Death_Metal, Pranks, // 23
+    Soundtrack, Euro_Techno, Ambient, Trip_Hop, Vocal, Jazz_Funk, Fusion, Trance, // 31
+    Classical, Instrumental, Acid, House, Game, Sound_Clip, Gospel, Noise, // 39
+    AlternRock, Bass, Soul, Punk, Space, Meditative, Instrumental_Pop, Instrumental_Rock, // 47
+    Ethnic, Gothic, Darkwave, Techno_Industrial, Electronic, Pop_Folk, Eurodance, Dream, // 55
+    Southern_Rock, Comedy, Cult, Gangsta, Top_40, Christian_Rap, Pop_Funk, Jungle, // 63
+    Native_American, Cabaret, New_Wave, Psychadelic, Rave, Showtunes, Trailer, Lo_Fi, // 71
+    Tribal, Acid_Punk, Acid_Jazz, Polka, Retro, Musical, Rock_n_Roll, Hard_Rock, // 79
+    Folk, Folk_Rock, National_Folk, Swing, Fast_Fusion, Bebob, Latin, Revival, // 87
+    Celtic, Bluegrass, Avantgarde, Gothic_Rock,
+    Progressive_Rock, Psychedelic_Rock, Symphonic_Rock, Slow_Rock, // 95
+    Big_Band, Chorus, Easy_Listening, Acoustic, Humour, Speech, Chanson, Opera, // 103
+    Chamber_Music, Sonata, Symphony, Booty_Bass, Primus, Porn_Groove, Satire, Slow_Jam, // 111
+    Club, Tango, Samba, Folklore, Ballad, Power_Ballad, Rhythmic_Soul, Freestyle, // 119
+    Duet, Punk_Rock, Drum_Solo, A_capella, Euro_House, Dance_Hall, Goa, Drum_and_Bass, // 127
+    Club_House, Hardcore, Terror, Indie, BritPop, Negerpunk, Polsk_Punk, Beat, // 135
+    Christian, Heavy_Metal, Black_Metal, Crossover,
+    Contemporary, Christian_Rock, Merengue, Salsa, Thrash_Metal, Anime, JPop, Synthpop // 147
+};
+
+const local BYTE ReadByteInitValues[] = { 0, 1 };
+
+struct ID3v1_TAG
+{
+    DisplayFormatDecimal();
+
+    SetBackColor(0x33BC55);
+    // constraints[ID3v1_TAG.id]: fixed_value "TAG", evil_bit_safe false.  The
+    // struct is only reached once MPEG_FRAME has already read these three bytes
+    // and found them to be "TAG", so suppressing the escape removes nothing from
+    // what can be parsed.
+    local int evil = SetEvilBit(false);
+    char id[3] = { "TAG" }; // always must be "TAG"
+    SetEvilBit(evil);
+
+    SetBackColor(0x48E048);
+    // constraints[ID3v1_TAG.title] / [.artist] / [.album]: fixed 30-byte
+    // ISO-8859-1 fields.  The pattern admits either 0x00 or 0x20 padding and
+    // these use spaces: py010parser's string-literal rule backtracks
+    // exponentially on a long run of \x00 escapes and hangs ffcompile outright
+    // at about twenty of them.
+    char title[30] = { "Generated Test Title          ", "Sine Sweep 440 Hz             ", "Untitled                      " };
+
+    SetBackColor(0x5DE45D);
+    char artist[30] = { "FormatFuzzer                  ", "Test Artist                   ", "Various Artists               " };
+
+    SetBackColor(0x72E872);
+    char album[30] = { "Template Regression Suite     ", "Demo Album                    ", "Singles                       " };
+
+    SetBackColor(0x87EC87);
+    // constraints[ID3v1_TAG.year]: four ASCII digits; preferred_value 1999.
+    char year[4] = { "1999", "2003", "2021" };
+
+    if ( ReadByte(FTell()+28) == 0  &&  ReadByte(FTell()+29) != 0 )
+    {
+        // We have ID3v1.1 tag
+
+        SetBackColor(0x9CF09C);
+        // constraints[ID3v1_TAG.comment] branch_variants: 28 bytes in the
+        // ID3v1.1 layout.  The two ReadByte probes above land at offsets 28 and
+        // 29 of this field, i.e. past its end, so this value set is never
+        // filtered by them.
+        char comment[28] = { "generated by FormatFuzzer   ", "test comment                ", "-                           " };
+
+        SetBackColor(0xB1F4B1);
+        // constraints[ID3v1_TAG.zero]: fixed_value 0 - the sole marker that
+        // distinguishes ID3v1.1 from ID3v1.0 (dependency 39).
+        byte zero = { 0 };
+
+        SetBackColor(0xC6F8C6);
+        // constraints[ID3v1_TAG.track]: must be non-zero or the tag collapses
+        // back to ID3v1.0 (dependency 40); generation_range 1..30.
+        ubyte track <min=1, max=30>;
+    }
+    else
+    {
+        // We have ID3v1.0 tag
+
+        SetBackColor(0x9CF09C);
+        // The same value set at the 30-byte width.  Offsets 28 and 29 are inside
+        // this field and were planted by the probes above, so an entry survives
+        // the compatibility filter only when its last two bytes happen to match;
+        // otherwise the field falls back to free bytes, which the pattern
+        // constraint still admits.
+        char comment[30] = { "generated by FormatFuzzer     ", "test comment                  ", "-                             " };
+    }
+
+    SetBackColor(0xDBFCDB);
+    // constraints[ID3v1_TAG.genre]: the enum covers 0..147 and preferred_value
+    // is 17 (Rock); dependency 41 adds 255, the conventional "unset" marker,
+    // which lies outside the enum the template declares.
+    ID3_GENRES genre = { 17, 17, 0, 13, 32, 52, 255 };
+};
+
+
+struct ID3v2_HEADER
+{
+    SetBackColor(0x91C4FF);
+
+    // constraints[ID3v2_HEADER.head]: fixed_value "ID3".  The second entry is not
+    // a tag signature at all - it is the first three bytes of an MPEG frame
+    // header, and choosing it is how this rewrite expresses "this file has no
+    // prepended tag": ID3v2_TAG rewinds to offset 0 when it sees it, so the
+    // audio starts where structure rule 1 requires.  Both entries stand for a
+    // real file shape, and the split gives structure rule 5 its "about half the
+    // time".
+    char head[3] = { "ID3", "\xff\xfb\x90" }; // always must be "ID3" ($49 44 33)
+
+    DisplayFormatDecimal();
+
+    // constraints[ID3v2_HEADER.ver_major]: 2, 3 and 4 are defined, but
+    // dependency 19 diverts anything but 3 and 4 into an opaque blob with no
+    // frame structure at all, and dependency 20 forbids 0xFF.  preferred_value
+    // 3, which is also the version whose frame sizes are plain integers.
+    ubyte ver_major = { 3, 3, 3, 4 }; // this byte will never be $FF
+    ubyte ver_revision = { 0 }; // this byte will never be $FF
+
+    struct FLAGS {
+        // constraints[FLAGS.*]: all three preferred 0.  Setting either
+        // unsynchronisation or the experimental bit sends the whole tag down
+        // dependency 22/24's opaque-blob branch, which produces no frame
+        // coverage at all, so both are pinned; the extended header stays
+        // reachable (dependencies 25 and 26).
+        ubyte UNSYNCHRONISATION_USED  : 1 <values=mp3Zero8>;
+        ubyte EXTENDED_HEADER_PRESENT : 1 <values=mp3ExtHdr>;
+        ubyte EXPERIMENTAL_TAG        : 1 <values=mp3Zero8>;
+        // unnamed_bitfields[0]: the low five bits are reserved and must be
+        // cleared.  ffcompile accepts <values=> on an anonymous bitfield, so the
+        // rule is expressed without inventing a field name for it.
+        ubyte                         : 5 <values=mp3Zero8>;
+    } flags;
+
+    DisplayFormatHex();
+
+    // constraints[ID3v2_HEADER.size]: the synchsafe body length, generation_range
+    // 11..4096.  Planted, because an escaped value relocates where the MPEG scan
+    // begins (dependency 45) and makes the padding length underflow.
+    mp3SynchSel = 0;
+    mp3PlantSynch = Strcmp(head, "ID3") == 0;
+    mp3TagSzMenu[0] = mp3Synch(  40 );
+    mp3TagSzMenu[1] = mp3Synch(  64 );
+    mp3TagSzMenu[2] = mp3Synch( 100 );
+    mp3TagSzMenu[3] = mp3Synch( 180 );
+    mp3TagSzMenu[4] = mp3Synch( 320 );
+    mp3TagSzMenu[5] = mp3Synch( 600 );
+    synchsafe_integer size; // Is the size of the complete tag after unsynchronisation,
+                   // including padding, excluding the header but not excluding
+                   // the extended header (total tag size - 10). Most
+                   // significant bit (bit 7) of each byte is set to zero
+};
+
+
+struct ID3v2_EXTENDED_HEADER
+{
+    SetBackColor(0xA1D4FF);
+
+    DisplayFormatDecimal();
+
+    // constraints[ID3v2_EXTENDED_HEADER.size]: a plain uint32 in ID3v2.3 whose
+    // only legal results are 6 and 10, selected by FLAG_CRC_PRESENT
+    // (dependencies 27 and 28).  The flag is declared after the size, so the
+    // agreement is made the other way round: the size is pinned to 6 and the
+    // flag to 0, its preferred_value.
+    uint32 size = { 6 }; // extended header size, excluding this 'size' field
+
+    uint16 FLAG_CRC_PRESENT :  1 <values=mp3CrcFlag>;   // extended header flags
+    // unnamed_bitfields[1]: the remaining fifteen flag bits are reserved.
+    uint16                  : 15 <values=mp3Zero16>;   //
+
+    // constraints[ID3v2_EXTENDED_HEADER.padding_sz]: must equal the trailing
+    // zero run (dependency 30).  The frame loop below fills the tag body
+    // exactly, so that run is empty and 0 is the correct declaration.
+    uint32 padding_sz = { 0 };
+
+    if (FLAG_CRC_PRESENT)
+    {
+        // dependency 29: present only under the flag.  constraints
+        // [ID3v2_EXTENDED_HEADER.crc] names CRC-32/ISO-HDLC over the frames and
+        // the padding, neither of which exists yet at this point in the file, so
+        // it is emitted free - which the entry marks evil_bit_safe true.
+        DisplayFormatHex();
+        uint32 crc;
+    }
+};
+
+
+struct FRAME_FLAGS {
+    // constraints[FRAME_FLAGS.*]: every flag preferred 0.  The three format
+    // flags are not advisory - dependencies 36, 37 and 38 each add a prefix byte
+    // or a companion frame that neither frame struct declares, so setting one
+    // makes the payload boundary the template computes disagree with the
+    // specification's.  unnamed_bitfields[2] and [3] pin the two reserved runs.
+    uint16 TAG_ALTER_PRESERV  : 1 <values=mp3Zero16>;
+    uint16 FILE_ALTER_PRESERV : 1 <values=mp3Zero16>;
+    uint16 READ_ONLY_FRAME    : 1 <values=mp3Zero16>;
+    uint16                    : 5 <values=mp3Zero16>;
+    uint16 COMPRESSED_FRAME   : 1 <values=mp3Zero16>;
+    uint16 ENCRYPTED_FRAME    : 1 <values=mp3Zero16>;
+    uint16 GROUP_MEMBER_FRAME : 1 <values=mp3Zero16>;
+    uint16                    : 5 <values=mp3Zero16>;
+};
+
+
+struct ID3v2_FRAME
+{
+    // constraints[ID3v2_FRAME.id]: four characters from A-Z and 0-9;
+    // known_values lists the identifiers real decoders act on, preferred TIT2.
+    // The frame loop's ReadByte probe plants this first byte, so
+    // is_compatible_string narrows the set to the identifiers beginning with
+    // that letter - which is also how the text/binary branch below is steered.
+    char id[4] = { "TIT2", "TPE1", "TALB", "TYER", "TRCK", "TCON", "TLEN", "TENC",
+                   "TSSE", "TXXX", "COMM", "APIC", "PRIV", "WXXX", "MCDI", "USLT" }; // four alpha chars
+
+    DisplayFormatDecimal();
+
+    // constraints[ID3v2_FRAME.size]: a plain big-endian uint32 in ID3v2.3 - NOT
+    // synchsafe, which is the whole reason two frame structs exist - covering the
+    // payload only.  generation_range 1..256.  Planted: an escaped size walks the
+    // frame stream off the end of the tag and makes the padding length underflow.
+    mp3One[0] = mp3BE32( mp3FrSize );
+    ReadBytes( mp3Peek, FTell(), 4, mp3One, mp3One, 1.0 );
+    uint32 size; // frame size without frame header
+
+    FRAME_FLAGS flags;
+
+    if (id[0] == 'T')
+    {
+        // frame contains text related data
+        if ( ReadByte(FTell(), mp3EncValues) == 0  &&  size > 1)
+        {
+            byte id_asciiz_str;
+            char frame_data [size - 1];
+        }
+        else
+            char frame_data [size];
+    }
+    else
+    {
+        DisplayFormatHex();
+        ubyte frame_data [size];
+    }
+};
+
+
+struct ID3v2_4_FRAME
+{
+    // constraints[ID3v2_4_FRAME.id]: same character set as ID3v2.3 but a partly
+    // different set of defined identifiers - TDRC and TDRL replace TYER.
+    char id[4] = { "TIT2", "TPE1", "TALB", "TDRC", "TRCK", "TCON", "TLEN", "TENC",
+                   "TSSE", "TXXX", "COMM", "APIC", "PRIV", "WXXX", "TDRL", "USLT" }; // four alpha chars
+
+    DisplayFormatDecimal();
+
+    // constraints[ID3v2_4_FRAME.size]: synchsafe, unlike the v2.3 field above.
+    mp3SynchSel = 1;
+    mp3PlantSynch = 1;
+    mp3FrSzMenu[0] = mp3Synch( mp3FrSize );
+    synchsafe_integer size; // frame size without frame header
+
+    FRAME_FLAGS flags;
+
+    if (id[0] == 'T')
+    {
+        // frame contains text related data
+        // constraints[ID3v2_4_FRAME.encoding] and dependency 32: the byte is
+        // unconditional here, unlike the v2.3 branch.  preferred_value 0 -
+        // ISO-8859-1 needs no BOM and one byte per character, so dependencies 33
+        // and 34 (the mandatory UTF-16 BOM and the even payload length) are
+        // satisfied by never selecting the encodings that impose them.
+        enum <ubyte> {
+            ISO_8859_1,
+            UTF_16_with_BOM,
+            UTF_16BE_without_BOM,
+            UTF_8
+        } encoding = { 0 };
+
+        // dependency 35 / template_deviation 12: the v2.3 branch guards its
+        // subtraction with "size > 1"; this one does not, so a declared size of 0
+        // asks for an array of length -1.  The guard is a no-op for every frame
+        // the specification admits.
+        local uint32 mp3TxtLen = 0;
+        if ( size.computed > 0 )
+            mp3TxtLen = size.computed - 1;
+        char frame_data [mp3TxtLen];
+    }
+    else
+    {
+        DisplayFormatHex();
+        ubyte frame_data [size.computed];
+    }
+};
+
+struct ID3v2_TAG
+{
+    ID3v2_HEADER hdr;
+
+    // calculating real size of the ID3v2 tag
+    local uint32 tag_sz = hdr.size.computed;
+
+    // structure rule 0 and dependency 43: the tag, when present, starts at
+    // offset 0.  The original decided that with a three-byte lookahead at
+    // absolute offset 0, which marks those bytes in the accessor's bitmap and
+    // makes the MPEG header that sits there in an untagged file unparseable.
+    // Reading the header and rewinding costs the same ten bytes in the generate
+    // direction - they are overwritten by the first frame - and marks nothing.
+    if ( Strcmp(hdr.head, "ID3") != 0 )
+    {
+        FSeek(0);
+    }
+    else
+    {
+    Printf("MP3: ID3v2 tag found\n");
+
+    //
+    // An ID3v2 tag header can be detected with the following pattern:
+    // $49 44 33 yy yy xx zz zz zz zz
+    // Where yy is less than $FF, xx is the 'flags' byte and zz is less than $80.
+    //
+    if (hdr.ver_major == 0xFF  ||  hdr.ver_revision == 0xFF)
+    {
+        Printf("MP3: warning: invalid ID3v2 tag header\n");
+    }
+    else
+    {
+        if ( !(hdr.ver_major == 3 || hdr.ver_major == 4)  ||  hdr.flags.UNSYNCHRONISATION_USED  ||  hdr.flags.EXPERIMENTAL_TAG)
+        {
+            Printf("MP3: warning: skipping unsupported ID3v2.%d tag\n", hdr.ver_major);
+            SetBackColor(0xA9DCFF);
+            DisplayFormatHex();
+            ubyte id3v2_data[tag_sz];
+        }
+        else
+        {
+            if ( hdr.flags.EXTENDED_HEADER_PRESENT )
+                ID3v2_EXTENDED_HEADER ext_hdr;
+
+            // Now reading ID3v2 frames
+            // A tag must contain at least one frame. A frame must be
+            // at least 1 byte big, excluding the header.
+            //
+            local uint32 frame_color = 0xC9FCFF;
+            mp3TagEnd = tag_sz + sizeof(hdr);
+            mp3TagFrames = 0;
+            mp3PrevTag = -1;
+            do
+            {
+                mp3TagFrames = mp3TagFrames + 1;
+                mp3PrevTag = FTell();
+                SetBackColor(frame_color);
+                // structure rule 7, cardinality 1..12 frames: the payload size is
+                // derived from what is left of the declared tag body rather than
+                // drawn, so the frames fill the tag exactly and structure rule 10's
+                // padding run comes out empty - which is what lets
+                // ID3v2_EXTENDED_HEADER.padding_sz be emitted as an honest 0.
+                // generation_range for both size fields is 1..256; 64 keeps a text
+                // frame the size real ones are.
+                mp3FrSize = 1;
+                if ( mp3TagEnd > FTell() + 10 )
+                    mp3FrSize = mp3TagEnd - FTell() - 10;
+                if ( mp3FrSize > 64  &&  mp3TagEnd >= FTell() + 85 )
+                    mp3FrSize = 64;   // 85 = this frame's 74 bytes plus the smallest next frame
+                // dependencies 17 and 18, structure rule 14: the layout is fixed
+                // by the major version for the whole tag, never mixed.
+                if (hdr.ver_major == 3)
+                    ID3v2_FRAME tf;
+                else
+                    ID3v2_4_FRAME tf;
+                frame_color -= 0x020200;
+                // lookahead_pools[0]: the original ended the frame run with
+                // ReadByte(FTell()) != 0, the rule that a zero where a frame
+                // identifier is expected means padding has begun.  The probe is
+                // kept, with a per-call-site pool: it plants the FIRST LETTER of
+                // the next identifier, so is_compatible_string then narrows that
+                // frame's id set to the identifiers starting with it, and the run
+                // never stops early - which is what makes the frames fill the tag
+                // exactly.  ffcompile only resolves a file-scope local passed to
+                // a lookahead when the call is a statement, not inside a loop
+                // condition, so the result is read into a local first.
+                mp3NextId = 0;
+                if ( FTell() < tag_sz + sizeof(hdr) )
+                    mp3NextId = ReadByte(FTell(), mp3ContValues);
+            }
+            while ( FTell() < tag_sz + sizeof(hdr)  &&  mp3TagFrames < 1024  &&
+                    FTell() > mp3PrevTag  &&  mp3NextId != 0 );
+
+            SetBackColor(0x99CCFF);
+            // template_deviation 11 and constraints[ID3v2_TAG.id3v2_padding]: the
+            // original writes this length as an unsigned difference with no guard,
+            // so frames that overshoot the declared tag size ask for a near-4GB
+            // array.  constraints also require every padding byte to be 0x00, and a
+            // ubyte[] array takes no per-call-site value list, so the run is planted
+            // as zeroes and copied back.
+            local uint32 mp3PadLen = 0;
+            if ( tag_sz + sizeof(hdr) > FTell() )
+                mp3PadLen = tag_sz + sizeof(hdr) - FTell();
+            if ( mp3PadLen > 0  &&  mp3PadLen <= 1024 )
+            {
+                mp3PadMenu[0] = mp3Zeroes( mp3PadLen );
+                ReadBytes( mp3Peek, FTell(), mp3PadLen, mp3PadMenu, mp3PadMenu, 1.0 );
+            }
+            ubyte id3v2_padding [ mp3PadLen ];
+        }
+    }
+    }
+};
+
+// lookahead_pools 3-5 and template_deviations 1-3.  All three pools the original
+// declares are wrong for generation: mpeg_id_values pools 2, which a one-bit
+// field cannot hold; bitrate_index_values pools 0 and 15, which are exactly the
+// two values the sanity check below rejects, so two draws in three produce an
+// invalid header; and no pool anywhere in the file names a frame sync, because
+// the sync test is a >= threshold rather than an equality, so ffcompile mines no
+// sync literal at all (template_deviation 3).  Every field of the header
+// therefore gets an explicit pool here, sized uniformly at eight entries so the
+// duplicates carry the weighting and so mp3TagPattern below can rewrite them all
+// in one loop.
+// The seven fields that decide a frame's LENGTH are all evil_bit_safe false in
+// the JSON, and for good reason: an out-of-pool value fails the sanity check, the
+// template resynchronises two bytes back, and those two bytes survive as garbage
+// between two frames - which is exactly the break a decoder reports as "failed to
+// find two consecutive MPEG audio frames".  So the evil bit is suppressed across
+// that whole run, and every pool below therefore has to cover every value a REAL
+// file can carry, or the parse direction would assert instead.  That is why
+// bitrate_index lists all fourteen legal indices rather than a curated few, and
+// why mp3Pin narrows the four stream-identity fields only after the first frame
+// has told it what they are.  All pools are sixteen entries wide so that
+// mp3TagPattern and mp3Pin can rewrite any of them in one loop.
+local uint32 mp3SyncVals[]           = { 0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF,
+                                         0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF, 0xFFF };
+local uint32 mpeg_id_values[]        = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0 };
+local uint32 mp3LayerVals[]          = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+local uint32 protection_bit_values[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0 };
+local uint32 bitrate_index_values[]  = { 9, 9, 9, 5, 6, 7, 8, 10, 11, 12, 13, 14, 1, 2, 3, 4 };
+local uint32 mp3FreqVals[]           = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2 };
+local uint32 mp3PadVals[]            = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1 };
+local uint32 mp3PrivVals[]           = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1 };
+local uint32 mp3ChanVals[]           = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 3, 3, 3 };
+// 0 while ordinary frames are being written, which suppresses the evil bit over
+// the length-critical run; 1 once mp3TagPattern has aimed the pools at "TAG",
+// where the escape has to come back or a real file with more frames at that
+// point could not be parsed at all.
+local int    mp3TagMode = 0;
+local uint32 mp3ModeExtVals[]        = { 0, 0, 0, 0 };
+local uint32 mp3EmphVals[]           = { 0, 0, 0, 0, 0, 0, 1, 3 };
+
+// structure rule 3: the appended tag is generated by making one frame header
+// spell it.  Read as an MPEG header, the bytes 0x54 0x41 0x47 of "TAG" decompose
+// into frame_sync 0x544, mpeg_id 0, layer_id 0, protection_bit 1,
+// bitrate_index 4, frequency_index 1, padding_bit 1 and private_bit 1, so
+// pointing all eight pools at those values is what makes the next header come
+// out as the ID3v1 signature.  MPEG_FRAME recognises it, rewinds four bytes and
+// lets ID3v1_TAG overwrite them.  The loop runs in BOTH directions - it decides
+// nothing and costs no randomness - which is what keeps the generate and parse
+// decision streams identical.
+// structure rule 2, generation_note: "do not re-randomise version, layer,
+// bitrate and frequency per frame".  It is not advice - a decoder identifies the
+// audio stream by finding two CONSECUTIVE frames whose headers agree, and ffmpeg
+// refuses a file outright with "Failed to find two consecutive MPEG audio
+// frames" when they do not.  So the six fields that describe the stream rather
+// than the individual frame are collapsed to whatever the first frame drew, for
+// the rest of the file.  The bitrate index is deliberately NOT among them: its
+// pool already lists all fourteen legal indices, which is what lets a
+// variable-bitrate real file parse with the evil bit suppressed, and leaving it
+// free simply makes the generated stream variable-bitrate too.  padding_bit,
+// private_bit, mode_extension, copyright, original and emphasis stay free: they
+// legitimately vary frame to frame, and the padding bit does so in every real
+// constant-bitrate file.
+void mp3Pin( uint32 v_mpeg, uint32 v_layer, uint32 v_freq, uint32 v_chan )
+{
+    local int mp3PinI = 0;
+    while( mp3PinI < 16 )
+    {
+        mpeg_id_values[mp3PinI]       = v_mpeg;
+        mp3LayerVals[mp3PinI]         = v_layer;
+        mp3FreqVals[mp3PinI]          = v_freq;
+        mp3ChanVals[mp3PinI]          = v_chan;
+        mp3PinI = mp3PinI + 1;
+    }
+}
+
+void mp3TagPattern()
+{
+    mp3TagMode = 1;
+    local int mp3TagI = 0;
+    while( mp3TagI < 16 )
+    {
+        mp3SyncVals[mp3TagI]           = 0x544;
+        mpeg_id_values[mp3TagI]        = 0;
+        mp3LayerVals[mp3TagI]          = 0;
+        protection_bit_values[mp3TagI] = 1;
+        bitrate_index_values[mp3TagI]  = 4;
+        mp3FreqVals[mp3TagI]           = 1;
+        mp3PadVals[mp3TagI]            = 1;
+        mp3PrivVals[mp3TagI]           = 1;
+        mp3TagI = mp3TagI + 1;
+    }
+}
+
+// 32-bit MPEG frame header octets:
+// AAAAAAAA AAABBCCD EEEEFFGH IIJJKLMM
+//
+struct MPEG_HEADER
+{
+    SetBackColor(0xCC99FF);
+
+    DisplayFormatHex();
+
+    // constraints[MPEG_HEADER.frame_sync]: generation_range pins this to 0xFFF.
+    // 0xFFE means the two version bits are 00 or 01, that is MPEG 2.5 - a TODO in
+    // the template's own header - or the reserved version (dependencies 0 and 1).
+    local int evil = SetEvilBit( mp3TagMode );
+    uint32 frame_sync        : 12<values=mp3SyncVals>;   // A
+
+    DisplayFormatDecimal();
+
+    // constraints[MPEG_HEADER.mpeg_id]: preferred_value 1 (MPEG-1), weighted to
+    // it.  MPEG-2 is generated too, which reaches the other halves of
+    // dependencies 3 and 4 - the halved sampling-frequency table and the
+    // separate bitrate table - but only because both pieces of MPEG-2 arithmetic
+    // the original got wrong have been corrected below.
+    uint32 mpeg_id           :  1<values=mpeg_id_values>;   // B
+    // constraints[MPEG_HEADER.layer_id]: 0 is reserved and rejected below
+    // (dependency 6); 1 is Layer III, the preferred_value, the meaning of the
+    // .mp3 extension, and the only layer whose frame length the template computes
+    // with the 144-byte-per-kbit identity a decoder also uses.
+    uint32 layer_id          :  2<values=mp3LayerVals>;   // C
+    // constraints[MPEG_HEADER.protection_bit]: inverted sense - 0 means a CRC-16
+    // follows (dependencies 10 and 11).  preferred_value 1, because the checksum
+    // covers side-information bytes that do not exist yet when the field is
+    // written and bt.h's Checksum() offers no CRC-16 with this polynomial.
+    uint32 protection_bit    :  1<values=protection_bit_values>;   // D
+    // constraints[MPEG_HEADER.bitrate_index]: 1..14, preferred 9 (128 kbit/s).
+    // 0 is free format, where the length is not in the header at all, and 15 is
+    // the reserved bad value; dependency 8 forbids both.
+    uint32 bitrate_index     :  4<values=bitrate_index_values>;   // E
+    // constraints[MPEG_HEADER.frequency_index]: 3 is reserved and would index one
+    // past the end of the three-entry table below (dependency 7).  Under MPEG-1
+    // the three values are 44100, 48000 and 32000 Hz (dependency 2).
+    uint32 frequency_index   :  2<values=mp3FreqVals>;   // F
+    // constraints[MPEG_HEADER.padding_bit]: a length input, not a flag - one
+    // extra byte for Layer III (dependency 16).
+    uint32 padding_bit       :  1<values=mp3PadVals>;   // G
+    // The escape comes back here.  private_bit and everything after it is free of
+    // the frame-length arithmetic, and channel_mode has to stay escapable
+    // whatever mp3Pin decided: LAME switches between stereo and joint stereo from
+    // one frame to the next, so a real file breaks the pin on its second frame.
+    SetEvilBit( evil );
+    uint32 private_bit       :  1<values=mp3PrivVals>;   // H
+    // constraints[MPEG_HEADER.channel_mode]: all four values are legal, and all
+    // four are generated now that the mono halving of template_deviation 4 has
+    // been removed from the frame-length arithmetic below.  preferred_value 0.
+    uint32 channel_mode      :  2<values=mp3ChanVals>;   // I
+    // dependency 12: mode_extension must be zero unless the frame is joint
+    // stereo, and dependency 13 makes its meaning layer-dependent.  channel_mode
+    // is declared first, so the pool could in principle be narrowed between the
+    // two declarations - but a statement inside a bitfield run puts pfp's
+    // BitfieldRW into an invalid state and ffcompile aborts, so the pool is
+    // simply pinned to 0, which satisfies dependency 12 for every channel mode
+    // and is the specification's own value for the three non-joint ones.
+    uint32 mode_extension    :  2<values=mp3ModeExtVals>;   // J
+    uint32 copyright         :  1;   // K
+    uint32 original          :  1;   // L
+    // constraints[MPEG_HEADER.emphasis]: value 2 is reserved (dependency 9).  The
+    // sanity check below never looks at this field, so it is a rule only the
+    // specification imposes.
+    uint32 emphasis          :  2<values=mp3EmphVals>;   // M
+
+    if (protection_bit == 0)
+    {
+        // dependency 10 / constraints[MPEG_HEADER.checksum]: CRC-16 with
+        // polynomial 0x8005 and initial value 0xFFFF over the header tail and the
+        // side information.  Emitted free - see the findings.
+        DisplayFormatHex();
+        uint16 checksum;
+    }
+};
+
+
+struct MPEG_FRAME
+{
+    MPEG_HEADER mpeg_hdr;
+
+    // define frame bitrate
+    bitrate = 0;
+
+    // structure rule 3 and constraints[ID3v1_TAG.id]: the appended tag is found
+    // by re-assembling the three bytes just read out of the bitfields that read
+    // them, and comparing with "TAG".  The original used a two-byte lookahead at
+    // this exact position, which marks the bytes in the accessor's bitmap and
+    // makes the very next frame header abort with "bitfield lookahead not
+    // implemented"; this comparison marks nothing.  The bit positions are the
+    // ones schema_extensions "bitfield_layout" records: frame_sync is the top
+    // twelve bits, then one version bit, two layer bits, the protection bit, four
+    // bitrate bits, two frequency bits, the padding bit and the private bit -
+    // twenty-four bits in all, which is exactly the three bytes of a signature.
+    mp3Hdr3 = mpeg_hdr.frame_sync;
+    mp3Hdr3 <<= 1;  mp3Hdr3 |= mpeg_hdr.mpeg_id;
+    mp3Hdr3 <<= 2;  mp3Hdr3 |= mpeg_hdr.layer_id;
+    mp3Hdr3 <<= 1;  mp3Hdr3 |= mpeg_hdr.protection_bit;
+    mp3Hdr3 <<= 4;  mp3Hdr3 |= mpeg_hdr.bitrate_index;
+    mp3Hdr3 <<= 2;  mp3Hdr3 |= mpeg_hdr.frequency_index;
+    mp3Hdr3 <<= 1;  mp3Hdr3 |= mpeg_hdr.padding_bit;
+    mp3Hdr3 <<= 1;  mp3Hdr3 |= mpeg_hdr.private_bit;
+
+    if (mp3Hdr3 == 0x544147)
+    {
+        // "TAG" - dependency 42: the ID3v1 tag occupies the final 128 bytes.
+        // Rewind over the four bytes just read and let the top level emit it.
+        id3v1_tag_found = 1;
+        FSeek( FTell() - 4 - (mpeg_hdr.protection_bit==0 ? 2:0) );
+    }
+    // header sanity check
+    else if (mpeg_hdr.frame_sync < 0xFFE  ||  mpeg_hdr.layer_id == 0  ||
+        mpeg_hdr.bitrate_index == 0  ||  mpeg_hdr.bitrate_index == 15  ||
+        mpeg_hdr.frequency_index == 3)
+    {
+        Printf("MP3: warning: invalid MPEG header in frame at offset 0x%X\n",
+            FTell() - 4 - (mpeg_hdr.protection_bit==0 ? 2:0) );
+
+        // Try to find MPEG header starting from offset (current - 2)
+        FSeek( FTell() - 2 );
+    }
+    else
+    {
+        if (mpeg_hdr.layer_id == 3)  // MPEG-1,2 Layer 1
+        {
+            bitrate = (uint32)mpeg_hdr.bitrate_index<<5;
+        }
+        else
+        {
+            if (mpeg_hdr.layer_id == 2)  // MPEG-1,2 Layer 2
+            {
+                bitrate = (uint32)mpeg_hdr.bitrate_index==1 ? 32 :
+                (1 << 5+(uint32)mpeg_hdr.bitrate_index/4) +
+                    ( ((uint32)mpeg_hdr.bitrate_index&3) <<
+                      3+(uint32)mpeg_hdr.bitrate_index/4  );
+            }
+            else
+            {
+                if (mpeg_hdr.mpeg_id == 1)  // MPEG-1 (Layer 3)
+                {
+                    bitrate = (1 << 5+((uint32)mpeg_hdr.bitrate_index-1)/4) +
+                        ( ((uint32)mpeg_hdr.bitrate_index-1&3) <<
+                          3+((uint32)mpeg_hdr.bitrate_index-1)/4);
+                }
+                else // (MPEG-2) (Layer 3)
+                {
+                    // dependency 4 gives the MPEG-2 Layer III table as
+                    // 8,16,24,32,40,48,56,64,80,96,112,128,144,160 kbit/s, and
+                    // the original's shift arithmetic does not reproduce it -
+                    // index 5 comes out 64 where the standard says 40, and index
+                    // 6 comes out 80 where it says 48.  A frame given a bitrate
+                    // that wrong is given a length no decoder agrees with, so the
+                    // table is expressed directly: 8k steps to index 8, 16k steps
+                    // after it.
+                    bitrate = (uint32)mpeg_hdr.bitrate_index <= 8 ?
+                        8 * (uint32)mpeg_hdr.bitrate_index :
+                        16 * ((uint32)mpeg_hdr.bitrate_index - 4);
+                }
+            }
+        }
+    }
+
+    if (bitrate != 0)
+    {
+        local uint16 freq[3];
+        freq[0] = 2205;
+        freq[1] = 2400;
+        freq[2] = 1600;
+
+        sampling_freq = freq[mpeg_hdr.frequency_index];
+
+        if (mpeg_hdr.mpeg_id == 1) // if MPEG-1
+            sampling_freq <<= 1;
+
+        // constraints[MPEG_FRAME.mpeg_frame_data]: the canonical identity is
+        // 144 * bitrate / samplerate, which is what (bitrate * 14400) /
+        // sampling_freq computes with the frequency held in tenths of a hertz.
+        // MPEG-2 and MPEG 2.5 Layer III carry 576 samples per frame rather than
+        // 1152, so the constant halves for them; the original uses 144
+        // throughout and therefore doubles the length of every MPEG-2 Layer III
+        // frame - the second reason it cannot parse a real low-sample-rate file.
+        // Layers I and II keep 1152 samples in both versions.
+        local uint32 mp3Slots = 14400;
+        if (mpeg_hdr.mpeg_id == 0  &&  mpeg_hdr.layer_id == 1)
+            mp3Slots = 7200;
+        frame_size = (bitrate * mp3Slots) / sampling_freq;
+
+        // template_deviation 4: the original halves frame_size for mono here, and
+        // its own header comment (lines 33-35) lists that as a known bug.  No
+        // such rule exists in ISO/IEC 11172-3 - the frame length depends on the
+        // bitrate and the sampling frequency only - and the halving is what
+        // makes the original mis-place every subsequent sync word in a mono
+        // file, which is why it cannot parse one at all.  The JSON's action for
+        // this deviation is to follow the specification, so the halving is gone
+        // and constraints[MPEG_HEADER.channel_mode] keeps all four values.
+
+        frame_size -= 4 + (mpeg_hdr.protection_bit==0 ? 2:0) - mpeg_hdr.padding_bit;
+
+        frame_header_offset = FTell() - 4 - (mpeg_hdr.protection_bit==0 ? 2:0);
+
+        // read frame data
+        // structure rule 17: the final frame must fit inside the file.  The
+        // original tested FTell() + frame_size against FileSize(), but in the
+        // generate direction FileSize() draws a random total length and pads the
+        // file to it with random bytes - it is the single call that made the
+        // unmodified template emit 65 KB of noise.  FEof is the equivalent that
+        // is exact in the parse direction and steerable in the generate one:
+        // mp3CutP is -1.0 while generating, which drives FEof's threshold to 510
+        // so it can never fire, and stays at 0.125 while parsing, where feof
+        // returns 255 exactly at end of file.  Both directions spend one decision
+        // either way.
+        if ( FEof( mp3CutP ) )
+        {
+            Printf("MP3: warning: cut MPEG frame at end of file (frame header offset = 0x%LX, data length = %u)\n",
+                frame_header_offset, frame_size);
+
+            Printf("MP3: file parsing completed!\nMP3: valid MPEG frames found: %d\n", frames_count);
+
+            if (frames_count != 0)
+                Printf("MP3: average frame bitrate: %d kbit\n", sum_bitrate / frames_count);
+
+            return -1;
+        }
+        else
+        {
+            DisplayFormatHex();
+            SetBackColor(0xCCCCFF);
+            // constraints[MPEG_FRAME.mpeg_frame_data] calls the content free, and
+            // for the main data it is.  The first bytes of a Layer III frame are
+            // not content though - they are the side information, and a random
+            // one makes a decoder fail on the frame it describes ("big_values too
+            // big", "invalid block type").  Zeroing just that prefix gives a
+            // structurally valid silent granule and leaves the rest of the frame
+            // free.  Its width is version- and channel-dependent, exactly as the
+            // notes on constraints[MPEG_HEADER.checksum] record: 17 bytes for
+            // MPEG-1 mono, 32 for MPEG-1 non-mono, 9 for MPEG-2 mono, 17 else.
+            local uint32 mp3SideLen = 0;
+            if ( mpeg_hdr.layer_id == 1 )
+            {
+                if ( mpeg_hdr.mpeg_id == 1 )
+                    mp3SideLen = mpeg_hdr.channel_mode == 3 ? 17 : 32;
+                else
+                    mp3SideLen = mpeg_hdr.channel_mode == 3 ? 9 : 17;
+            }
+            if ( mp3SideLen > frame_size )
+                mp3SideLen = frame_size;
+            if ( mp3SideLen > 0 )
+            {
+                mp3SideMenu[0] = mp3Zeroes( mp3SideLen );
+                ReadBytes( mp3Peek, FTell(), mp3SideLen, mp3SideMenu, mp3SideMenu, 1.0 );
+            }
+            ubyte mpeg_frame_data [ frame_size ];
+        }
+
+        sum_bitrate += bitrate;
+
+        frames_count++;
+    }
+};
+
+
+//--------------------------------------------------------------
+
+
+BigEndian();
+
+local string buf_values[] = { "ID3" };
+
+// lookahead_pools[1]: the original probed for the prepended tag with
+// ReadBytes(buf, 0, 3, buf_values) at absolute offset 0.  That probe marks bytes
+// 0..2 in the accessor's bitmap, and a file with no ID3v2 tag has its first MPEG
+// header exactly there, so the probe alone makes every untagged MP3 unparseable.
+// ID3v2_TAG now reads its own ten-byte header and rewinds when the signature is
+// absent; buf and buf_values are kept as the declarations the JSON records.
+ID3v2_TAG id3v2_tag;
+
+local ushort data_values[] = { 0x5441 };
+
+// structure rules 2, 4 and 11: an ID3v2 tag, then a bounded run of frames laid
+// end to end, then an optional ID3v1 tag.  The original wrapped the frame read in
+// a byte-by-byte sync search whose ReadUShort marked every candidate frame
+// position; the search is gone, and MPEG_FRAME's own sanity check - which the
+// original already had - does the resynchronising instead.
+if ( IsParsing() == 0 )
+{
+    mp3EofP = -1.0;
+    mp3CutP = -1.0;
+}
+
+while ( !FEof( mp3EofP )  &&  !id3v1_tag_found  &&  mp3Iter < 4096  &&  FTell() > mp3Prev )
+{
+    mp3Iter = mp3Iter + 1;
+    mp3Prev = FTell();
+    seek_pos = FTell();
+    was_bad_sync = 0;
+
+    {
+        MPEG_FRAME mf;
+
+        if (frames_count == 1  &&  bitrate)
+            Printf("MP3: first found MPEG frame parameters:\nMP3:\t- header ofsset: 0x%LX\nMP3:\t- bitrate: %d kbit\nMP3:\t- MPEG-%d layer %d\nMP3:\t- sampling frequency: %d Hz\nMP3:\t- channel mode: %s\nMP3:\t- CRC protected: %s\n",
+                frame_header_offset,
+                bitrate,
+                mf.mpeg_hdr.mpeg_id==1 ? 1:2,
+                mf.mpeg_hdr.layer_id==1 ? 3 : mf.mpeg_hdr.layer_id==2 ? 2:1,
+                sampling_freq*10,
+                mf.mpeg_hdr.channel_mode==3 ? "mono" :
+                mf.mpeg_hdr.channel_mode==0 ? "stereo" :
+                mf.mpeg_hdr.channel_mode==1 ? "joint stereo" : "dual channel",
+                mf.mpeg_hdr.protection_bit==0 ? "Yes" : "No");
+
+        // structure rule 2, generation_bound "4 to 64 frames", and structure
+        // rule 6, "0 or 1" ID3v1 tags.  Both are decided from bits of this first
+        // header rather than from a separate draw, so the parse direction
+        // recomputes them from the same bytes and the two decision streams stay
+        // aligned: the frame budget from the bitrate index, the tag from the
+        // private bit, which nothing else reads.
+        if (frames_count == 1)
+        {
+            mp3FrameGoal = 4 + mf.mpeg_hdr.bitrate_index;
+            mp3WantId3v1 = mf.mpeg_hdr.private_bit;
+            mp3Pin( mf.mpeg_hdr.mpeg_id, mf.mpeg_hdr.layer_id,
+                    mf.mpeg_hdr.frequency_index, mf.mpeg_hdr.channel_mode );
+        }
+    }
+
+    if ( frames_count >= mp3FrameGoal )
+    {
+        // From here on the evil bit comes back for the frame header.  Up to this
+        // point every generated frame is escape-free, which is what keeps the
+        // frame chain unbroken; past it an escape is harmless, because generation
+        // is about to stop anyway - and the parse direction NEEDS it, since this
+        // is where a real file's appended tag turns up and "TAG" read as a header
+        // is in none of the pools.
+        mp3TagMode = 1;
+        if ( mp3WantId3v1 )
+            mp3TagPattern();          // make the next header spell "TAG"
+        else if ( IsParsing() == 0 )
+            mp3EofP = 1.0;            // end the file here
+    }
+}
+
+if (id3v1_tag_found)
+{
+    Printf("MP3: ID3v1 tag found\n");
+    ID3v1_TAG id3v1_tag;
+}
+
+if ( !FEof() )
+    Printf("MP3: warning: there is some unknown extra-data after ID3v1 tag at end of file\n");
+
+Printf("MP3: file parsing completed!\nMP3: valid MPEG frames found: %d\n", frames_count);
+
+if (frames_count != 0)
+    Printf("MP3: average frame bitrate: %d kbit\n", sum_bitrate / frames_count);
