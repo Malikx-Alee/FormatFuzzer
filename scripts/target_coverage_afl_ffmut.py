@@ -413,10 +413,14 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
                               "AFLplusplus/include/config.h's OUTPUT_GRACE (25) minutes of prior "
                               "fuzzing (FATALs with 'At-risk data found') rather than silently "
                               "discard real progress - this flag is the explicit, visible opt-in to "
-                              "do that deletion yourself. Does NOT touch coverage_targets_afl/<fmt>/ "
-                              "(the AFL-instrumented target binary - safe and worth keeping) or "
-                              "coverage_targets/<name>/ (the gcov target; its .gcda counters are reset "
-                              "every run regardless, with or without this flag).")
+                              "do that deletion yourself. Also deletes the variant's template build/"
+                              "<fmt>[-llm].so first, forcing build_so() to recompile it from the "
+                              "current templates/<fmt>.bt (or templates_llm/<fmt>-llm.bt) instead of "
+                              "reusing a stale .so left over from a previous edit. Does NOT touch "
+                              "coverage_targets_afl/<fmt>/ (the AFL-instrumented target binary - safe "
+                              "and worth keeping) or coverage_targets/<name>/ (the gcov target; its "
+                              ".gcda counters are reset every run regardless, with or without this "
+                              "flag).")
     parser.add_argument("--extra-afl-flag", action="append", default=[],
                          help="extra flag appended verbatim to the afl-fuzz argv (repeatable)")
     parser.add_argument("--list", action="store_true", help="list supported formats and exit")
@@ -449,6 +453,10 @@ def main(variant: Variant, argv=None) -> None:
             if d.exists():
                 tc.log(f"--fresh: deleting {d}")
                 shutil.rmtree(d)
+        template_so = variant.so_path(fmt)
+        if template_so.exists():
+            tc.log(f"--fresh: deleting {template_so} to force a clean template rebuild")
+            template_so.unlink()
     # variant-specific, NOT just tc.TARGETS_DIR / fmt: the gcov copy's .gcda
     # counters accumulate for the life of a run and are never reset except
     # at process start (see the gcda.unlink() loop below), so if the
