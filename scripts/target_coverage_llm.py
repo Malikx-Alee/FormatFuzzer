@@ -9,9 +9,11 @@ binary drives the corpus:
                             (source: templates/<format>.bt - hand-optimized
                             for generation, per README's "Creating and
                             Customizing Binary Templates")
-  - target_coverage_llm.py builds `<format>-llm-fuzzer`  via ./build_new.sh
-                            (source: templates_llm/<format>-llm.bt
-                            - the untouched original template)
+  - target_coverage_llm.py builds `<format>-llm-<model>-fuzzer` via
+                            ./build_new.sh (source:
+                            templates_llm/llm_<model>/<format>-llm.bt - an
+                            LLM-generated template; templates_llm/ holds one
+                            subdirectory per model, chosen with --llm-model)
 
 Same real-world target program, build system, and drive command per format
 either way (both scripts share the RECIPES below) - only the corpus-
@@ -22,11 +24,18 @@ coverage, not just validity%?" (this repo's existing BENCHMARK_REPORT.md /
 benchmark_all.py already runs this original-vs-optimized comparison for
 validity% - this is the code-coverage equivalent).
 
-Run once per format - re-run manually for each one you want:
+Choose which formats to run either by editing the FORMATS list at the top of
+this file, or by naming them on the command line - the CLI always wins:
 
-    python3 scripts/target_coverage_llm.py zip
-    python3 scripts/target_coverage_llm.py png
-    ...
+    python3 scripts/target_coverage_llm.py zip           # just one
+    python3 scripts/target_coverage_llm.py zip png gif   # several
+    python3 scripts/target_coverage_llm.py --all         # every supported format
+    python3 scripts/target_coverage_llm.py               # whatever FORMATS says
+
+Formats run sequentially. If one fails the remaining ones still run, and a
+per-format summary is printed at the end; the exit status is non-zero if any
+format failed. Output locations are the TARGETS_DIR / RESULTS_DIR constants
+at the top of this file, overridable with --targets-dir / --results-dir.
 
 Use --list to see all supported formats (and which recipes are build-tested
 vs. best-effort - identical list to target_coverage.py, since the target
@@ -66,7 +75,37 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# ---------------------------------------------------------------------------
+# Configuration. Edit these to change what runs and where output lands.
+# Every one of them can also be set per-run on the command line, and the CLI
+# always overrides what is written here.
+# ---------------------------------------------------------------------------
+
+# Formats to measure when none are named on the command line. Set this to the
+# ones you actually want, e.g. ["png", "gif", "zip"]. Leave it empty to be
+# forced to name them explicitly each run. Formats are processed sequentially,
+# and one failing does not stop the others.
+# Override per-run: positional arguments, or --all for every supported format.
+FORMATS: List[str] = ["png"]
+
+# Which model's LLM-generated template set to measure. templates_llm/ holds
+# one subdirectory per model (llm_opus4.7/, llm_opus5/, ...); the tag is
+# carried through the fuzzer binary name and the results directory, so
+# different models never overwrite each other.
+# Override per-run: --llm-model
+LLM_MODEL = "opus5"
+
+TEMPLATES_LLM_DIR = REPO_ROOT / "templates_llm"
+
+# Where downloaded and instrumented target programs are cached. Shared with
+# target_coverage.py on purpose - it is the identical real-world library
+# either way, so this avoids building e.g. FFmpeg twice.
+# Override per-run: --targets-dir
 TARGETS_DIR = REPO_ROOT / "coverage_targets"
+
+# Where lcov output is written, one "<format>-llm" subdirectory per format.
+# Override per-run: --results-dir
 RESULTS_DIR = REPO_ROOT / "coverage_results"
 
 COVERAGE_CFLAGS = "-O0 -g --coverage"
@@ -82,12 +121,15 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
-def run(cmd, cwd=None, check=True):
-    """Run cmd (list or shell string) with output streamed live."""
+def run(cmd, cwd=None, check=True, env=None):
+    """Run cmd (list or shell string) with output streamed live. env, if
+    given, is merged over the current environment (build_new.sh takes the
+    template set to use from LLM_MODEL in the environment)."""
     shell = isinstance(cmd, str)
     printable = cmd if shell else " ".join(cmd)
     log(f"$ {printable}" + (f"   (cwd={cwd})" if cwd else ""))
-    result = subprocess.run(cmd, cwd=cwd, shell=shell)
+    run_env = {**os.environ, **env} if env else None
+    result = subprocess.run(cmd, cwd=cwd, shell=shell, env=run_env)
     if check and result.returncode != 0:
         raise RuntimeError(f"command failed (exit {result.returncode}): {printable}")
     return result
@@ -518,45 +560,75 @@ def list_formats() -> None:
         print(f"{name:<6} {r.ext:<5} {status:<20} {r.label:<32} {name}-llm-fuzzer")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("format", nargs="?", choices=sorted(RECIPES), help="format to measure")
-    parser.add_argument("--count", type=int, default=10000, help="number of files to generate (default 10000)")
-    parser.add_argument("--batch-size", type=int, default=500, help="files per fuzz-generation subprocess call")
-    parser.add_argument("--timeout", type=int, default=20, help="per-file driver timeout in seconds")
-    parser.add_argument("--rebuild", action="store_true", help="re-run configure/make/cmake even if already built")
-    parser.add_argument("--keep-corpus", action="store_true", help="don't delete the generated corpus afterwards")
-    parser.add_argument("--list", action="store_true", help="list supported formats and exit")
-    args = parser.parse_args()
+def select_formats(formats_from_cli: List[str], run_all: bool, configured: List[str]) -> List[str]:
+    """Resolve which formats to run. Precedence: --all, then whatever was
+    named on the command line, then the FORMATS constant at the top of the
+    file. Duplicates are collapsed while preserving order, so repeating a
+    format (in FORMATS or on the CLI) never runs it twice."""
+    if run_all:
+        return sorted(RECIPES)
+    chosen = list(formats_from_cli) if formats_from_cli else list(configured)
+    unknown = [f for f in chosen if f not in RECIPES]
+    if unknown:
+        die(f"unsupported format(s): {', '.join(unknown)}\n"
+            f"  supported: {', '.join(sorted(RECIPES))}\n"
+            f"  (if these came from the FORMATS list at the top of this script, fix it there)")
+    return list(dict.fromkeys(chosen))
 
-    if args.list or not args.format:
-        list_formats()
-        if not args.format:
-            sys.exit(0 if args.list else 1)
 
-    recipe = RECIPES[args.format]
-    fuzzer_bin = REPO_ROOT / "build" / f"{args.format}-llm-fuzzer"
-    work_dir = TARGETS_DIR / args.format
-    results_dir = RESULTS_DIR / f"{args.format}-llm"
+def available_llm_models() -> List[str]:
+    """Model tags discoverable under templates_llm/, e.g. ['opus4.7', 'opus5'],
+    taken from its llm_<model>/ subdirectory names."""
+    if not TEMPLATES_LLM_DIR.is_dir():
+        return []
+    return sorted(p.name[len("llm_"):] for p in TEMPLATES_LLM_DIR.iterdir()
+                  if p.is_dir() and p.name.startswith("llm_"))
+
+
+def run_format(fmt: str, args, model: str) -> dict:
+    """Measure one format end-to-end and return its meta dict.
+
+    Raises RuntimeError on any failure rather than exiting, so that a
+    multi-format run can record the failure and carry on to the next format.
+    """
+    recipe = RECIPES[fmt]
+    # The model tag is part of every artifact build_new.sh writes, so two
+    # models' runs of the same format stay separate on disk and can run at
+    # the same time.
+    stem = f"{fmt}-llm-{model}"
+    fuzzer_bin = REPO_ROOT / "build" / f"{stem}-fuzzer"
+    # Keyed by stem, not by fmt. This directory holds both the gcov-instrumented
+    # target build and the generated corpus, and both are mutable per run: the
+    # .gcda counters are wiped at the start of each run and accumulate for its
+    # duration, and the corpus is rmtree'd and regenerated. Sharing it across
+    # models (or with target_coverage.py) means two concurrent runs pool their
+    # coverage counters into one set and delete each other's corpus mid-run -
+    # the same failure that made the AFL variants report identical numbers
+    # (docs_llm/target_coverage_afl_ffmut_shared_gcov_bug.md). The cost is one
+    # target build per model rather than one per format.
+    work_dir = TARGETS_DIR / stem
+    results_dir = RESULTS_DIR / stem
     work_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
 
     if not recipe.verified:
-        log(f"WARNING: the '{args.format}' recipe ({recipe.label}) has not been build-tested "
+        log(f"WARNING: the '{fmt}' recipe ({recipe.label}) has not been build-tested "
             f"end-to-end. It may fail - if it does, please report the exact error.")
 
     if not fuzzer_bin.exists():
-        log(f"{fuzzer_bin.name} not found, building it via ./build_new.sh {args.format}-llm")
-        run(["./build_new.sh", f"{args.format}-llm"], cwd=REPO_ROOT)
+        log(f"{fuzzer_bin.name} not found, building it via LLM_MODEL={model} ./build_new.sh {fmt}-llm")
+        # build_new.sh takes the format as its argument and the model from the
+        # environment, appending the model tag to everything it writes.
+        run(["./build_new.sh", f"{fmt}-llm"], cwd=REPO_ROOT, env={"LLM_MODEL": model})
     if not fuzzer_bin.exists():
-        die(f"{fuzzer_bin} still missing after ./build_new.sh {args.format}-llm - build it manually first")
+        raise RuntimeError(f"{fuzzer_bin} still missing after LLM_MODEL={model} "
+                           f"./build_new.sh {fmt}-llm - build it manually first")
 
     corpus_dir = work_dir / "corpus"
     if corpus_dir.exists():
         shutil.rmtree(corpus_dir)
     corpus_dir.mkdir(parents=True)
-    log(f"generating {args.count} '{args.format}' files with {fuzzer_bin.name} ...")
+    log(f"generating {args.count} '{fmt}' files with {fuzzer_bin.name} ...")
     generated = 0
     while generated < args.count:
         n = min(args.batch_size, args.count - generated)
@@ -570,7 +642,7 @@ def main() -> None:
         log(f"building target: {recipe.label}")
         build_result = recipe.build(work_dir, args.rebuild)
     except RuntimeError as e:
-        die(f"build failed for '{args.format}' ({recipe.label}): {e}")
+        raise RuntimeError(f"build failed for '{fmt}' ({recipe.label}): {e}")
 
     for d in build_result.gcov_dirs:
         for gcda in d.rglob("*.gcda"):
@@ -597,9 +669,9 @@ def main() -> None:
         if partial.exists():
             partials.append(partial)
     if not partials:
-        die("lcov produced no trace file - check the build/drive steps above for errors")
+        raise RuntimeError("lcov produced no trace file - check the build/drive steps above for errors")
 
-    info_path = results_dir / f"{args.format}_target.info"
+    info_path = results_dir / f"{fmt}_target.info"
     if len(partials) == 1:
         shutil.copy(partials[0], info_path)
     else:
@@ -615,14 +687,19 @@ def main() -> None:
          "--ignore-errors", "category,category"], check=False)
 
     summary = subprocess.run(["lcov", "--summary", str(info_path)], capture_output=True, text=True)
-    (results_dir / "summary.txt").write_text(summary.stdout + summary.stderr)
-    print(summary.stdout)
+    summary_text = summary.stdout + summary.stderr
+    (results_dir / "summary.txt").write_text(summary_text)
+    print(summary_text)
 
-    m_lines = re.search(r"lines\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) lines\)", summary.stdout)
-    m_funcs = re.search(r"functions\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) functions\)", summary.stdout)
+    # Search the combined stream, not stdout alone: some lcov builds print the
+    # summary block to stderr, which would otherwise leave every meta.json's
+    # coverage fields null while summary.txt on disk holds the real numbers.
+    m_lines = re.search(r"lines\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) lines\)", summary_text)
+    m_funcs = re.search(r"functions\.+:\s*([\d.]+)%\s*\((\d+) of (\d+) functions\)", summary_text)
     meta = {
-        "format": args.format,
-        "variant": "templates_llm",
+        "format": fmt,
+        "variant": f"templates_llm/llm_{model}",
+        "llm_model": model,
         "fuzzer_binary": fuzzer_bin.name,
         "target_label": recipe.label,
         "verified_recipe": recipe.verified,
@@ -641,6 +718,86 @@ def main() -> None:
 
     if not args.keep_corpus:
         shutil.rmtree(corpus_dir, ignore_errors=True)
+    return meta
+
+
+def main() -> None:
+    global TARGETS_DIR, RESULTS_DIR
+    parser = argparse.ArgumentParser(description=__doc__,
+                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("format", nargs="*", choices=sorted(RECIPES), metavar="FORMAT",
+                        help="format(s) to measure; overrides the FORMATS list at the top "
+                             "of this script. Omit to use that list.")
+    parser.add_argument("--all", action="store_true",
+                        help="measure every supported format, ignoring FORMATS and any "
+                             "formats named on the command line")
+    parser.add_argument("--count", type=int, default=10000, help="number of files to generate (default 10000)")
+    parser.add_argument("--batch-size", type=int, default=500, help="files per fuzz-generation subprocess call")
+    parser.add_argument("--timeout", type=int, default=20, help="per-file driver timeout in seconds")
+    parser.add_argument("--rebuild", action="store_true", help="re-run configure/make/cmake even if already built")
+    parser.add_argument("--keep-corpus", action="store_true", help="don't delete the generated corpus afterwards")
+    parser.add_argument("--targets-dir", type=Path, default=None,
+                        help=f"where to cache downloaded/built target programs "
+                             f"(default: {TARGETS_DIR})")
+    parser.add_argument("--results-dir", type=Path, default=None,
+                        help=f"where to write per-format lcov output (default: {RESULTS_DIR})")
+    parser.add_argument("--llm-model", default=None,
+                        help=f"which templates_llm/llm_<model>/ template set to measure "
+                             f"(default: {LLM_MODEL}). Results go to "
+                             f"coverage_results/<format>-llm-<model>/.")
+    parser.add_argument("--list", action="store_true", help="list supported formats and exit")
+    args = parser.parse_args()
+
+    if args.targets_dir:
+        TARGETS_DIR = args.targets_dir.resolve()
+    if args.results_dir:
+        RESULTS_DIR = args.results_dir.resolve()
+
+    models = available_llm_models()
+    if args.list:
+        list_formats()
+        print(f"\nLLM template sets under {TEMPLATES_LLM_DIR}/: "
+              f"{', '.join(models) if models else '(none found)'}")
+        print(f"current --llm-model default: {LLM_MODEL}")
+        sys.exit(0)
+
+    model = args.llm_model or LLM_MODEL
+    if models and model not in models:
+        die(f"unknown LLM model '{model}'\n"
+            f"  available under {TEMPLATES_LLM_DIR}/: {', '.join(models)}\n"
+            f"  (pass --llm-model, or edit the LLM_MODEL constant at the top of this script)")
+
+    formats = select_formats(args.format, args.all, FORMATS)
+    if not formats:
+        list_formats()
+        die("no formats selected - name one or more above on the command line, pass --all, "
+            "or set the FORMATS list at the top of this script")
+
+    log(f"llm model: {model} (templates_llm/llm_{model}/)")
+    log(f"formats ({len(formats)}): {', '.join(formats)}")
+    log(f"targets dir: {TARGETS_DIR}")
+    log(f"results dir: {RESULTS_DIR}")
+
+    outcomes: List[tuple] = []
+    for i, fmt in enumerate(formats, 1):
+        log(f"===== [{i}/{len(formats)}] {fmt}-llm-{model} =====")
+        try:
+            outcomes.append((fmt, run_format(fmt, args, model), None))
+        except RuntimeError as e:
+            # One format failing must not abandon the rest of a long batch;
+            # the error is recorded and reported in the closing summary.
+            log(f"ERROR: '{fmt}' failed: {e}")
+            outcomes.append((fmt, None, str(e)))
+
+    print()
+    log(f"summary ({sum(1 for _, m, _ in outcomes if m)}/{len(outcomes)} succeeded):")
+    for fmt, meta, err in outcomes:
+        if meta:
+            print(f"  {fmt:<6} lines {meta['lines_pct']}%  functions {meta['functions_pct']}%"
+                  f"  -> {RESULTS_DIR / f'{fmt}-llm-{model}'}")
+        else:
+            print(f"  {fmt:<6} FAILED: {err}")
+    sys.exit(0 if all(m for _, m, _ in outcomes) else 1)
 
 
 if __name__ == "__main__":

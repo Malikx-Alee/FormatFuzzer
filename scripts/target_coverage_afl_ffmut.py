@@ -24,10 +24,25 @@ target_coverage_afl_ffmut_llm.py, its thin sibling, for the templates_llm/
 (pre-optimization) template variant - it imports and reuses everything in
 this file.
 
-Run once per format:
+Choose which formats to run either by editing the FORMATS list at the top of
+this file, or by naming them on the command line - the CLI always wins:
 
     python3 scripts/target_coverage_afl_ffmut.py png
+    python3 scripts/target_coverage_afl_ffmut.py png zip gif
+    python3 scripts/target_coverage_afl_ffmut.py --all
     python3 scripts/target_coverage_afl_ffmut.py zip --duration 3600 --snapshot-interval 300
+
+Multiple formats run SEQUENTIALLY, each for the full --duration, so N formats
+take N * duration. One format failing does not stop the rest, and a summary
+is printed at the end. To run formats concurrently instead, launch separate
+copies of this script with one format each - safe, because different formats
+never share an output directory. Do NOT do that for the same format across
+the two variants without checking the directory-sharing notes in
+run_one_format().
+
+Output locations are the AFL_TARGETS_DIR / AFL_RUNS_DIR / TARGETS_DIR /
+RESULTS_DIR constants at the top of this file, each overridable per-run with
+the matching --*-dir flag.
 
 Use --list to see supported formats.
 
@@ -81,8 +96,49 @@ from typing import Callable, List, Optional, Set, Tuple
 
 import target_coverage as tc
 
+# ---------------------------------------------------------------------------
+# Configuration. Edit these to change what runs and where output lands.
+# Every one of them can also be set per-run on the command line, and the CLI
+# always overrides what is written here.
+# ---------------------------------------------------------------------------
+
+# Formats to fuzz when none are named on the command line. Set this to the
+# ones you actually want, e.g. ["png", "gif", "zip"]. Leave it empty to be
+# forced to name them explicitly each run.
+#
+# NOTE: formats run SEQUENTIALLY, each for the full --duration (default 8h),
+# so a list of N formats takes N * duration to finish. One format failing
+# does not stop the others. To run formats in parallel instead, launch
+# several copies of this script with one format each - that is safe, since
+# different formats never share an output directory.
+# Override per-run: positional arguments, or --all for every supported format.
+FORMATS: List[str] = ["png"]
+
+# Which model's LLM-generated template set to fuzz. Only used by
+# target_coverage_afl_ffmut_llm.py; ignored by this script, which fuzzes
+# templates/<fmt>.bt. Must name a templates_llm/llm_<model>/ subdirectory -
+# run with --list to see which exist.
+# Override per-run: --llm-model
+LLM_MODEL = "opus5"
+
+# Where the AFL-instrumented target programs are built and cached.
+# Override per-run: --afl-targets-dir
 AFL_TARGETS_DIR = tc.REPO_ROOT / "coverage_targets_afl"
+
+# Where afl-fuzz writes its own output (queue/, crashes/, hangs/, fuzzer_stats).
+# Override per-run: --afl-runs-dir
 AFL_RUNS_DIR = tc.REPO_ROOT / "afl_runs"
+
+# Where coverage snapshots are written, one "<format>-<variant suffix>"
+# subdirectory per run. This is target_coverage.py's RESULTS_DIR; setting
+# --results-dir rebinds it there so both scripts agree.
+# Override per-run: --results-dir
+RESULTS_DIR = tc.RESULTS_DIR
+
+# Where the gcov-instrumented measuring copies of the target programs are
+# built. This is target_coverage.py's TARGETS_DIR, rebound the same way.
+# Override per-run: --targets-dir
+TARGETS_DIR = tc.TARGETS_DIR
 
 _QUEUE_ID_RE = re.compile(r"^id[:_](\d+)")
 _SHELL_META = re.compile(r"[|<;`]|\$\(")
@@ -90,9 +146,20 @@ _DRIVE_SUFFIX = " >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------
-# Optimized vs. original template variant - the only thing that differs
-# between this script and target_coverage_afl_ffmut_llm.py.
+# Which template a campaign fuzzes - the only thing that differs between this
+# script and target_coverage_afl_ffmut_llm.py.
+#
+# There are two axes. The first is optimized (templates/<fmt>.bt, built by
+# build.sh) vs. llm (templates_llm/llm_<model>/<fmt>-llm.bt, built by
+# build_new.sh), and that is the choice of script. The second applies only to
+# the llm side: templates_llm/ holds one subdirectory per model that generated
+# the templates, and the model tag is carried through every artifact and output
+# directory, so opus4.7 and opus5 campaigns for the same format neither
+# overwrite each other's results nor collide while running concurrently.
 # ---------------------------------------------------------------------------
+
+TEMPLATES_LLM_DIR = tc.REPO_ROOT / "templates_llm"
+
 
 @dataclass(frozen=True)
 class Variant:
@@ -100,6 +167,15 @@ class Variant:
     suffix: str                        # afl_runs/<fmt>-<suffix>/, coverage_results/<fmt>-<suffix>/
     so_path: Callable[[str], Path]
     build_so: Callable[[str], None]
+
+
+def available_llm_models() -> List[str]:
+    """Model tags discoverable under templates_llm/, e.g. ['opus4.7', 'opus5'],
+    taken from its llm_<model>/ subdirectory names."""
+    if not TEMPLATES_LLM_DIR.is_dir():
+        return []
+    return sorted(p.name[len("llm_"):] for p in TEMPLATES_LLM_DIR.iterdir()
+                  if p.is_dir() and p.name.startswith("llm_"))
 
 
 def _build_so_optimized(fmt: str) -> None:
@@ -111,14 +187,25 @@ def _build_so_optimized(fmt: str) -> None:
         tc.die(f"{so} still missing after ./build.sh {fmt} - build it manually first")
 
 
-def _build_so_llm(fmt: str) -> None:
-    llm_fmt = f"{fmt}-llm"
-    so = tc.REPO_ROOT / "build" / f"{llm_fmt}.so"
+def _llm_stem(fmt: str, model: str) -> str:
+    """The artifact stem build_new.sh produces for this format and model:
+    'png-llm-opus5' -> build/png-llm-opus5{-fuzzer,.so}."""
+    return f"{fmt}-llm-{model}"
+
+
+def _build_so_llm(fmt: str, model: str) -> None:
+    stem = _llm_stem(fmt, model)
+    so = tc.REPO_ROOT / "build" / f"{stem}.so"
     if not so.exists():
-        tc.log(f"{so.name} not found, building it via ./build_new.sh {llm_fmt}")
-        tc.run(["./build_new.sh", llm_fmt], cwd=tc.REPO_ROOT)
+        tc.log(f"{so.name} not found, building it via "
+               f"LLM_MODEL={model} ./build_new.sh {fmt}-llm")
+        # build_new.sh takes the format as its argument and the model from the
+        # environment, appending the model tag to everything it writes.
+        tc.run(["./build_new.sh", f"{fmt}-llm"], cwd=tc.REPO_ROOT,
+               env={"LLM_MODEL": model})
     if not so.exists():
-        tc.die(f"{so} still missing after ./build_new.sh {llm_fmt} - build it manually first")
+        tc.die(f"{so} still missing after LLM_MODEL={model} ./build_new.sh {fmt}-llm "
+               f"- build it manually first")
 
 
 OPTIMIZED = Variant(
@@ -128,12 +215,22 @@ OPTIMIZED = Variant(
     build_so=_build_so_optimized,
 )
 
-LLM = Variant(
-    label="llm (templates_llm/<fmt>-llm.bt)",
-    suffix="llm-afl-ffmut",
-    so_path=lambda fmt: tc.REPO_ROOT / "build" / f"{fmt}-llm.so",
-    build_so=_build_so_llm,
-)
+
+def llm_variant(model: str) -> Variant:
+    """The llm Variant for one model's template set. The model tag lands in the
+    suffix, so results go to coverage_results/<fmt>-llm-<model>-afl-ffmut/ and
+    each model gets its own AFL run, target builds and snapshot tree."""
+    available = available_llm_models()
+    if available and model not in available:
+        tc.die(f"unknown LLM model '{model}'\n"
+               f"  available under {TEMPLATES_LLM_DIR}/: {', '.join(available)}\n"
+               f"  (pass --llm-model, or edit the LLM_MODEL constant at the top of this script)")
+    return Variant(
+        label=f"llm/{model} (templates_llm/llm_{model}/<fmt>-llm.bt)",
+        suffix=f"llm-{model}-afl-ffmut",
+        so_path=lambda fmt: tc.REPO_ROOT / "build" / f"{_llm_stem(fmt, model)}.so",
+        build_so=lambda fmt: _build_so_llm(fmt, model),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +480,28 @@ def parse_fuzzer_stats(instance_dir: Path) -> dict:
 def build_arg_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("format", nargs="?", choices=sorted(tc.RECIPES), help="format to measure")
+    parser.add_argument("format", nargs="*", choices=sorted(tc.RECIPES), metavar="FORMAT",
+                         help="format(s) to fuzz; overrides the FORMATS list at the top of "
+                              "this script. Omit to use that list. Multiple formats run "
+                              "sequentially, each for the full --duration.")
+    parser.add_argument("--all", action="store_true",
+                         help="fuzz every supported format, ignoring FORMATS and any formats "
+                              "named on the command line. Note this is len(RECIPES) * --duration "
+                              "of wall-clock time.")
+    parser.add_argument("--llm-model", default=None,
+                         help=f"which templates_llm/llm_<model>/ template set to fuzz "
+                              f"(default: {LLM_MODEL}). Only meaningful for "
+                              f"target_coverage_afl_ffmut_llm.py; the optimized script "
+                              f"always fuzzes templates/<fmt>.bt and ignores this.")
+    parser.add_argument("--afl-targets-dir", type=Path, default=None,
+                         help=f"where to build/cache AFL-instrumented targets (default: {AFL_TARGETS_DIR})")
+    parser.add_argument("--afl-runs-dir", type=Path, default=None,
+                         help=f"where afl-fuzz writes its own output (default: {AFL_RUNS_DIR})")
+    parser.add_argument("--targets-dir", type=Path, default=None,
+                         help=f"where to build/cache gcov-instrumented measuring targets "
+                              f"(default: {TARGETS_DIR})")
+    parser.add_argument("--results-dir", type=Path, default=None,
+                         help=f"where to write coverage snapshots (default: {RESULTS_DIR})")
     parser.add_argument("--duration", type=int, default=28800,
                          help="total wall-clock budget in seconds (default 28800 = 8h)")
     parser.add_argument("--snapshot-interval", type=int, default=1800,
@@ -414,10 +532,11 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
                               "fuzzing (FATALs with 'At-risk data found') rather than silently "
                               "discard real progress - this flag is the explicit, visible opt-in to "
                               "do that deletion yourself. Also deletes the variant's template build/"
-                              "<fmt>[-llm].so first, forcing build_so() to recompile it from the "
-                              "current templates/<fmt>.bt (or templates_llm/<fmt>-llm.bt) instead of "
+                              "<fmt>[-llm-<model>].so first, forcing build_so() to recompile it from "
+                              "the current templates/<fmt>.bt (or templates_llm/llm_<model>/"
+                              "<fmt>-llm.bt) instead of "
                               "reusing a stale .so left over from a previous edit. Does NOT touch "
-                              "coverage_targets_afl/<fmt>/ (the AFL-instrumented target binary - safe "
+                              "coverage_targets_afl/<fmt>-<suffix>/ (the AFL-instrumented target - safe "
                               "and worth keeping) or coverage_targets/<name>/ (the gcov target; its "
                               ".gcda counters are reset every run regardless, with or without this "
                               "flag).")
@@ -427,26 +546,59 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
     return parser
 
 
-def main(variant: Variant, argv=None) -> None:
-    parser = build_arg_parser(
-        f"Run a time-boxed AFL+FFMut coverage campaign for one FormatFuzzer format.\n"
-        f"Variant: {variant.label}\n"
-        f"See this script's module docstring for full design details and known gaps.")
-    args = parser.parse_args(argv)
+def select_formats(formats_from_cli: List[str], run_all: bool, configured: List[str]) -> List[str]:
+    """Resolve which formats to run. Precedence: --all, then whatever was
+    named on the command line, then the FORMATS constant at the top of the
+    file. Duplicates are collapsed while preserving order, so repeating a
+    format (in FORMATS or on the CLI) never runs it twice."""
+    if run_all:
+        return sorted(tc.RECIPES)
+    chosen = list(formats_from_cli) if formats_from_cli else list(configured)
+    unknown = [f for f in chosen if f not in tc.RECIPES]
+    if unknown:
+        tc.die(f"unsupported format(s): {', '.join(unknown)}\n"
+               f"  supported: {', '.join(sorted(tc.RECIPES))}\n"
+               f"  (if these came from the FORMATS list at the top of this script, fix it there)")
+    return list(dict.fromkeys(chosen))
 
-    if args.list or not args.format:
-        tc.list_formats()
-        if not args.format:
-            sys.exit(0 if args.list else 1)
 
-    fmt = args.format
+def run_one_format(variant: Variant, fmt: str, args, afl_dir: Path,
+                    afl_fuzz_bin: Path, afl_toolchain: tc.Toolchain) -> dict:
+    """Run one format's full campaign and return its final snapshot meta.
+
+    Raises RuntimeError on failure rather than exiting, so a multi-format run
+    can record it and carry on. afl_fuzz_bin / afl_toolchain are resolved once
+    by main() and passed in, since they do not vary per format.
+    """
     recipe = tc.RECIPES[fmt]
     name = f"{fmt}-{variant.suffix}"
     afl_sync_dir = AFL_RUNS_DIR / name
     afl_instance = "main"
     afl_instance_dir = afl_sync_dir / afl_instance
-    results_dir = tc.RESULTS_DIR / name
-    afl_target_work_dir = AFL_TARGETS_DIR / fmt
+    results_dir = RESULTS_DIR / name
+    # Variant-specific (<fmt>-<suffix>), NOT just AFL_TARGETS_DIR / fmt. This
+    # used to be shared between the optimized and llm variants on the theory
+    # that an AFL-instrumented binary is immutable and safe to exec from
+    # several processes at once. Two things make that false:
+    #
+    #   1. The BUILD is not immutable. Both variants call recipe.build() on
+    #      this path; launched together on a cold cache, both run ./configure
+    #      and make -j4 in the same tree at the same time, clobbering each
+    #      other's object files and producing a truncated or half-linked
+    #      binary. AFL then fails with "Fork server handshake failed", which
+    #      reads like an instrumentation problem and is very hard to trace
+    #      back to a build race.
+    #   2. The target RUNS with this directory as its cwd, and several targets
+    #      write output there - libpng's pngtest, for instance, writes
+    #      pngout.png on every single exec. Two campaigns sharing that file
+    #      make each target run depend on the other process's timing, which
+    #      AFL measures as instability and which quietly degrades its
+    #      scheduling.
+    #
+    # Isolating costs one extra target build per variant (seconds for libpng,
+    # minutes for FFmpeg) and the disk to hold it, in exchange for two
+    # campaigns that genuinely cannot touch each other.
+    afl_target_work_dir = AFL_TARGETS_DIR / name
 
     if args.fresh:
         for d in (afl_sync_dir, results_dir):
@@ -471,14 +623,10 @@ def main(variant: Variant, argv=None) -> None:
     # afl_target_work_dir (the AFL-instrumented binary, which accumulates no
     # mutable state itself and is safe to read/exec from concurrent
     # processes), this one genuinely needs isolation per variant.
-    gcov_target_work_dir = tc.TARGETS_DIR / name
-    afl_dir = args.afl_dir.resolve()
+    gcov_target_work_dir = TARGETS_DIR / name
 
     if not recipe.verified:
         tc.log(f"WARNING: the '{fmt}' recipe ({recipe.label}) has not been build-tested end-to-end.")
-
-    afl_fuzz_bin = find_afl_fuzz(afl_dir)
-    afl_toolchain = find_afl_compiler(afl_dir, args.cc, args.cxx)
 
     tc.log(f"variant: {variant.label}")
     variant.build_so(fmt)
@@ -495,7 +643,8 @@ def main(variant: Variant, argv=None) -> None:
 
     seeds = args.seeds or default_seeds_dir(fmt)
     if not seeds.exists() or not any(seeds.iterdir()):
-        tc.die(f"seed corpus dir {seeds} is missing or empty - FFMut needs real seed files to start from")
+        raise RuntimeError(
+            f"seed corpus dir {seeds} is missing or empty - FFMut needs real seed files to start from")
 
     dict_path = find_dict(afl_dir, fmt, args.dict)
     target_argv, needs_shell = build_target_argv(recipe, afl_build)
@@ -511,16 +660,28 @@ def main(variant: Variant, argv=None) -> None:
 
     time.sleep(3)
     if proc.poll() is not None:
-        tc.die(f"afl-fuzz exited immediately (code {proc.returncode}) - check {afl_instance_dir}/ for details "
-               f"(common cause: check_binary() rejected the target; see this script's docstring)")
+        raise RuntimeError(
+            f"afl-fuzz exited immediately (code {proc.returncode}) - check {afl_instance_dir}/ for details "
+            f"(common cause: check_binary() rejected the target; see this script's docstring)")
 
-    batch_dir = afl_target_work_dir / "_harvest_batch"
+    # Under results_dir (variant-specific), NOT afl_target_work_dir. That
+    # directory is coverage_targets_afl/<fmt>/, deliberately shared between
+    # the optimized and llm variants because an AFL-instrumented binary is
+    # safe to exec from several processes at once - but this harvest
+    # directory is mutable state, rmtree'd and refilled every snapshot. With
+    # it living there, two concurrent variants of the same format would
+    # delete each other's harvested queue files mid-snapshot and drive each
+    # other's inputs through their own gcov build, silently pooling coverage
+    # exactly the way the shared gcov_target_work_dir did before that was
+    # fixed (docs_llm/target_coverage_afl_ffmut_shared_gcov_bug.md).
+    batch_dir = results_dir / "_harvest_batch"
     seen_ids: Set[int] = set()
     n_driven_total = 0
     n_timeouts_total = 0
+    final_meta: dict = {}
 
     def do_snapshot(elapsed: int, final: bool) -> None:
-        nonlocal n_driven_total, n_timeouts_total
+        nonlocal n_driven_total, n_timeouts_total, final_meta
         if batch_dir.exists():
             shutil.rmtree(batch_dir)
         n_new = harvest_new_files(afl_instance_dir, seen_ids, batch_dir, recipe.ext)
@@ -552,6 +713,8 @@ def main(variant: Variant, argv=None) -> None:
             "afl": afl_stats,
         }
         (snap_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+        if final:
+            final_meta = meta
         tc.log(f"snapshot @ {elapsed}s: {n_driven_total} files driven cumulative, "
                 f"lines {lcov_stats.get('lines_pct')}%, afl execs_done {afl_stats.get('execs_done')}")
 
@@ -596,7 +759,99 @@ def main(variant: Variant, argv=None) -> None:
             shutil.rmtree(afl_sync_dir, ignore_errors=True)
 
     tc.log(f"done: {results_dir}/ (snapshots/, final/)")
+    return final_meta
+
+
+def optimized_variant_for(args) -> Variant:
+    """Variant factory for this script: always the optimized templates/."""
+    return OPTIMIZED
+
+
+def llm_variant_for(args) -> Variant:
+    """Variant factory for target_coverage_afl_ffmut_llm.py: the llm template
+    set for whichever model --llm-model (or the LLM_MODEL constant) selects."""
+    return llm_variant(args.llm_model or LLM_MODEL)
+
+
+def main(make_variant: Callable[[argparse.Namespace], Variant], argv=None) -> None:
+    """make_variant is a factory rather than a Variant because the llm side's
+    identity depends on --llm-model, which is not known until args are parsed."""
+    global AFL_TARGETS_DIR, AFL_RUNS_DIR, RESULTS_DIR, TARGETS_DIR
+    parser = build_arg_parser(
+        "Run time-boxed AFL+FFMut coverage campaigns for one or more FormatFuzzer formats.\n"
+        "See this script's module docstring for full design details and known gaps.")
+    args = parser.parse_args(argv)
+
+    if args.afl_targets_dir:
+        AFL_TARGETS_DIR = args.afl_targets_dir.resolve()
+    if args.afl_runs_dir:
+        AFL_RUNS_DIR = args.afl_runs_dir.resolve()
+    if args.results_dir:
+        RESULTS_DIR = args.results_dir.resolve()
+    if args.targets_dir:
+        TARGETS_DIR = args.targets_dir.resolve()
+
+    if args.list:
+        tc.list_formats()
+        models = available_llm_models()
+        print(f"\nLLM template sets under {TEMPLATES_LLM_DIR}/: "
+              f"{', '.join(models) if models else '(none found)'}")
+        print(f"current --llm-model default: {LLM_MODEL}")
+        sys.exit(0)
+
+    # Resolved before any work: an unknown --llm-model should fail immediately,
+    # not after the first target build.
+    variant = make_variant(args)
+
+    formats = select_formats(args.format, args.all, FORMATS)
+    if not formats:
+        tc.list_formats()
+        tc.die("no formats selected - name one or more above on the command line, pass --all, "
+               "or set the FORMATS list at the top of this script")
+
+    # Resolved once: neither depends on the format, and failing here should
+    # abort everything rather than be recorded as a per-format failure N times.
+    afl_dir = args.afl_dir.resolve()
+    afl_fuzz_bin = find_afl_fuzz(afl_dir)
+    afl_toolchain = find_afl_compiler(afl_dir, args.cc, args.cxx)
+
+    total_hours = len(formats) * args.duration / 3600.0
+    tc.log(f"variant: {variant.label}")
+    tc.log(f"formats ({len(formats)}): {', '.join(formats)}")
+    tc.log(f"duration: {args.duration}s each, sequentially - about {total_hours:.1f}h total")
+    tc.log(f"afl targets dir: {AFL_TARGETS_DIR}")
+    tc.log(f"afl runs dir:    {AFL_RUNS_DIR}")
+    tc.log(f"gcov targets dir:{TARGETS_DIR}")
+    tc.log(f"results dir:     {RESULTS_DIR}")
+
+    outcomes: List[tuple] = []
+    for i, fmt in enumerate(formats, 1):
+        tc.log(f"===== [{i}/{len(formats)}] {fmt}-{variant.suffix} =====")
+        try:
+            meta = run_one_format(variant, fmt, args, afl_dir, afl_fuzz_bin, afl_toolchain)
+            outcomes.append((fmt, meta, None))
+        except RuntimeError as e:
+            tc.log(f"ERROR: '{fmt}' failed: {e}")
+            outcomes.append((fmt, None, str(e)))
+        except SystemExit as e:
+            # Helpers in target_coverage.py signal fatal errors with tc.die(),
+            # i.e. SystemExit. That is right for a single-format run, but in a
+            # batch it must be demoted to a per-format failure so the remaining
+            # formats still get their turn.
+            outcomes.append((fmt, None, f"fatal error in a helper (exit {e.code})"))
+            tc.log(f"ERROR: '{fmt}' aborted (exit {e.code}) - continuing with the next format")
+
+    print()
+    tc.log(f"summary ({sum(1 for _, m, _ in outcomes if m)}/{len(outcomes)} succeeded):")
+    for fmt, meta, err in outcomes:
+        if meta:
+            print(f"  {fmt:<6} lines {meta.get('lines_pct')}%  "
+                  f"execs {meta.get('afl', {}).get('execs_done')}  "
+                  f"-> {RESULTS_DIR / f'{fmt}-{variant.suffix}'}")
+        else:
+            print(f"  {fmt:<6} FAILED: {err}")
+    sys.exit(0 if all(m for _, m, _ in outcomes) else 1)
 
 
 if __name__ == "__main__":
-    main(OPTIMIZED)
+    main(optimized_variant_for)
