@@ -803,9 +803,16 @@ def main() -> None:
     global TARGETS_DIR, RESULTS_DIR
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("format", nargs="*", choices=sorted(RECIPES), metavar="FORMAT",
-                        help="format(s) to measure; overrides the FORMATS list at the top "
-                             "of this script. Omit to use that list.")
+    # No choices= here on purpose. With nargs="*", argparse before Python 3.9
+    # validates the empty default against choices and rejects it, so simply
+    # omitting the positional (to fall back to FORMATS) fails with
+    # "invalid choice: []" - see bpo-9625. select_formats() validates the
+    # names itself, and does it for the FORMATS constant too, which choices=
+    # never covered anyway.
+    parser.add_argument("format", nargs="*", metavar="FORMAT",
+                        help=f"format(s) to measure, from: {', '.join(sorted(RECIPES))}. "
+                             f"Overrides the FORMATS list at the top of this script; "
+                             f"omit to use that list.")
     parser.add_argument("--all", action="store_true",
                         help="measure every supported format, ignoring FORMATS and any "
                              "formats named on the command line")

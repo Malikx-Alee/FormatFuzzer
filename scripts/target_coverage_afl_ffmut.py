@@ -480,10 +480,17 @@ def parse_fuzzer_stats(instance_dir: Path) -> dict:
 def build_arg_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("format", nargs="*", choices=sorted(tc.RECIPES), metavar="FORMAT",
-                         help="format(s) to fuzz; overrides the FORMATS list at the top of "
-                              "this script. Omit to use that list. Multiple formats run "
-                              "sequentially, each for the full --duration.")
+    # No choices= here on purpose. With nargs="*", argparse before Python 3.9
+    # validates the empty default against choices and rejects it, so simply
+    # omitting the positional (to fall back to FORMATS), as --list does, fails
+    # with "invalid choice: []" - see bpo-9625. select_formats() validates the
+    # names itself, and does it for the FORMATS constant too, which choices=
+    # never covered anyway.
+    parser.add_argument("format", nargs="*", metavar="FORMAT",
+                         help=f"format(s) to fuzz, from: {', '.join(sorted(tc.RECIPES))}. "
+                              f"Overrides the FORMATS list at the top of this script; omit "
+                              f"to use that list. Multiple formats run sequentially, each "
+                              f"for the full --duration.")
     parser.add_argument("--all", action="store_true",
                          help="fuzz every supported format, ignoring FORMATS and any formats "
                               "named on the command line. Note this is len(RECIPES) * --duration "
