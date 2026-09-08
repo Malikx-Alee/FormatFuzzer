@@ -151,14 +151,15 @@ results = orchestrator.run_complete_process()
 ### Command Line Usage
 
 ```bash
+# Run from the repository root
 # Process all BMP files
-python run_learning_constraints.py bmp
+python scripts/run_learning_constraints.py bmp
 
 # Process only 10 PNG files
-python run_learning_constraints.py png 10
+python scripts/run_learning_constraints.py png 10
 
 # Process all files (default: gif)
-python run_learning_constraints.py
+python scripts/run_learning_constraints.py
 ```
 
 ### Individual Component Usage

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Debug script to verify blacklist fix in parallel processing."""
+import os
 import sys
-sys.path.insert(0, '.')
+# The learning_constraints package lives at the repo root, two levels above
+# this file (learning_constraints/tests/), so add it to sys.path regardless
+# of the current working directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from learning_constraints.utils import (
     clean_attribute_key, clean_keys_list, insert_nested_dict,

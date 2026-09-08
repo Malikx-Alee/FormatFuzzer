@@ -15,11 +15,11 @@ results = orchestrator.run_complete_process()
 ## Command Line Usage
 
 ```bash
-# Process BMP files
-python run_learning_constraints.py bmp
+# Process BMP files (run from the repository root)
+python scripts/run_learning_constraints.py bmp
 
 # Process 10 PNG files
-python run_learning_constraints.py png 10
+python scripts/run_learning_constraints.py png 10
 ```
 
 ## Module Architecture
@@ -456,4 +456,8 @@ flowchart TD
 ## Documentation
 
 For comprehensive documentation, usage examples, and detailed explanations, see:
-**[README_LEARNING_CONSTRAINTS_COMPREHENSIVE.md](../README_LEARNING_CONSTRAINTS_COMPREHENSIVE.md)**
+**[README_COMPREHENSIVE.md](README_COMPREHENSIVE.md)**
+
+Note: that document predates the `checkpoint.py`/`parallel.py`/`checksum_detector.py`/
+`result_saver.py`/`statistics.py` split described above and may be out of date in places;
+this README is the current source of truth for module structure.
