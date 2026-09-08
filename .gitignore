@@ -29,6 +29,10 @@ midi*.cpp
 pcap*.cpp
 zip*.cpp
 avi*.cpp
+# build_new.sh writes <format>-llm-<model>.cpp into the repo root (the model
+# tag keeps concurrent builds of different template sets from colliding).
+*-llm.cpp
+*-llm-*.cpp
 *-generator
 *-parser
 *-fuzzer
