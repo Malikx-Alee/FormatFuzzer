@@ -10,6 +10,11 @@ import sys
 import tempfile
 import shutil
 
+# The learning_constraints package lives at the repo root, two levels above
+# this file (learning_constraints/tests/), so add it to sys.path regardless
+# of the current working directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 # Import the new module
 try:
     from learning_constraints import (

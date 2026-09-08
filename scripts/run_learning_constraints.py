@@ -2,16 +2,20 @@
 """
 Simple runner script for the Learning Constraints module.
 
+Must be run with the repository root as the current working directory
+(it shells out to ./{file_type}-fuzzer, reads templates/{file_type}.bt, and
+writes to ./logs/, all resolved relative to the cwd).
+
 Usage:
-    python run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]
+    python scripts/run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]
 
 Examples:
-    python run_learning_constraints.py png                    # Process all PNG files from default directory
-    python run_learning_constraints.py jpg 5                  # Process only 5 JPG files
-    python run_learning_constraints.py gif /path/to/files     # Process all GIF files from custom directory
-    python run_learning_constraints.py bmp 5 /path/to/files   # Process 5 BMP files from custom directory
-    python run_learning_constraints.py png --resume           # Resume from last checkpoint
-    python run_learning_constraints.py png 10 --resume        # Resume with max 10 files
+    python scripts/run_learning_constraints.py png                    # Process all PNG files from default directory
+    python scripts/run_learning_constraints.py jpg 5                  # Process only 5 JPG files
+    python scripts/run_learning_constraints.py gif /path/to/files     # Process all GIF files from custom directory
+    python scripts/run_learning_constraints.py bmp 5 /path/to/files   # Process 5 BMP files from custom directory
+    python scripts/run_learning_constraints.py png --resume           # Resume from last checkpoint
+    python scripts/run_learning_constraints.py png 10 --resume        # Resume with max 10 files
 
 Parallel Processing:
     By default, files are processed in parallel using all available CPU cores.
@@ -25,6 +29,12 @@ Parallel Processing:
 
 import sys
 import os
+
+# Allow running as `python scripts/run_learning_constraints.py` from the repo
+# root: the learning_constraints package lives at the repo root, one level
+# above this script's own directory, so it isn't importable by default.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from learning_constraints import (
     LearningConstraintsOrchestrator,
     Config,
@@ -94,7 +104,7 @@ def main():
     # Check if file type was provided as argument (required)
     if len(sys.argv) < 2:
         print("Error: file_type argument is required.")
-        print("Usage: python run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]")
+        print("Usage: python scripts/run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]")
         print(f"Supported types: {', '.join(get_supported_file_types())}")
         sys.exit(1)
 
