@@ -199,8 +199,8 @@ def build_target_argv(recipe: tc.Recipe, afl_build: tc.BuildResult) -> Tuple[Lis
     that constant redirect suffix and either pass the remainder as direct
     argv (no shell - avoids AFL's ~20x shell-fork overhead and keeps its
     real instrumentation-signature check active as a build sanity check), or
-    fall back to `sh -c` for the two recipes (zip, midi) that genuinely need
-    shell features (a pipe, an input redirect).
+    fall back to `sh -c` for recipes that genuinely need shell features (a
+    pipe, an input redirect) - currently just zip.
     """
     cmd = recipe.drive(afl_build, Path("@@"))
     if not cmd.endswith(_DRIVE_SUFFIX):

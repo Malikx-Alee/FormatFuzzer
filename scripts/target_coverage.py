@@ -383,7 +383,21 @@ def build_midi(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) 
 
 
 def drive_midi(build: BuildResult, f: Path) -> str:
-    return f"./timidity -c dummy.cfg - -Ol -o /dev/null < '{f}' >/dev/null 2>&1"
+    # Passes f as a plain positional file argument (timidity.c: nfiles =
+    # argc - optind; files = argv + optind) instead of the "-" stdin
+    # sentinel + a shell "<" redirect: timidity opens a real path itself
+    # just as readily as reading stdin, and this drops the only shell
+    # metacharacter in this recipe's command, letting AFL+FFMut's
+    # build_target_argv() run it via direct argv (no /bin/sh wrapper) like
+    # every other recipe - the wrapper's forkserver handshake reliably
+    # failed against this recipe on one AFL++ build for reasons that
+    # resisted direct diagnosis (rebuilding the target and confirming its
+    # instrumentation via `nm` did not change the outcome), while direct
+    # argv is the well-exercised path shared with the working recipes.
+    # dummy.cfg must be absolute here (unlike the old command): this path
+    # runs without a "cd" into build.run_cwd first.
+    cfg = build.run_cwd / "dummy.cfg"
+    return f"./timidity -c '{cfg}' -Ol -o /dev/null '{f}' >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------
