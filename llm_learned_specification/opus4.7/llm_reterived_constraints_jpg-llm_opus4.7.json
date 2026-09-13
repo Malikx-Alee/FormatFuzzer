@@ -1,0 +1,178 @@
+{
+  "JPGFILE.SOIMarker": {
+    "type": "fixed_value",
+    "description": "Start-Of-Image marker - must be 0xFFD8",
+    "required_value": 65496,
+    "required_value_hex": "0xFFD8",
+    "required_value_ascii": "\\xFF\\xD8",
+    "corruption_risk": "high"
+  },
+  "JPGFILE.EOIMarker": {
+    "type": "fixed_value",
+    "description": "End-Of-Image marker - must be 0xFFD9",
+    "required_value": 65497,
+    "required_value_hex": "0xFFD9",
+    "required_value_ascii": "\\xFF\\xD9",
+    "corruption_risk": "high"
+  },
+  "M_ID": {
+    "type": "pattern_constraint",
+    "description": "JPEG section markers all start with byte 0xFF followed by a non-zero marker byte",
+    "pattern": "0xFFxx (xx != 0x00 and xx != 0xFF)",
+    "corruption_risk": "high"
+  },
+  "APP0.marker": {
+    "type": "fixed_value",
+    "description": "JFIF APP0 marker - must be 0xFFE0",
+    "required_value": 65504,
+    "required_value_hex": "0xFFE0",
+    "required_value_ascii": "\\xFF\\xE0",
+    "corruption_risk": "high"
+  },
+  "APP0.identifier": {
+    "type": "enumerated_values",
+    "description": "APP0 identifier - 'JFIF\\0' or 'JFXX\\0'",
+    "valid_values": [
+      "JFIF\u0000",
+      "JFXX\u0000"
+    ],
+    "corruption_risk": "high"
+  },
+  "APP0.units": {
+    "type": "enumerated_values",
+    "description": "JFIF density units - 0=no units, 1=DPI, 2=dots/cm",
+    "valid_values": [
+      0,
+      1,
+      2
+    ],
+    "corruption_risk": "medium"
+  },
+  "APP1.marker": {
+    "type": "fixed_value",
+    "description": "EXIF APP1 marker - must be 0xFFE1",
+    "required_value": 65505,
+    "required_value_hex": "0xFFE1",
+    "required_value_ascii": "\\xFF\\xE1",
+    "corruption_risk": "high"
+  },
+  "APP1.identifier": {
+    "type": "enumerated_values",
+    "description": "APP1 identifier - 'Exif\\0\\0' or 'http://ns.adobe.com/xap/1.0/\\0'",
+    "valid_values": [
+      "Exif\u0000\u0000"
+    ],
+    "corruption_risk": "high"
+  },
+  "APP1.EXIF.byteOrder": {
+    "type": "enumerated_values",
+    "description": "TIFF byte order marker - 'II' (little-endian) or 'MM' (big-endian)",
+    "valid_values": [
+      "II",
+      "MM"
+    ],
+    "corruption_risk": "high"
+  },
+  "APP1.EXIF.tagMark": {
+    "type": "fixed_value",
+    "description": "TIFF magic number - must be 0x002A",
+    "required_value": 42,
+    "required_value_hex": "0x002A",
+    "required_value_ascii": "\\x00*",
+    "corruption_risk": "high"
+  },
+  "SOS.marker": {
+    "type": "fixed_value",
+    "description": "Start-Of-Scan marker - must be 0xFFDA",
+    "required_value": 65498,
+    "required_value_hex": "0xFFDA",
+    "required_value_ascii": "\\xFF\\xDA",
+    "corruption_risk": "high"
+  },
+  "SOS.nr_comp": {
+    "type": "range_constraint",
+    "description": "Number of color components in scan (1..4)",
+    "min": 1,
+    "max": 4,
+    "corruption_risk": "high"
+  },
+  "DHT.marker": {
+    "type": "fixed_value",
+    "description": "Define Huffman Table marker - must be 0xFFC4",
+    "required_value": 65476,
+    "required_value_hex": "0xFFC4",
+    "required_value_ascii": "\\xFF\\xC4",
+    "corruption_risk": "high"
+  },
+  "DQT.marker": {
+    "type": "fixed_value",
+    "description": "Define Quantization Table marker - must be 0xFFDB",
+    "required_value": 65499,
+    "required_value_hex": "0xFFDB",
+    "required_value_ascii": "\\xFF\\xDB",
+    "corruption_risk": "high"
+  },
+  "DRI.marker": {
+    "type": "fixed_value",
+    "description": "Define Restart Interval marker - must be 0xFFDD",
+    "required_value": 65501,
+    "required_value_hex": "0xFFDD",
+    "required_value_ascii": "\\xFF\\xDD",
+    "corruption_risk": "medium"
+  },
+  "DRI.szSection": {
+    "type": "fixed_value",
+    "description": "DRI segment length - must be 4",
+    "required_value": 4,
+    "required_value_hex": "0x0004",
+    "required_value_ascii": "\\x00\\x04",
+    "corruption_risk": "high"
+  },
+  "SOFx.marker": {
+    "type": "enumerated_values",
+    "description": "Start-Of-Frame marker (SOF0..SOF3 supported by parser)",
+    "valid_values": [
+      65472,
+      65473,
+      65474,
+      65475
+    ],
+    "value_names": [
+      "M_SOF0",
+      "M_SOF1",
+      "M_SOF2",
+      "M_SOF3"
+    ],
+    "corruption_risk": "high"
+  },
+  "SOFx.precision": {
+    "type": "enumerated_values",
+    "description": "Sample precision in bits (8 for baseline, 12 for extended, 16 for lossless)",
+    "valid_values": [
+      8,
+      12,
+      16
+    ],
+    "corruption_risk": "high"
+  },
+  "SOFx.nr_comp": {
+    "type": "range_constraint",
+    "description": "Number of components in frame (1..4)",
+    "min": 1,
+    "max": 4,
+    "corruption_risk": "high"
+  },
+  "COMMENT.marker": {
+    "type": "fixed_value",
+    "description": "Comment marker - must be 0xFFFE",
+    "required_value": 65534,
+    "required_value_hex": "0xFFFE",
+    "required_value_ascii": "\\xFF\\xFE",
+    "corruption_risk": "medium"
+  },
+  "szSection": {
+    "type": "calculated_value",
+    "description": "Segment length (big-endian uint16) - must equal segment content size including the length field itself",
+    "corruption_risk": "high"
+  }
+}

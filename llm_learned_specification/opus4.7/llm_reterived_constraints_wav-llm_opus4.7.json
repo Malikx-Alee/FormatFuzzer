@@ -1,0 +1,156 @@
+{
+  "WAVRIFFHEADER.groupID": {
+    "type": "fixed_value",
+    "description": "RIFF group identifier - must be ASCII 'RIFF'",
+    "required_value": "RIFF",
+    "required_value_hex": "0x52494646",
+    "required_value_ascii": "RIFF",
+    "corruption_risk": "high"
+  },
+  "WAVRIFFHEADER.hsize": {
+    "type": "calculated_value",
+    "description": "Total RIFF chunk size in bytes - should equal file size minus 8",
+    "corruption_risk": "medium"
+  },
+  "WAVRIFFHEADER.riffType": {
+    "type": "fixed_value",
+    "description": "RIFF form type - must be ASCII 'WAVE'",
+    "required_value": "WAVE",
+    "required_value_hex": "0x57415645",
+    "required_value_ascii": "WAVE",
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.chunkID": {
+    "type": "fixed_value",
+    "description": "Format chunk identifier - must be ASCII 'fmt '",
+    "required_value": "fmt ",
+    "required_value_hex": "0x666D7420",
+    "required_value_ascii": "fmt ",
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.chunkSize": {
+    "type": "enumerated_values",
+    "description": "Format chunk size in bytes - typically 16 (PCM), 18 (PCMEX), or 40 (extensible)",
+    "valid_values": [
+      16,
+      18,
+      20,
+      40
+    ],
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.wFormatTag": {
+    "type": "enumerated_values",
+    "description": "WAVE format identifier - 1=PCM, 3=IEEE_FLOAT, 6=ALAW, 7=MULAW, 17=DVI_ADPCM, 65534=EXTENSIBLE",
+    "valid_values": [
+      1,
+      2,
+      3,
+      6,
+      7,
+      17,
+      65534
+    ],
+    "value_names": [
+      "PCM",
+      "ADPCM",
+      "IEEE_FLOAT",
+      "ALAW",
+      "MULAW",
+      "DVI_IMA_ADPCM",
+      "EXTENSIBLE"
+    ],
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.wChannels": {
+    "type": "range_constraint",
+    "description": "Number of channels (1 = mono, 2 = stereo, up to 8 in extensible formats)",
+    "min": 1,
+    "max": 8,
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.dwSamplesPerSec": {
+    "type": "enumerated_values",
+    "description": "Sample rate in Hz - common values",
+    "valid_values": [
+      8000,
+      11025,
+      16000,
+      22050,
+      32000,
+      44100,
+      48000,
+      88200,
+      96000,
+      176400,
+      192000
+    ],
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.dwAvgBytesPerSec": {
+    "type": "calculated_value",
+    "description": "Average bytes per second = dwSamplesPerSec * wBlockAlign",
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.wBlockAlign": {
+    "type": "calculated_value",
+    "description": "Block alignment = wChannels * wBitsPerSample / 8",
+    "corruption_risk": "high"
+  },
+  "FORMATCHUNK.wBitsPerSample": {
+    "type": "enumerated_values",
+    "description": "Bits per sample - parser supports 8, 16, 32",
+    "valid_values": [
+      8,
+      16,
+      24,
+      32
+    ],
+    "corruption_risk": "high"
+  },
+  "DATACHUNK.chunkID": {
+    "type": "fixed_value",
+    "description": "Data chunk identifier - must be ASCII 'data'",
+    "required_value": "data",
+    "required_value_hex": "0x64617461",
+    "required_value_ascii": "data",
+    "corruption_risk": "high"
+  },
+  "DATACHUNK.chunkSize": {
+    "type": "calculated_value",
+    "description": "Size of waveform sample data - must be a multiple of wBlockAlign",
+    "corruption_risk": "high"
+  },
+  "FACTCHUNK.chunkID": {
+    "type": "fixed_value",
+    "description": "Fact chunk identifier - must be ASCII 'fact'",
+    "required_value": "fact",
+    "required_value_hex": "0x66616374",
+    "required_value_ascii": "fact",
+    "corruption_risk": "medium"
+  },
+  "CUECHUNK.chunkID": {
+    "type": "fixed_value",
+    "description": "Cue chunk identifier - must be ASCII 'cue '",
+    "required_value": "cue ",
+    "required_value_hex": "0x63756520",
+    "required_value_ascii": "cue ",
+    "corruption_risk": "medium"
+  },
+  "SMPLCHUNK.chunkID": {
+    "type": "fixed_value",
+    "description": "Sample chunk identifier - must be ASCII 'smpl'",
+    "required_value": "smpl",
+    "required_value_hex": "0x736D706C",
+    "required_value_ascii": "smpl",
+    "corruption_risk": "medium"
+  },
+  "LISTCHUNK.chunkID": {
+    "type": "fixed_value",
+    "description": "List chunk identifier - must be ASCII 'LIST'",
+    "required_value": "LIST",
+    "required_value_hex": "0x4C495354",
+    "required_value_ascii": "LIST",
+    "corruption_risk": "medium"
+  }
+}

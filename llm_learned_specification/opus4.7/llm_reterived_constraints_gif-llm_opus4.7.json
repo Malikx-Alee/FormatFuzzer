@@ -1,0 +1,144 @@
+{
+  "GIFHEADER.Signature": {
+    "type": "fixed_value",
+    "description": "GIF file signature - must be ASCII 'GIF'",
+    "required_value": "GIF",
+    "required_value_hex": "0x474946",
+    "required_value_ascii": "GIF",
+    "corruption_risk": "high"
+  },
+  "GIFHEADER.Version": {
+    "type": "enumerated_values",
+    "description": "GIF version string - either '87a' or '89a'",
+    "valid_values": [
+      "87a",
+      "89a"
+    ],
+    "corruption_risk": "high"
+  },
+  "TRAILER.GIFTrailer": {
+    "type": "fixed_value",
+    "description": "GIF stream trailer marker - must be 0x3B (';')",
+    "required_value": 59,
+    "required_value_hex": "0x3B",
+    "required_value_ascii": ";",
+    "corruption_risk": "high"
+  },
+  "IMAGEDESCRIPTOR.ImageSeperator": {
+    "type": "fixed_value",
+    "description": "Image descriptor separator - must be 0x2C (',')",
+    "required_value": 44,
+    "required_value_hex": "0x2C",
+    "required_value_ascii": ",",
+    "corruption_risk": "high"
+  },
+  "IMAGEDESCRIPTOR_PACKEDFIELDS.Reserved": {
+    "type": "fixed_value",
+    "description": "Reserved bits in image descriptor packed fields - must be 0",
+    "required_value": 0,
+    "required_value_hex": "0x00",
+    "required_value_ascii": "\\x00",
+    "corruption_risk": "medium"
+  },
+  "GRAPHICCONTROLEXTENSION.ExtensionIntroducer": {
+    "type": "fixed_value",
+    "description": "Extension introducer byte - must be 0x21 ('!')",
+    "required_value": 33,
+    "required_value_hex": "0x21",
+    "required_value_ascii": "!",
+    "corruption_risk": "high"
+  },
+  "GRAPHICCONTROLEXTENSION.GraphicControlLabel": {
+    "type": "fixed_value",
+    "description": "Graphic control extension label - must be 0xF9",
+    "required_value": 249,
+    "required_value_hex": "0xF9",
+    "required_value_ascii": "\\xF9",
+    "corruption_risk": "high"
+  },
+  "GRAPHICCONTROLSUBBLOCK.BlockSize": {
+    "type": "fixed_value",
+    "description": "Graphic control sub-block size - must be 4",
+    "required_value": 4,
+    "required_value_hex": "0x04",
+    "required_value_ascii": "\\x04",
+    "corruption_risk": "high"
+  },
+  "GRAPHICCONTROLEXTENSION.BlockTerminator": {
+    "type": "fixed_value",
+    "description": "Block terminator for graphic control extension - must be 0x00",
+    "required_value": 0,
+    "required_value_hex": "0x00",
+    "required_value_ascii": "\\x00",
+    "corruption_risk": "high"
+  },
+  "COMMENTEXTENSION.ExtensionIntroducer": {
+    "type": "fixed_value",
+    "description": "Extension introducer byte - must be 0x21 ('!')",
+    "required_value": 33,
+    "required_value_hex": "0x21",
+    "required_value_ascii": "!",
+    "corruption_risk": "high"
+  },
+  "COMMENTEXTENSION.CommentLabel": {
+    "type": "fixed_value",
+    "description": "Comment extension label - must be 0xFE",
+    "required_value": 254,
+    "required_value_hex": "0xFE",
+    "required_value_ascii": "\\xFE",
+    "corruption_risk": "high"
+  },
+  "PLAINTEXTEXTENTION.ExtensionIntroducer": {
+    "type": "fixed_value",
+    "description": "Extension introducer byte - must be 0x21 ('!')",
+    "required_value": 33,
+    "required_value_hex": "0x21",
+    "required_value_ascii": "!",
+    "corruption_risk": "high"
+  },
+  "PLAINTEXTEXTENTION.PlainTextLabel": {
+    "type": "fixed_value",
+    "description": "Plain text extension label - must be 0x01",
+    "required_value": 1,
+    "required_value_hex": "0x01",
+    "required_value_ascii": "\\x01",
+    "corruption_risk": "high"
+  },
+  "APPLICATIONEXTENTION.ExtensionIntroducer": {
+    "type": "fixed_value",
+    "description": "Extension introducer byte - must be 0x21 ('!')",
+    "required_value": 33,
+    "required_value_hex": "0x21",
+    "required_value_ascii": "!",
+    "corruption_risk": "high"
+  },
+  "APPLICATIONEXTENTION.ApplicationLabel": {
+    "type": "fixed_value",
+    "description": "Application extension label - must be 0xFF",
+    "required_value": 255,
+    "required_value_hex": "0xFF",
+    "required_value_ascii": "\\xFF",
+    "corruption_risk": "high"
+  },
+  "APPLICATIONSUBBLOCK.BlockSize": {
+    "type": "fixed_value",
+    "description": "Application sub-block size - must be 11 (8 byte identifier + 3 byte auth code)",
+    "required_value": 11,
+    "required_value_hex": "0x0B",
+    "required_value_ascii": "\\x0B",
+    "corruption_risk": "high"
+  },
+  "DATASUBBLOCKS.BlockTerminator": {
+    "type": "fixed_value",
+    "description": "Data sub-block list terminator - must be 0x00",
+    "required_value": 0,
+    "required_value_hex": "0x00",
+    "required_value_ascii": "\\x00",
+    "corruption_risk": "high"
+  },
+  "DATASUBBLOCK.Size": {
+    "type": "calculated_value",
+    "description": "Sub-block size in bytes - must match the following data byte count (1..255)",
+    "corruption_risk": "high"
+  }
+}

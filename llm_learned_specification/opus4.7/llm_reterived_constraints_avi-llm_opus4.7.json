@@ -1,0 +1,146 @@
+{
+  "ROOT.id": {
+    "type": "enumerated_values",
+    "description": "RIFF root chunk identifier - 'RIFF' (Intel) or 'RIFX' (Motorola)",
+    "valid_values": [
+      "RIFF",
+      "RIFX"
+    ],
+    "corruption_risk": "high"
+  },
+  "ROOT.form": {
+    "type": "fixed_value",
+    "description": "RIFF form type - must be 'AVI ' for AVI files",
+    "required_value": "AVI ",
+    "required_value_hex": "0x41564920",
+    "required_value_ascii": "AVI ",
+    "corruption_risk": "high"
+  },
+  "ROOT.datalen": {
+    "type": "calculated_value",
+    "description": "Length of RIFF chunk data in bytes - should equal file size minus 8",
+    "corruption_risk": "medium"
+  },
+  "LISTHEADER.id": {
+    "type": "fixed_value",
+    "description": "LIST chunk identifier - must be ASCII 'LIST'",
+    "required_value": "LIST",
+    "required_value_hex": "0x4C495354",
+    "required_value_ascii": "LIST",
+    "corruption_risk": "high"
+  },
+  "LISTHEADER.type": {
+    "type": "enumerated_values",
+    "description": "LIST chunk type - 'hdrl' (header list), 'strl' (stream list) or 'movi' (movie data)",
+    "valid_values": [
+      "hdrl",
+      "strl",
+      "movi",
+      "INFO",
+      "odml"
+    ],
+    "corruption_risk": "high"
+  },
+  "avihHEADER.id": {
+    "type": "fixed_value",
+    "description": "AVI main header chunk identifier - must be ASCII 'avih'",
+    "required_value": "avih",
+    "required_value_hex": "0x61766968",
+    "required_value_ascii": "avih",
+    "corruption_risk": "high"
+  },
+  "avihHEADER.datalen": {
+    "type": "fixed_value",
+    "description": "MainAVIHeader chunk data length - must be 56 (size of MainAVIHeader)",
+    "required_value": 56,
+    "required_value_hex": "0x00000038",
+    "required_value_ascii": "8\\x00\\x00\\x00",
+    "corruption_risk": "high"
+  },
+  "MainAVIHeader.dwReserved1": {
+    "type": "fixed_value",
+    "description": "Reserved field - must be 0",
+    "required_value": 0,
+    "required_value_hex": "0x00000000",
+    "required_value_ascii": "\\x00\\x00\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "strhHEADER.id": {
+    "type": "fixed_value",
+    "description": "Stream header chunk identifier - must be ASCII 'strh'",
+    "required_value": "strh",
+    "required_value_hex": "0x73747268",
+    "required_value_ascii": "strh",
+    "corruption_risk": "high"
+  },
+  "AVIStreamHeader.fccType": {
+    "type": "enumerated_values",
+    "description": "Stream type FourCC - 'vids' (video), 'auds' (audio), 'txts' (subtitle), 'mids' (MIDI)",
+    "valid_values": [
+      "vids",
+      "auds",
+      "txts",
+      "mids"
+    ],
+    "corruption_risk": "high"
+  },
+  "strfHEADER.id": {
+    "type": "fixed_value",
+    "description": "Stream format chunk identifier - must be ASCII 'strf'",
+    "required_value": "strf",
+    "required_value_hex": "0x73747266",
+    "required_value_ascii": "strf",
+    "corruption_risk": "high"
+  },
+  "strnHEADER.id": {
+    "type": "fixed_value",
+    "description": "Stream name chunk identifier - must be ASCII 'strn'",
+    "required_value": "strn",
+    "required_value_hex": "0x7374726E",
+    "required_value_ascii": "strn",
+    "corruption_risk": "medium"
+  },
+  "JUNKHEADER.id": {
+    "type": "fixed_value",
+    "description": "Junk chunk identifier - must be ASCII 'JUNK'",
+    "required_value": "JUNK",
+    "required_value_hex": "0x4A554E4B",
+    "required_value_ascii": "JUNK",
+    "corruption_risk": "high"
+  },
+  "idx1HEADER.id": {
+    "type": "fixed_value",
+    "description": "AVI index chunk identifier - must be ASCII 'idx1'",
+    "required_value": "idx1",
+    "required_value_hex": "0x69647831",
+    "required_value_ascii": "idx1",
+    "corruption_risk": "high"
+  },
+  "idx1HEADER.datalen": {
+    "type": "calculated_value",
+    "description": "Index data length - must be a multiple of AVIINDEXENTRYLEN (16)",
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biPlanes": {
+    "type": "fixed_value",
+    "description": "Number of color planes - must be 1",
+    "required_value": 1,
+    "required_value_hex": "0x0001",
+    "required_value_ascii": "\\x01\\x00",
+    "corruption_risk": "high"
+  },
+  "WAVEFORMATEX.wFormatTag": {
+    "type": "enumerated_values",
+    "description": "WAVE format identifier (e.g. 1=PCM, 3=IEEE_FLOAT, 6=ALAW, 7=MULAW, 17=DVI_ADPCM, 85=MP3)",
+    "valid_values": [
+      1,
+      2,
+      3,
+      6,
+      7,
+      17,
+      85
+    ],
+    "corruption_risk": "high"
+  }
+}

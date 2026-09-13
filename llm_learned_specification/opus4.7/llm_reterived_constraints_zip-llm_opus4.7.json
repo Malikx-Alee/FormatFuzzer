@@ -1,0 +1,171 @@
+{
+  "SignatureTYPE": {
+    "type": "enumerated_values",
+    "description": "ZIP record signatures - each chunk begins with one of these 32-bit little-endian magic values, all starting with 'PK' (0x504B)",
+    "valid_values": [
+      67324752,
+      134695760,
+      33639248,
+      84233040,
+      101075792,
+      117853008,
+      101010256
+    ],
+    "value_names": [
+      "S_ZIPFILERECORD (0x04034B50 'PK\\x03\\x04')",
+      "S_ZIPDATADESCR (0x08074B50 'PK\\x07\\x08')",
+      "S_ZIPDIRENTRY (0x02014B50 'PK\\x01\\x02')",
+      "S_ZIPDIGITALSIG (0x05054B50 'PK\\x05\\x05')",
+      "S_ZIP64ENDLOCATORRECORD (0x06064B50 'PK\\x06\\x06')",
+      "S_ZIP64ENDLOCATOR (0x07064B50 'PK\\x07\\x06')",
+      "S_ZIPENDLOCATOR (0x06054B50 'PK\\x05\\x06')"
+    ],
+    "corruption_risk": "high"
+  },
+  "ZIPFILERECORD.frSignature": {
+    "type": "fixed_value",
+    "description": "Local file header signature - must be 0x04034B50 ('PK\\x03\\x04')",
+    "required_value": 67324752,
+    "required_value_hex": "0x04034B50",
+    "required_value_ascii": "PK\\x03\\x04",
+    "corruption_risk": "high"
+  },
+  "ZIPDATADESCR.ddSignature": {
+    "type": "fixed_value",
+    "description": "Optional data descriptor signature - must be 0x08074B50 ('PK\\x07\\x08')",
+    "required_value": 134695760,
+    "required_value_hex": "0x08074B50",
+    "required_value_ascii": "PK\\x07\\x08",
+    "corruption_risk": "high"
+  },
+  "ZIPDIRENTRY.deSignature": {
+    "type": "fixed_value",
+    "description": "Central directory entry signature - must be 0x02014B50 ('PK\\x01\\x02')",
+    "required_value": 33639248,
+    "required_value_hex": "0x02014B50",
+    "required_value_ascii": "PK\\x01\\x02",
+    "corruption_risk": "high"
+  },
+  "ZIPDIGITALSIG.dsSignature": {
+    "type": "fixed_value",
+    "description": "Archive digital signature - must be 0x05054B50 ('PK\\x05\\x05')",
+    "required_value": 84233040,
+    "required_value_hex": "0x05054B50",
+    "required_value_ascii": "PK\\x05\\x05",
+    "corruption_risk": "high"
+  },
+  "ZIP64ENDLOCATORRECORD.elr64Signature": {
+    "type": "fixed_value",
+    "description": "ZIP64 end of central directory record signature - must be 0x06064B50 ('PK\\x06\\x06')",
+    "required_value": 101075792,
+    "required_value_hex": "0x06064B50",
+    "required_value_ascii": "PK\\x06\\x06",
+    "corruption_risk": "high"
+  },
+  "ZIP64ENDLOCATOR.elSignature": {
+    "type": "fixed_value",
+    "description": "ZIP64 end of central directory locator signature - must be 0x07064B50 ('PK\\x07\\x06')",
+    "required_value": 117853008,
+    "required_value_hex": "0x07064B50",
+    "required_value_ascii": "PK\\x07\\x06",
+    "corruption_risk": "high"
+  },
+  "ZIPENDLOCATOR.elSignature": {
+    "type": "fixed_value",
+    "description": "End of central directory record signature - must be 0x06054B50 ('PK\\x05\\x06')",
+    "required_value": 101010256,
+    "required_value_hex": "0x06054B50",
+    "required_value_ascii": "PK\\x05\\x06",
+    "corruption_risk": "high"
+  },
+  "HOSTOSTYPE": {
+    "type": "enumerated_values",
+    "description": "Host operating system identifier in version record",
+    "valid_values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    "value_names": [
+      "FAT", "AMIGA", "VMS", "Unix", "VM_CMS", "Atari", "HPFS", "Mac",
+      "Z_System", "CPM", "TOPS20", "NTFS", "QDOS", "Acorn", "VFAT",
+      "MVS", "BeOS", "Tandem", "OS400", "OSX"
+    ],
+    "corruption_risk": "medium"
+  },
+  "COMPTYPE": {
+    "type": "enumerated_values",
+    "description": "Compression method - 0=Stored, 8=Deflate (most common), 12=BZip2, 14=LZMA, 99=WzAES",
+    "valid_values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 19, 96, 97, 98, 99],
+    "corruption_risk": "high"
+  },
+  "EXTRAFIELD.efHeaderID": {
+    "type": "enumerated_values",
+    "description": "Extra field record header identifier - 0x0001=Zip64, 0x000A=NTFS, 0x5455=extTimestamp, 0x7075=InfoZIPUnicodePath, 0x9901=WzAES",
+    "valid_values": [
+      1, 7, 8, 9, 10, 12, 13, 14, 15, 20, 21, 22, 23, 24, 25,
+      101, 102, 18064, 1992, 9733, 10245, 10501, 13133, 16961, 17491,
+      18180, 18185, 19790, 20011, 21318, 22091, 23117, 23373, 25168, 25422,
+      25685, 25925, 27970, 28789, 30126, 30293, 30837, 30901, 41504, 64842,
+      39169
+    ],
+    "corruption_risk": "medium"
+  },
+  "ALGFLAG": {
+    "type": "enumerated_values",
+    "description": "Strong encryption algorithm identifier - 0x6601=DES, 0x660E=AES128, 0x660F=AES192, 0x6610=AES256, 0x6801=RC4",
+    "valid_values": [26113, 26114, 26115, 26121, 26126, 26127, 26128, 26370, 26400, 26401, 26625, 65535],
+    "corruption_risk": "high"
+  },
+  "AESMODE": {
+    "type": "enumerated_values",
+    "description": "AES encryption key strength - 1=AES128, 2=AES192, 3=AES256",
+    "valid_values": [1, 2, 3],
+    "corruption_risk": "high"
+  },
+  "PRCFLAG": {
+    "type": "enumerated_values",
+    "description": "Strong encryption processing flags - 1=Password, 2=Certificates, 3=Password+Certificates",
+    "valid_values": [1, 2, 3],
+    "corruption_risk": "medium"
+  },
+  "ZIPFILERECORD.frFileNameLength": {
+    "type": "calculated_value",
+    "description": "Length of file name - must equal actual size of frFileName field",
+    "corruption_risk": "high"
+  },
+  "ZIPFILERECORD.frExtraFieldLength": {
+    "type": "calculated_value",
+    "description": "Sum of EXTRAFIELD (efDataSize + 4) entries must equal frExtraFieldLength",
+    "corruption_risk": "high"
+  },
+  "ZIPFILERECORD.frCompressedSize": {
+    "type": "calculated_value",
+    "description": "Length in bytes of compressed file data following the header - must match actual data size (0xFFFFFFFF indicates ZIP64)",
+    "corruption_risk": "high"
+  },
+  "EXTRAFIELD.efDataSize": {
+    "type": "calculated_value",
+    "description": "Size of extra field data section in bytes - must match length of efData payload",
+    "corruption_risk": "high"
+  },
+  "ZIP64ENDLOCATORRECORD.elr64DirectoryRecordSize": {
+    "type": "calculated_value",
+    "description": "Size of the ZIP64 end of central directory record minus 12 (the size + signature fields)",
+    "corruption_risk": "high"
+  },
+  "ZIPENDLOCATOR.elCommentLength": {
+    "type": "calculated_value",
+    "description": "Length of the .ZIP file comment - must equal actual size of elComment field",
+    "corruption_risk": "medium"
+  },
+  "ZIPENDLOCATOR.elDirectoryOffset": {
+    "type": "calculated_value",
+    "description": "Offset of start of central directory - must point to a valid ZIPDIRENTRY signature within the file",
+    "corruption_risk": "high"
+  },
+  "WzAES.VendorID": {
+    "type": "fixed_value",
+    "description": "WinZip AES vendor identifier - must be 'AE'",
+    "required_value": "AE",
+    "required_value_hex": "0x4145",
+    "required_value_ascii": "AE",
+    "corruption_risk": "high"
+  }
+}

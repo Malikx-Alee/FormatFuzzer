@@ -1,0 +1,115 @@
+{
+  "MidiHeader.m_magic": {
+    "type": "fixed_value",
+    "description": "MIDI header chunk magic - must be ASCII 'MThd'",
+    "required_value": "MThd",
+    "required_value_hex": "0x4D546864",
+    "required_value_ascii": "MThd",
+    "corruption_risk": "high"
+  },
+  "MidiHeader.m_seclen": {
+    "type": "fixed_value",
+    "description": "MIDI header section length - must be 6",
+    "required_value": 6,
+    "required_value_hex": "0x00000006",
+    "required_value_ascii": "\\x00\\x00\\x00\\x06",
+    "corruption_risk": "high"
+  },
+  "MidiHeader.m_format": {
+    "type": "enumerated_values",
+    "description": "MIDI file format type",
+    "valid_values": [
+      0,
+      1,
+      2
+    ],
+    "value_names": [
+      "MIDI_SINGLE",
+      "MIDI_MULTIPLE",
+      "MIDI_PATTERN"
+    ],
+    "corruption_risk": "high"
+  },
+  "MidiHeader.m_ntracks": {
+    "type": "calculated_value",
+    "description": "Number of MTrk chunks following the header - must match actual track count",
+    "corruption_risk": "high"
+  },
+  "MidiHeader.m_tickdiv": {
+    "type": "range_constraint",
+    "description": "Ticks per quarter note or SMPTE timecode division",
+    "min": 1,
+    "max": 32767,
+    "corruption_risk": "medium"
+  },
+  "MidiTrack.m_magic": {
+    "type": "fixed_value",
+    "description": "MIDI track chunk magic - must be ASCII 'MTrk'",
+    "required_value": "MTrk",
+    "required_value_hex": "0x4D54726B",
+    "required_value_ascii": "MTrk",
+    "corruption_risk": "high"
+  },
+  "MidiTrack.m_seclen": {
+    "type": "calculated_value",
+    "description": "MTrk chunk length in bytes - must equal byte size of contained events",
+    "corruption_risk": "high"
+  },
+  "MidiMessage.m_status": {
+    "type": "pattern_constraint",
+    "description": "MIDI status byte - high bit (0x80) must be set when present; otherwise running status applies",
+    "pattern": "0x80-0xFF",
+    "corruption_risk": "high"
+  },
+  "MidiMessage.meta_event.m_type": {
+    "type": "enumerated_values",
+    "description": "Meta event type identifier",
+    "valid_values": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      32,
+      33,
+      47,
+      81,
+      84,
+      88,
+      89,
+      127
+    ],
+    "value_names": [
+      "META_SEQUENCE_NUM",
+      "META_TEXT",
+      "META_COPYRIGHT",
+      "META_SEQUENCE_NAME",
+      "META_INSTRUMENT_NAME",
+      "META_LYRIC",
+      "META_MARKER",
+      "META_CUE_POINT",
+      "META_PROGRAM_NAME",
+      "META_DEVICE_NAME",
+      "META_MIDI_CHANNEL_PREFIX",
+      "META_MIDI_PORT",
+      "META_END_OF_TRACK",
+      "META_TEMPO",
+      "META_SMPTE_OFFSET",
+      "META_TIME_SIGNATURE",
+      "META_KEY_SIGNATURE",
+      "META_SEQUENCER_EVENT"
+    ],
+    "corruption_risk": "high"
+  },
+  "DeltaTime.byte": {
+    "type": "pattern_constraint",
+    "description": "Variable-length delta-time byte (low 7 bits are value, high bit is continuation; last byte must clear continuation bit)",
+    "pattern": "0x00-0xFF",
+    "corruption_risk": "high"
+  }
+}
