@@ -1,0 +1,111 @@
+{
+  "BITMAPFILEHEADER.bfType": {
+    "type": "fixed_value",
+    "description": "Bitmap file signature - must be ASCII 'BM'",
+    "required_value": "BM",
+    "required_value_hex": "0x424D",
+    "required_value_ascii": "BM",
+    "corruption_risk": "high"
+  },
+  "BITMAPFILEHEADER.bfReserved1": {
+    "type": "fixed_value",
+    "description": "Reserved field 1 - must be 0",
+    "required_value": 0,
+    "required_value_hex": "0x0000",
+    "required_value_ascii": "\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "BITMAPFILEHEADER.bfReserved2": {
+    "type": "fixed_value",
+    "description": "Reserved field 2 - must be 0",
+    "required_value": 0,
+    "required_value_hex": "0x0000",
+    "required_value_ascii": "\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "BITMAPFILEHEADER.bfSize": {
+    "type": "calculated_value",
+    "description": "Total bitmap file size in bytes",
+    "corruption_risk": "medium"
+  },
+  "BITMAPFILEHEADER.bfOffBits": {
+    "type": "calculated_value",
+    "description": "Offset from start of file to pixel data",
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biSize": {
+    "type": "enumerated_values",
+    "description": "DIB header size (40 for BITMAPINFOHEADER, 12 for BITMAPCOREHEADER, etc.)",
+    "valid_values": [
+      12,
+      40,
+      52,
+      56,
+      64,
+      108,
+      124
+    ],
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biPlanes": {
+    "type": "fixed_value",
+    "description": "Number of color planes - must be 1",
+    "required_value": 1,
+    "required_value_hex": "0x0001",
+    "required_value_ascii": "\\x01\\x00",
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biBitCount": {
+    "type": "enumerated_values",
+    "description": "Bits per pixel",
+    "valid_values": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32
+    ],
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biCompression": {
+    "type": "enumerated_values",
+    "description": "Compression method (0=BI_RGB, 1=BI_RLE8, 2=BI_RLE4, 3=BI_BITFIELDS, 4=BI_JPEG, 5=BI_PNG)",
+    "valid_values": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biWidth": {
+    "type": "range_constraint",
+    "description": "Image width in pixels (must be positive)",
+    "min": 1,
+    "max": 2147483647,
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biHeight": {
+    "type": "range_constraint",
+    "description": "Image height in pixels (negative permitted for top-down DIB)",
+    "min": -2147483648,
+    "max": 2147483647,
+    "corruption_risk": "high"
+  },
+  "BITMAPINFOHEADER.biSizeImage": {
+    "type": "calculated_value",
+    "description": "Size of image data - may be 0 for BI_RGB but must match pixel data length when compressed",
+    "corruption_risk": "medium"
+  },
+  "BITMAPINFOHEADER.biClrUsed": {
+    "type": "range_constraint",
+    "description": "Number of palette colors used (0 = default for bit depth)",
+    "min": 0,
+    "max": 256,
+    "corruption_risk": "medium"
+  }
+}

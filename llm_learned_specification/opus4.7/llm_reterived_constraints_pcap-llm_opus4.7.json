@@ -1,0 +1,147 @@
+{
+  "PCAPHEADER.magic_number": {
+    "type": "fixed_value",
+    "description": "PCAP file magic number - must be 0xA1B2C3D4 (microsecond resolution, little-endian host)",
+    "required_value": 2712847316,
+    "required_value_hex": "0xA1B2C3D4",
+    "required_value_ascii": "\\xD4\\xC3\\xB2\\xA1",
+    "corruption_risk": "high"
+  },
+  "PCAPHEADER.version_major": {
+    "type": "fixed_value",
+    "description": "PCAP major version - must be 2",
+    "required_value": 2,
+    "required_value_hex": "0x0002",
+    "required_value_ascii": "\\x02\\x00",
+    "corruption_risk": "high"
+  },
+  "PCAPHEADER.version_minor": {
+    "type": "fixed_value",
+    "description": "PCAP minor version - must be 4",
+    "required_value": 4,
+    "required_value_hex": "0x0004",
+    "required_value_ascii": "\\x04\\x00",
+    "corruption_risk": "high"
+  },
+  "PCAPHEADER.thiszone": {
+    "type": "fixed_value",
+    "description": "GMT to local correction - typically 0 (UTC)",
+    "required_value": 0,
+    "required_value_hex": "0x00000000",
+    "required_value_ascii": "\\x00\\x00\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "PCAPHEADER.sigfigs": {
+    "type": "fixed_value",
+    "description": "Timestamp accuracy - typically 0",
+    "required_value": 0,
+    "required_value_hex": "0x00000000",
+    "required_value_ascii": "\\x00\\x00\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "PCAPHEADER.snaplen": {
+    "type": "range_constraint",
+    "description": "Maximum captured packet length (typical 65535)",
+    "min": 1,
+    "max": 262144,
+    "corruption_risk": "medium"
+  },
+  "PCAPHEADER.network": {
+    "type": "enumerated_values",
+    "description": "Data link type (LINKTYPE_*) - 1=Ethernet, 101=Raw IP, 105=IEEE802_11, 113=LINUX_SLL, 127=IEEE802_11_RADIOTAP",
+    "valid_values": [
+      0,
+      1,
+      101,
+      105,
+      113,
+      127,
+      147,
+      228,
+      276
+    ],
+    "corruption_risk": "high"
+  },
+  "PCAPRECORD.incl_len": {
+    "type": "calculated_value",
+    "description": "Bytes of packet stored in file - must equal length of packet data following the record header and be <= orig_len and <= snaplen",
+    "corruption_risk": "high"
+  },
+  "PCAPRECORD.orig_len": {
+    "type": "range_constraint",
+    "description": "Original on-wire length of packet (must be >= incl_len)",
+    "min": 0,
+    "max": 4294967295,
+    "corruption_risk": "medium"
+  },
+  "Layer_2.L3type": {
+    "type": "enumerated_values",
+    "description": "Layer 3 EtherType - 0x0800=IPv4, 0x0806=ARP, 0x86DD=IPv6, 0x8100=802.1Q VLAN",
+    "valid_values": [
+      2048,
+      2054,
+      34525,
+      33024
+    ],
+    "value_names": [
+      "IPv4",
+      "ARP",
+      "IPv6",
+      "802.1Q"
+    ],
+    "corruption_risk": "high"
+  },
+  "Layer_3.version": {
+    "type": "enumerated_values",
+    "description": "IP version - 4 (IPv4) or 6 (IPv6)",
+    "valid_values": [
+      4,
+      6
+    ],
+    "corruption_risk": "high"
+  },
+  "Layer_3.ip_hdr_len": {
+    "type": "range_constraint",
+    "description": "IPv4 header length in 32-bit words (5..15)",
+    "min": 5,
+    "max": 15,
+    "corruption_risk": "high"
+  },
+  "Layer_3.total_length": {
+    "type": "calculated_value",
+    "description": "Total IPv4 datagram length - must be >= header length and consistent with captured packet",
+    "corruption_risk": "high"
+  },
+  "Layer_3.L4proto": {
+    "type": "enumerated_values",
+    "description": "Layer 4 protocol number - 1=ICMP, 6=TCP, 17=UDP",
+    "valid_values": [
+      1,
+      6,
+      17,
+      47,
+      50,
+      58,
+      89,
+      132
+    ],
+    "value_names": [
+      "ICMP",
+      "TCP",
+      "UDP",
+      "GRE",
+      "ESP",
+      "ICMPv6",
+      "OSPF",
+      "SCTP"
+    ],
+    "corruption_risk": "high"
+  },
+  "Layer_4.tcp_hdr_len": {
+    "type": "range_constraint",
+    "description": "TCP data offset in 32-bit words (5..15)",
+    "min": 5,
+    "max": 15,
+    "corruption_risk": "high"
+  }
+}

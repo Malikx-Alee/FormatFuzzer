@@ -1,0 +1,190 @@
+{
+  "PNG_SIGNATURE.btPngSignature[0]": {
+    "type": "fixed_value",
+    "description": "PNG signature byte pair 1 - must be 0x8950 ('\\x89P')",
+    "required_value": 35152,
+    "required_value_hex": "0x8950",
+    "required_value_ascii": "\\x89P",
+    "corruption_risk": "high"
+  },
+  "PNG_SIGNATURE.btPngSignature[1]": {
+    "type": "fixed_value",
+    "description": "PNG signature byte pair 2 - must be 0x4E47 ('NG')",
+    "required_value": 20039,
+    "required_value_hex": "0x4E47",
+    "required_value_ascii": "NG",
+    "corruption_risk": "high"
+  },
+  "PNG_SIGNATURE.btPngSignature[2]": {
+    "type": "fixed_value",
+    "description": "PNG signature byte pair 3 - must be 0x0D0A (CR LF)",
+    "required_value": 3338,
+    "required_value_hex": "0x0D0A",
+    "required_value_ascii": "\\x0D\\x0A",
+    "corruption_risk": "high"
+  },
+  "PNG_SIGNATURE.btPngSignature[3]": {
+    "type": "fixed_value",
+    "description": "PNG signature byte pair 4 - must be 0x1A0A (SUB LF)",
+    "required_value": 6666,
+    "required_value_hex": "0x1A0A",
+    "required_value_ascii": "\\x1A\\x0A",
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK_IHDR.width": {
+    "type": "range_constraint",
+    "description": "Image width in pixels - must be positive (per PNG spec, max 2^31-1)",
+    "min": 1,
+    "max": 2147483647,
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK_IHDR.height": {
+    "type": "range_constraint",
+    "description": "Image height in pixels - must be positive (per PNG spec, max 2^31-1)",
+    "min": 1,
+    "max": 2147483647,
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK_IHDR.bits": {
+    "type": "enumerated_values",
+    "description": "Bit depth (allowed values depend on color_type)",
+    "valid_values": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK_IHDR.color_type": {
+    "type": "enumerated_values",
+    "description": "Color type",
+    "valid_values": [
+      0,
+      2,
+      3,
+      4,
+      6
+    ],
+    "value_names": [
+      "GrayScale",
+      "TrueColor",
+      "Indexed",
+      "AlphaGrayScale",
+      "AlphaTrueColor"
+    ],
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK_IHDR.compr_method": {
+    "type": "fixed_value",
+    "description": "Compression method - must be Deflate (0)",
+    "required_value": 0,
+    "required_value_hex": "0x00",
+    "required_value_ascii": "\\x00",
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK_IHDR.filter_method": {
+    "type": "fixed_value",
+    "description": "Filter method - must be AdaptiveFiltering (0)",
+    "required_value": 0,
+    "required_value_hex": "0x00",
+    "required_value_ascii": "\\x00",
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK_IHDR.interlace_method": {
+    "type": "enumerated_values",
+    "description": "Interlace method",
+    "valid_values": [
+      0,
+      1
+    ],
+    "value_names": [
+      "NoInterlace",
+      "Adam7Interlace"
+    ],
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK.type": {
+    "type": "enumerated_values",
+    "description": "PNG chunk type FourCC - first chunk must be IHDR, last must be IEND",
+    "valid_values": [
+      "IHDR",
+      "PLTE",
+      "IDAT",
+      "IEND",
+      "tRNS",
+      "cHRM",
+      "gAMA",
+      "iCCP",
+      "sBIT",
+      "sRGB",
+      "tEXt",
+      "zTXt",
+      "iTXt",
+      "bKGD",
+      "hIST",
+      "pHYs",
+      "sPLT",
+      "tIME",
+      "acTL",
+      "fcTL",
+      "fdAT",
+      "eXIf"
+    ],
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK.crc": {
+    "type": "calculated_value",
+    "description": "CRC-32 of chunk type and data - must match calculated value",
+    "corruption_risk": "high"
+  },
+  "PNG_CHUNK.length": {
+    "type": "calculated_value",
+    "description": "Chunk data length - must match actual data byte count",
+    "corruption_risk": "high"
+  },
+  "PNG_COMPR_METHOD.itxtComprMethod": {
+    "type": "fixed_value",
+    "description": "iTXt compression method - must be Deflate (0)",
+    "required_value": 0,
+    "required_value_hex": "0x00",
+    "required_value_ascii": "\\x00",
+    "corruption_risk": "medium"
+  },
+  "PNG_CHUNK_TIME.timeMonth": {
+    "type": "range_constraint",
+    "description": "Month of last modification (1..12)",
+    "min": 1,
+    "max": 12,
+    "corruption_risk": "low"
+  },
+  "PNG_CHUNK_TIME.timeDay": {
+    "type": "range_constraint",
+    "description": "Day of last modification (1..31)",
+    "min": 1,
+    "max": 31,
+    "corruption_risk": "low"
+  },
+  "PNG_CHUNK_TIME.timeHour": {
+    "type": "range_constraint",
+    "description": "Hour of last modification (0..23)",
+    "min": 0,
+    "max": 23,
+    "corruption_risk": "low"
+  },
+  "PNG_CHUNK_TIME.timeMin": {
+    "type": "range_constraint",
+    "description": "Minute of last modification (0..59)",
+    "min": 0,
+    "max": 59,
+    "corruption_risk": "low"
+  },
+  "PNG_CHUNK_TIME.timeSec": {
+    "type": "range_constraint",
+    "description": "Second of last modification (0..60, allows leap second)",
+    "min": 0,
+    "max": 60,
+    "corruption_risk": "low"
+  }
+}

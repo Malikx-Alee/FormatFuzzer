@@ -1,0 +1,229 @@
+{
+  "boxheader.type": {
+    "type": "enumerated_values",
+    "description": "Four-character box type code (FourCC). Common ISOBMFF/QuickTime atom types recognized by the parser.",
+    "valid_values": [
+      "ftyp",
+      "moov",
+      "mvhd",
+      "trak",
+      "tkhd",
+      "edts",
+      "elst",
+      "mdia",
+      "mdhd",
+      "hdlr",
+      "minf",
+      "vmhd",
+      "smhd",
+      "dinf",
+      "dref",
+      "stbl",
+      "stsd",
+      "stts",
+      "stsc",
+      "stsz",
+      "stco",
+      "co64",
+      "stss",
+      "mdat",
+      "free",
+      "skip",
+      "udta",
+      "mvex",
+      "mehd",
+      "trex",
+      "moof",
+      "mfhd",
+      "traf",
+      "tfhd",
+      "trun",
+      "sidx",
+      "saiz",
+      "saio",
+      "senc",
+      "pssh",
+      "sinf",
+      "schi",
+      "schm",
+      "frma",
+      "tenc",
+      "enca"
+    ],
+    "corruption_risk": "high"
+  },
+  "boxheader.size": {
+    "type": "calculated_value",
+    "description": "Box size in bytes including the header. 1 indicates 64-bit size in size64 follows; 0 indicates the box extends to end of file.",
+    "corruption_risk": "high"
+  },
+  "boxheader.size64": {
+    "type": "calculated_value",
+    "description": "64-bit box size present when size==1; must equal actual box length including header",
+    "corruption_risk": "high"
+  },
+  "ftyp.major_brand": {
+    "type": "enumerated_values",
+    "description": "Major brand FourCC identifying the file profile",
+    "valid_values": [
+      "isom",
+      "iso2",
+      "iso3",
+      "iso4",
+      "iso5",
+      "iso6",
+      "mp41",
+      "mp42",
+      "avc1",
+      "mp71",
+      "qt  ",
+      "M4V ",
+      "M4A ",
+      "M4P ",
+      "M4B ",
+      "f4v ",
+      "3gp4",
+      "3gp5",
+      "3gp6",
+      "3g2a",
+      "dash",
+      "msdh",
+      "msix",
+      "MSNV"
+    ],
+    "corruption_risk": "high"
+  },
+  "ftyp.minor_version": {
+    "type": "range_constraint",
+    "description": "Minor version of the major brand",
+    "min": 0,
+    "max": 4294967295,
+    "corruption_risk": "low"
+  },
+  "mvhd.version": {
+    "type": "enumerated_values",
+    "description": "Movie header box version (0 = 32-bit times, 1 = 64-bit times)",
+    "valid_values": [
+      0,
+      1
+    ],
+    "corruption_risk": "high"
+  },
+  "tkhd.version": {
+    "type": "enumerated_values",
+    "description": "Track header box version",
+    "valid_values": [
+      0,
+      1
+    ],
+    "corruption_risk": "high"
+  },
+  "mdhd.version": {
+    "type": "enumerated_values",
+    "description": "Media header box version",
+    "valid_values": [
+      0,
+      1
+    ],
+    "corruption_risk": "high"
+  },
+  "mdhd.language": {
+    "type": "pattern_constraint",
+    "description": "Packed ISO-639-2/T language code (3 lowercase letters), each letter encoded as 5 bits offset from 0x60",
+    "pattern": "[a-z]{3} packed into 15 bits",
+    "corruption_risk": "low"
+  },
+  "hdlr.type": {
+    "type": "enumerated_values",
+    "description": "Handler component type - typically 'mhlr' (media handler) or 'dhlr' (data handler) for QuickTime; 0 for ISO BMFF",
+    "valid_values": [
+      "mhlr",
+      "dhlr",
+      "\u0000\u0000\u0000\u0000"
+    ],
+    "corruption_risk": "medium"
+  },
+  "hdlr.subtype": {
+    "type": "enumerated_values",
+    "description": "Handler subtype indicating track media type",
+    "valid_values": [
+      "vide",
+      "soun",
+      "hint",
+      "meta",
+      "subt",
+      "text",
+      "auxv",
+      "data"
+    ],
+    "corruption_risk": "high"
+  },
+  "qtgfxmode": {
+    "type": "enumerated_values",
+    "description": "QuickTime graphics transfer mode in vmhd box",
+    "valid_values": [
+      0,
+      32,
+      36,
+      64,
+      256,
+      257,
+      258,
+      259,
+      260
+    ],
+    "value_names": [
+      "qtgCopy",
+      "qtgBlend",
+      "qtgTransparent",
+      "qtgDitherCopy",
+      "qtgStraightAlpha",
+      "qtgPremulWhiteAlpha",
+      "qtgPremulBlackAlpha",
+      "qtgComposition",
+      "qtgStraightAlphaBlend"
+    ],
+    "corruption_risk": "medium"
+  },
+  "tkhd.reserved": {
+    "type": "fixed_value",
+    "description": "Reserved uint32 after track_id - must be 0",
+    "required_value": 0,
+    "required_value_hex": "0x00000000",
+    "required_value_ascii": "\\x00\\x00\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "tkhd.reserved2": {
+    "type": "fixed_value",
+    "description": "Reserved uint64 after duration - must be 0",
+    "required_value": 0,
+    "required_value_hex": "0x0000000000000000",
+    "required_value_ascii": "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "tkhd.reserved3": {
+    "type": "fixed_value",
+    "description": "Reserved uint16 after volume - must be 0",
+    "required_value": 0,
+    "required_value_hex": "0x0000",
+    "required_value_ascii": "\\x00\\x00",
+    "corruption_risk": "low"
+  },
+  "stsd.entry_count": {
+    "type": "calculated_value",
+    "description": "Number of sample description entries in stsd box - must match number of mp4box entries that follow",
+    "corruption_risk": "high"
+  },
+  "stsz.sample_size": {
+    "type": "calculated_value",
+    "description": "If non-zero, all samples have this size; if zero, individual entry_size[] table follows with sample_count entries",
+    "corruption_risk": "high"
+  },
+  "stco.chunk_offset": {
+    "type": "range_constraint",
+    "description": "32-bit chunk file offset - must fit within file size",
+    "min": 0,
+    "max": 4294967295,
+    "corruption_risk": "high"
+  }
+}
