@@ -320,7 +320,15 @@ def build_gif(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
 
 
 def drive_gif(build: BuildResult, f: Path) -> str:
-    return f"./gif2rgb -o /dev/null '{f}' >/dev/null 2>&1"
+    # -1 ("one file") is required, not cosmetic. Without it gif2rgb writes
+    # three separate planes by appending ".R"/".G"/".B" to the -o name
+    # (DumpScreen2RGB, gif2rgb.c), so "-o /dev/null" becomes "/dev/null.R" -
+    # an unopenable path that trips GIF_EXIT *after* decoding but *before*
+    # the RGB dump, making every single run exit non-zero (253) regardless
+    # of whether the GIF was valid. That silently cost ~2.5 points of line
+    # coverage for every variant and made the exit code useless as a
+    # validity signal. With -1, FileName is opened as-is and /dev/null works.
+    return f"./gif2rgb -1 -o /dev/null '{f}' >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------
@@ -578,15 +586,21 @@ def drive_avi(build: BuildResult, f: Path) -> str:
 # the generic loader dispatch code) - see docs_llm/target_coverage_all_formats.md.
 # ---------------------------------------------------------------------------
 
+# Returns non-zero when the decode fails. An earlier version ended in an
+# unconditional "return 0", which made the exit code carry no signal at all:
+# the harness reported success for random garbage and for a zero-byte file
+# alike, so bmp could never contribute a validity rate (only line coverage,
+# which is unaffected by the exit code). Decoding is otherwise identical.
 _GDK_PIXBUF_HARNESS = """
 #include <gdk-pixbuf/gdk-pixbuf.h>
 int main(int argc, char **argv) {
-    if (argc < 2) return 1;
+    if (argc < 2) return 2;
     GError *error = NULL;
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(argv[1], &error);
+    int ok = (pixbuf != NULL);
     if (pixbuf) g_object_unref(pixbuf);
     if (error) g_error_free(error);
-    return 0;
+    return ok ? 0 : 1;
 }
 """
 
@@ -626,7 +640,19 @@ def build_bmp(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
              "-Dothers=enabled", "-Dbuiltin_loaders=bmp"], cwd=src,
             env={"CC": toolchain.cc, "CXX": toolchain.cxx})
         run(["ninja", "-C", "_build"], cwd=src)
-        harness_c = build_dir / "harness.c"
+        mark_built(build_dir, toolchain)
+
+    # The harness lives in this file, not in the meson build, so the
+    # toolchain fingerprint already_built() checks cannot see it change -
+    # editing _GDK_PIXBUF_HARNESS above would otherwise be silently ignored
+    # on every machine that had already built bmp once. Key its rebuild off
+    # the source text itself instead; it is a single compile, so recompiling
+    # whenever the text differs costs nothing.
+    harness_c = build_dir / "harness.c"
+    harness_bin = build_dir / "harness"
+    stale = (not harness_bin.exists() or not harness_c.exists()
+             or harness_c.read_text() != _GDK_PIXBUF_HARNESS)
+    if stale:
         harness_c.write_text(_GDK_PIXBUF_HARNESS)
         env = os.environ.copy()
         pc_dir = build_dir / "meson-uninstalled"
@@ -637,7 +663,6 @@ def build_bmp(work_dir: Path, force: bool, toolchain: Toolchain = Toolchain()) -
                                capture_output=True, text=True, check=True).stdout.strip()
         run(f'{toolchain.cc} {toolchain.cflags} {cflags} harness.c {libs} {toolchain.ldflags} -o harness',
             cwd=build_dir)
-        mark_built(build_dir, toolchain)
     return BuildResult([build_dir], build_dir)
 
 
