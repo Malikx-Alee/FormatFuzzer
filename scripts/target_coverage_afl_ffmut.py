@@ -338,9 +338,20 @@ def launch_afl_fuzz(afl_fuzz_bin: Path, instance_name: str, seeds: Path, sync_di
                      so_path: Path, dict_path: Optional[Path], timeout_s: int,
                      target_argv: List[str], needs_shell: bool,
                      extra_flags: List[str], mem_limit: str = "none",
-                     file_ext: Optional[str] = None) -> subprocess.Popen:
+                     file_ext: Optional[str] = None,
+                     skip_unruly_seeds: bool = True) -> subprocess.Popen:
+    # A "+" suffix on -t makes perform_dry_run() log
+    # "Test case results in a timeout (skipping)" and carry on
+    # (afl-fuzz-init.c, timeout_given > 1) instead of FATALing the whole
+    # campaign over a single seed the target cannot process in time. Without
+    # it one unruly seed out of a dozen aborts an 8h run at second zero,
+    # which is never what an unattended batch wants - the other seeds are
+    # still perfectly good starting points. Note -t cannot be overridden via
+    # --extra-afl-flag: a second -t FATALs with "Multiple -t options not
+    # supported", so this has to be built into the flag itself.
+    timeout_arg = f"{timeout_s * 1000}{'+' if skip_unruly_seeds else ''}"
     args = [str(afl_fuzz_bin), "-i", str(seeds), "-o", str(sync_dir), "-M", instance_name,
-            "-t", str(timeout_s * 1000), "-m", str(mem_limit)]
+            "-t", timeout_arg, "-m", str(mem_limit)]
     if file_ext:
         # -e names AFL's test-case file ".cur_input.<ext>" instead of the
         # bare ".cur_input" that @@ otherwise expands to. Not cosmetic:
@@ -580,8 +591,17 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
                               "and worth keeping) or coverage_targets/<name>/ (the gcov target; its "
                               ".gcda counters are reset every run regardless, with or without this "
                               "flag).")
+    parser.add_argument("--no-skip-unruly-seeds", action="store_true",
+                         help="abort the campaign if any seed times out during afl-fuzz's dry run, "
+                              "instead of the default of skipping that seed and continuing (the '+' "
+                              "suffix on -t). The default keeps one slow seed out of a dozen from "
+                              "killing an 8h unattended run; pass this when a timing-out seed should "
+                              "be treated as a hard error worth investigating. Skipped seeds are "
+                              "visible in the afl-fuzz output as 'Test case results in a timeout "
+                              "(skipping)'.")
     parser.add_argument("--extra-afl-flag", action="append", default=[],
-                         help="extra flag appended verbatim to the afl-fuzz argv (repeatable)")
+                         help="extra flag appended verbatim to the afl-fuzz argv (repeatable). Note "
+                              "-t cannot be overridden this way: afl-fuzz FATALs on a second -t.")
     parser.add_argument("--list", action="store_true", help="list supported formats and exit")
     return parser
 
@@ -697,7 +717,8 @@ def run_one_format(variant: Variant, fmt: str, args, afl_dir: Path,
 
     proc = launch_afl_fuzz(afl_fuzz_bin, afl_instance, seeds, afl_sync_dir, so_path, dict_path,
                             args.timeout, target_argv, needs_shell, args.extra_afl_flag, args.mem_limit,
-                            file_ext=recipe.ext)
+                            file_ext=recipe.ext,
+                            skip_unruly_seeds=not args.no_skip_unruly_seeds)
 
     time.sleep(3)
     if proc.poll() is not None:
