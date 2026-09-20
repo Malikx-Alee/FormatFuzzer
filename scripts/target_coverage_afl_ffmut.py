@@ -243,7 +243,26 @@ def find_afl_fuzz(afl_dir: Path) -> Path:
         tc.die(f"afl-fuzz not found at {p}\n"
                f"  Build AFL++ first: cd {afl_dir} && make source-only\n"
                f"  (or pass --afl-dir pointing at a built AFLplusplus checkout)")
+    if not afl_supports_e(p):
+        tc.die(f"{p} does not support the -e (test-case file extension) flag.\n"
+               f"  Without it AFL names its test case '.cur_input' with no extension,\n"
+               f"  and targets that dispatch on the filename (wavpack appends '.wav'\n"
+               f"  to extensionless paths) never open the file at all - a whole\n"
+               f"  campaign then measures nothing but the failed fopen().\n"
+               f"  Use an AFL++ build that has -e (e.g. the uds-se/AFLplusplus fork\n"
+               f"  this project targets), or remove the -e flag in launch_afl_fuzz()\n"
+               f"  and accept that wav (at least) is unmeasurable.")
     return p
+
+
+def afl_supports_e(afl_fuzz_bin: Path) -> bool:
+    """afl-fuzz -h exits non-zero and prints its usage to stderr; we only
+    care whether "-e ext" appears in it."""
+    try:
+        r = subprocess.run([str(afl_fuzz_bin), "-h"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "-e ext" in (r.stdout + r.stderr)
 
 
 def find_afl_compiler(afl_dir: Path, cc_override: Optional[str], cxx_override: Optional[str]) -> tc.Toolchain:
@@ -318,9 +337,23 @@ def build_target_argv(recipe: tc.Recipe, afl_build: tc.BuildResult) -> Tuple[Lis
 def launch_afl_fuzz(afl_fuzz_bin: Path, instance_name: str, seeds: Path, sync_dir: Path,
                      so_path: Path, dict_path: Optional[Path], timeout_s: int,
                      target_argv: List[str], needs_shell: bool,
-                     extra_flags: List[str], mem_limit: str = "none") -> subprocess.Popen:
+                     extra_flags: List[str], mem_limit: str = "none",
+                     file_ext: Optional[str] = None) -> subprocess.Popen:
     args = [str(afl_fuzz_bin), "-i", str(seeds), "-o", str(sync_dir), "-M", instance_name,
             "-t", str(timeout_s * 1000), "-m", str(mem_limit)]
+    if file_ext:
+        # -e names AFL's test-case file ".cur_input.<ext>" instead of the
+        # bare ".cur_input" that @@ otherwise expands to. Not cosmetic:
+        # some targets dispatch on the filename, not on content. wavpack
+        # appends ".wav" to any extensionless path, so it was resolving
+        # @@ -> ".cur_input" -> ".cur_input.wav", a file that does not
+        # exist - it bailed at fopen() without decoding a single byte, on
+        # every exec of an entire campaign. -e keeps AFL's @@ substitution
+        # intact (unlike -f, which sets out_file early and so skips the
+        # detect_file_args() call entirely, leaving a literal "@@" in
+        # argv). This also matches the plain-generation path, which has
+        # always named its corpus files "f<N>.<ext>".
+        args += ["-e", file_ext]
     if dict_path:
         args += ["-x", str(dict_path)]
     args += list(extra_flags)
@@ -663,7 +696,8 @@ def run_one_format(variant: Variant, fmt: str, args, afl_dir: Path,
     afl_sync_dir.parent.mkdir(parents=True, exist_ok=True)
 
     proc = launch_afl_fuzz(afl_fuzz_bin, afl_instance, seeds, afl_sync_dir, so_path, dict_path,
-                            args.timeout, target_argv, needs_shell, args.extra_afl_flag, args.mem_limit)
+                            args.timeout, target_argv, needs_shell, args.extra_afl_flag, args.mem_limit,
+                            file_ext=recipe.ext)
 
     time.sleep(3)
     if proc.poll() is not None:
