@@ -1,0 +1,2111 @@
+{
+  "meta": {
+    "format": "gif",
+    "source_template": "templates_originals/gif-orig.bt",
+    "model": "claude-opus-5",
+    "strategy": "tiered",
+    "spec_reference": "GIF89a -- Graphics Interchange Format Version 89a (CompuServe Incorporated, 31 July 1990), including the Appendix F LZW compression description; GIF87a for the earlier version string; the de facto NETSCAPE2.0 Application Extension for looping",
+    "schema_extensions": [
+      {
+        "name": "bitfield",
+        "where": "every constraints entry for a member of LOGICALSCREENDESCRIPTOR_PACKEDFIELDS, IMAGEDESCRIPTOR_PACKEDFIELDS or GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS",
+        "why": "These fields are bit-packed, and the template selects MSB-first packing with BitfieldLeftToRight() at line 63. A generator that writes them LSB-first produces a byte that means something entirely different -- a wrong colour-table size and a wrong flag set -- so the bit position and width of each field are recorded explicitly, together with the assembled byte layout."
+      },
+      {
+        "name": "applies_when",
+        "where": "constraints.DATASUBBLOCK.Data",
+        "why": "DATASUBBLOCK.Data is one .bt field reached from five different parents (image data, comment, plain text, application and undefined extensions). Its required content depends entirely on which parent, and the constraints map is keyed by field, so the qualification has to live inside the entry."
+      },
+      {
+        "name": "alternate_payloads",
+        "where": "constraints.DATASUBBLOCK.Data",
+        "why": "The same catch-all sub-block array carries an LZW stream in one position and free text, XMP or a NETSCAPE loop record in others. One payload_wellformedness object per parent is carried here because a map key cannot be repeated."
+      },
+      {
+        "name": "size_identity",
+        "where": "constraints entries whose length is implied rather than stored (DATASUBBLOCK.Size, GLOBALCOLORTABLE.rgb, LOCALCOLORTABLE.rgb, DATASUBBLOCK.Data)",
+        "why": "GIF has almost no explicit length fields: a colour table's size is implied by a 3-bit exponent and the image payload's size is implied by the dimensions. The exact arithmetic is stated in template terms so the generator can compute it rather than guess."
+      },
+      {
+        "name": "excluded_values",
+        "where": "constraints.DATASUBBLOCK.Size",
+        "why": "A sub-block size byte of 0 is not an illegal length, it is the block terminator, so it must not appear on a data-carrying sub-block. This names exactly that one value without bounding the field: 1 through 255 all stay free."
+      },
+      {
+        "name": "verification",
+        "where": "constraints.DATASUBBLOCK.Data",
+        "why": "The LZW generation_strategy is the single highest-value and highest-risk instruction in this file -- the previous run on this format got it wrong. The strategy as written was implemented and run against two real decoders before being recorded; this key states what was tested and what the result was, so the rewrite step can trust it rather than re-derive it."
+      },
+      {
+        "name": "tier",
+        "where": "each element of diversity_axes",
+        "why": "must_remain_unconstrained means different things for a Tier C axis (emit the whole declared field width) and a Tier B axis (emit every legal value, never a favoured subset). The tier disambiguates the instruction."
+      },
+      {
+        "name": "template_spelling_note",
+        "where": "meta, and the affected constraints entries",
+        "why": "The template misspells three identifiers -- ImageSeperator, PLAINTEXTEXTENTION and APPLICATIONEXTENTION. The keys in this file use the template's spelling exactly, as the schema requires, and this note records that the spelling is deliberate rather than a transcription error."
+      }
+    ],
+    "structure_note": "GIF is a fixed 6-byte header, a logical screen descriptor with an optional global colour table, then an open-ended sequence of blocks -- image descriptors and 0x21 extensions -- terminated by the single byte 0x3B; the image pixels are carried as an LZW stream (GIF89a Appendix F) split across length-prefixed sub-blocks, and that stream, which must decode to exactly ImageWidth * ImageHeight indices at the declared code width, is this format's one payload_wellformedness requirement and the thing a generator most easily gets wrong.",
+    "template_spelling_note": "ImageSeperator (line 107), PLAINTEXTEXTENTION (line 163) and APPLICATIONEXTENTION (line 181) are spelled as the template spells them; the keys below reproduce those spellings exactly.",
+    "tier_counts": {
+      "A": 21,
+      "B": 13,
+      "C": 26
+    }
+  },
+  "constraints": {
+    "RGB.R": {
+      "tier": "C",
+      "tier_rationale": "A colour table red sample is never validated by any decoder -- it is looked up and written to the output -- so constraining it would make every palette in the corpus identical while opening no branch at all.",
+      "type": "unconstrained",
+      "description": "Red component of one colour table entry; all 256 byte values are valid.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 33,
+        "snippet": "UBYTE\tR;"
+      },
+      "confidence": "high"
+    },
+    "RGB.G": {
+      "tier": "C",
+      "tier_rationale": "A colour table green sample is copied, never checked; pinning it removes palette diversity and buys no depth.",
+      "type": "unconstrained",
+      "description": "Green component of one colour table entry; all 256 byte values are valid.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 34,
+        "snippet": "UBYTE\tG;"
+      },
+      "confidence": "high"
+    },
+    "RGB.B": {
+      "tier": "C",
+      "tier_rationale": "A colour table blue sample is copied, never checked; pinning it removes palette diversity and buys no depth.",
+      "type": "unconstrained",
+      "description": "Blue component of one colour table entry; all 256 byte values are valid.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 35,
+        "snippet": "UBYTE\tB;"
+      },
+      "confidence": "high"
+    },
+    "DATASUBBLOCK.Size": {
+      "tier": "A",
+      "tier_rationale": "This byte is the only thing telling the decoder how many data bytes follow; if it disagrees with the bytes actually written, every subsequent block boundary in the file is wrong and the decoder either aborts on a bad block or walks off into the next structure.",
+      "type": "calculated_value",
+      "description": "The number of data bytes in this sub-block, from 1 to 255; the value 0 is not a length but the chain terminator.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 47,
+        "snippet": "UBYTE\tSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the DATASUBBLOCK.Data array that immediately follows",
+      "covers": "exactly the bytes of DATASUBBLOCK.Data in this sub-block; not itself, and not the terminator",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "DATASUBBLOCK.Data"
+      ],
+      "excluded_values": [
+        0
+      ],
+      "size_identity": "sizeof(DATASUBBLOCK.Data) == DATASUBBLOCK.Size; the template reads the same byte by lookahead at line 44 into the local `size` and then uses it as the array bound at line 48, so the local and the field are the same byte and must agree by construction",
+      "lookahead": {
+        "function": "ReadUByte",
+        "call_site_line": 44,
+        "values": [
+          0
+        ],
+        "preferred": []
+      },
+      "notes": "The loop at lines 45-51 continues while the lookahead byte is non-zero, so a 0 here ends the chain and is read as DATASUBBLOCKS.BlockTerminator instead. Sizes of 1 and 255 are both legal and worth generating: 255 is the maximum and exercises the decoder's full-buffer path, 1 produces a long chain of tiny sub-blocks and exercises the refill path far more often. Do not standardise on 255.",
+      "cross_check": {
+        "line": 48,
+        "snippet": "char\tData[size];"
+      }
+    },
+    "DATASUBBLOCK.Data": {
+      "tier": "A",
+      "tier_rationale": "In the IMAGEDATA position these bytes must be a valid GIF LZW stream that decodes to exactly ImageWidth * ImageHeight indices at the declared code width; measured against real decoders, random bytes here make Pillow abort the image with 'broken data stream when reading image file' and a short pixel count gives 'image file is truncated', so the row loop, the de-interlacing and the colour lookup never run.",
+      "type": "payload_wellformedness",
+      "description": "The data bytes of one sub-block; in an IMAGEDATA chain these are a slice of the image's LZW code stream, and in the extension chains they are free text or application data.",
+      "field_type": "char[size]",
+      "source": "both",
+      "evidence": {
+        "line": 48,
+        "snippet": "char\tData[size];"
+      },
+      "confidence": "high",
+      "applies_when": "the enclosing DATASUBBLOCKS is IMAGEDATA.DataSubBlocks (line 134) for the primary specification below; see alternate_payloads for COMMENTEXTENSION.CommentData, PLAINTEXTEXTENTION.PlainTextData, APPLICATIONEXTENTION.ApplicationData and UNDEFINEDDATA.DataSubBlocks, where the bytes are free and the entry is effectively Tier C",
+      "codec": "GIF LZW, variable-width codes, LSB-first bit packing (GIF89a Appendix F)",
+      "must_produce": "The Data arrays of ALL the sub-blocks in one IMAGEDATA chain, concatenated in order, form exactly one LZW code stream. With N = IMAGEDATA.LZWMinimumCodeSize, the stream uses ClearCode = 2^N and EndOfInformation = 2^N + 1, begins with a Clear code, contains codes that decode to exactly ImageWidth * ImageHeight colour indices, and ends with an EndOfInformation code. Codes are packed least-significant-bit first into successive bytes, starting at width N+1 bits.",
+      "decoder_gate": "Measured: random bytes in this position, even with the sub-block framing left intact, make Pillow raise OSError 'broken data stream when reading image file' and ImageMagick fall into its error-recovery fill rather than its normal decode loop; a stream that decodes to fewer than ImageWidth * ImageHeight indices gives Pillow 'image file is truncated'; and declaring one code size while encoding at another gives the same truncation failure. giflib's DGifGetLine returns GIF_ERROR (D_GIF_ERR_IMAGE_DEFECT) on the same input. In every failing case the per-row output, the four-pass interlace reassembly, the transparency test and the colour-map lookup are all skipped.",
+      "generation_strategy": "Take N = IMAGEDATA.LZWMinimumCodeSize and P = ImageWidth * ImageHeight (the interlace flag reorders rows but does not change the count). Choose P index values freely, each less than 2^N. Then emit the stream with a bit writer that appends each code LSB-first at a fixed width of N+1 bits: write ClearCode = 2^N; then walk the indices, and before every run of 2^N - 2 indices write ClearCode again; write each index as its own literal code; finally write EndOfInformation = 2^N + 1 and flush the partial byte with zero padding. Re-emitting Clear every 2^N - 2 codes keeps the decoder's table below 2^(N+1) entries, so the code width never has to grow and no dictionary bookkeeping is needed at all -- this is the LZW equivalent of a deflate stored block. Finally cut the resulting byte string into sub-blocks of at most 255 bytes, each preceded by its length byte, and append the 0x00 terminator. VERIFIED: this exact construction was implemented and decoded pixel-for-pixel correctly by both Pillow and ImageMagick for every code size 2 through 8, for dimensions 1x1, 37x23, 17x19, 300x1, 1x300, 255x2, 2x255, 64x64 and 640x480, with the interlace flag both clear and set.",
+      "derives_from": [
+        "IMAGEDESCRIPTOR.ImageWidth",
+        "IMAGEDESCRIPTOR.ImageHeight",
+        "IMAGEDATA.LZWMinimumCodeSize"
+      ],
+      "content_is_free": true,
+      "verification": {
+        "method": "the generation_strategy was implemented verbatim, used to build complete GIF files, and the decoded pixels compared against the indices fed in",
+        "decoders": [
+          "Pillow (its own LZW decoder)",
+          "ImageMagick 7 via magick identify -regard-warnings"
+        ],
+        "cases": "code sizes 2-8; dimensions 1x1, 37x23, 17x19, 300x1, 1x300, 255x2, 2x255, 64x64, 640x480; interlace flag 0 and 1",
+        "result": "every case decoded pixel-exact; no case required any dimension to be adjusted to suit the payload"
+      },
+      "size_identity": "the concatenated Data arrays of one IMAGEDATA chain hold the whole LZW stream; the split points between sub-blocks are arbitrary and carry no meaning, so the last sub-block may be any length from 1 to 255",
+      "alternate_payloads": [
+        {
+          "parent": "COMMENTEXTENSION.CommentData",
+          "codec": "none (free 7-bit ASCII text)",
+          "must_produce": "any bytes; GIF89a recommends printable ASCII but no decoder enforces it",
+          "decoder_gate": "none -- the bytes are skipped or handed to the caller whatever they are",
+          "generation_strategy": "emit any bytes, split into sub-blocks of any length from 1 to 255, then the 0x00 terminator; non-ASCII and control bytes are worth generating because strict readers take a separate validation path on them",
+          "derives_from": [],
+          "content_is_free": true
+        },
+        {
+          "parent": "PLAINTEXTEXTENTION.PlainTextData",
+          "codec": "none (free 7-bit ASCII text)",
+          "must_produce": "any bytes; the text is rendered into the grid the PLAINTEXTSUBBLOCK describes",
+          "decoder_gate": "none; most decoders skip the plain text extension entirely, and the ones that render it divide by CharacterCellWidth and CharacterCellHeight",
+          "generation_strategy": "emit any bytes in sub-blocks, then the terminator",
+          "derives_from": [],
+          "content_is_free": true
+        },
+        {
+          "parent": "APPLICATIONEXTENTION.ApplicationData",
+          "codec": "application-defined; for the NETSCAPE2.0 looping extension it is a fixed record",
+          "must_produce": "For ApplicationIdentifier 'NETSCAPE' with authentication code '2.0': one sub-block of exactly 3 bytes -- 0x01, then the loop count as a little-endian ushort (0 meaning loop forever) -- followed by the 0x00 terminator. For 'XMP Data' with code 'XMP': the XMP packet as raw bytes followed by the 258-byte magic trailer. For every other identifier the bytes are free.",
+          "decoder_gate": "a decoder looking for the loop count reads the first sub-block and ignores the extension if its first byte is not 0x01 or its length is not 3; the animation then plays once instead of looping, skipping the loop-control code",
+          "generation_strategy": "when the identifier is 'NETSCAPE', emit the length byte 0x03, then 0x01, then two free bytes of loop count, then 0x00; otherwise emit free bytes in sub-blocks then 0x00",
+          "derives_from": [
+            "APPLICATIONSUBBLOCK.ApplicationIdentifier"
+          ],
+          "content_is_free": true
+        },
+        {
+          "parent": "UNDEFINEDDATA.DataSubBlocks",
+          "codec": "none",
+          "must_produce": "any bytes; this is an extension whose label the format does not define, and a conforming decoder must skip it by following the sub-block chain",
+          "decoder_gate": "none -- but the chain must be well formed, because skipping an unknown extension is done by walking the size bytes; a broken chain desynchronises the parse",
+          "generation_strategy": "emit free bytes in correctly sized sub-blocks then the 0x00 terminator; this is the only route into a decoder's unknown-extension skip path",
+          "derives_from": [],
+          "content_is_free": true
+        }
+      ],
+      "notes": "This is the entry the previous run on this format got wrong, and the way it went wrong is instructive: it treated the agreement between the payload and the dimensions as a reason to shrink the dimensions. The agreement is real, but it is satisfied by computing the pixel count from ImageWidth and ImageHeight -- which the strategy above does, and which was measured to work at 1x1 and at 640x480 alike. ImageWidth, ImageHeight and LZWMinimumCodeSize are listed in derives_from and all three appear in diversity_axes: they are inputs to this payload, never outputs of it. Everything inside the stream -- every one of the P index values -- is free."
+    },
+    "DATASUBBLOCKS.BlockTerminator": {
+      "tier": "A",
+      "tier_rationale": "The zero byte is what tells the decoder the sub-block chain has ended; without it the decoder keeps consuming the following bytes as further sub-blocks and runs off the end of the block, which for the image data means the image is abandoned.",
+      "type": "fixed_value",
+      "description": "The block terminator ending a sub-block chain; a single zero byte.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 52,
+        "snippet": "UBYTE\tBlockTerminator;"
+      },
+      "confidence": "high",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "notes": "The template's loop at line 45 exits precisely when the lookahead byte is 0, and line 52 then consumes it. Never give this field an evil value: it is the sole delimiter of every variable-length section in the format.",
+      "cross_check": {
+        "line": 45,
+        "snippet": "while (size != 0) {"
+      }
+    },
+    "GIFHEADER.Signature": {
+      "tier": "A",
+      "tier_rationale": "The template itself warns 'File is not a valid GIF. Template stopped.' and returns -1 when these three bytes are not 'GIF' (lines 78-82), and giflib's DGifGetScreenDesc fails with D_GIF_ERR_NOT_GIF_FILE before reading anything else.",
+      "type": "fixed_value",
+      "description": "The three-character GIF signature at the very start of the file.",
+      "field_type": "char[3]",
+      "source": "both",
+      "evidence": {
+        "line": 56,
+        "snippet": "char\tSignature[3];"
+      },
+      "confidence": "high",
+      "required_value": "GIF",
+      "required_value_hex": "0x47 0x49 0x46",
+      "required_value_ascii": "GIF",
+      "notes": "This is the only value the template validates, which is why the rest of the header is Tier B. Never give this field an evil value.",
+      "cross_check": {
+        "line": 78,
+        "snippet": "if( GifHeader.Signature != \"GIF\" )"
+      }
+    },
+    "GIFHEADER.Version": {
+      "tier": "B",
+      "tier_rationale": "The template checks only the signature and giflib likewise compares just the first three bytes, so a strange version string does not make a decoder refuse the file; but the legal set is exactly two strings and they select the 87a and 89a feature sets, which differ in whether extensions are recognised at all.",
+      "type": "enumerated_values",
+      "description": "The three-character format version following the signature.",
+      "field_type": "char[3]",
+      "source": "both",
+      "evidence": {
+        "line": 57,
+        "snippet": "char\tVersion[3];"
+      },
+      "confidence": "high",
+      "valid_values": [
+        "87a",
+        "89a"
+      ],
+      "value_names": [
+        "GIF87a (original)",
+        "GIF89a (with extensions)"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        "89a",
+        "87a"
+      ],
+      "notes": "89a is named first because it is the only version under which the graphic control, comment, plain text and application extensions are defined, so it reaches far more of a decoder; but 87a must still be generated, because a decoder that honours the version takes a different path and refuses or ignores those extensions. The template never compares this field, so its constraint comes from the spec."
+    },
+    "LOGICALSCREENDESCRIPTOR.Width": {
+      "tier": "C",
+      "tier_rationale": "The logical screen width is the canvas dimension a decoder allocates and clips every frame against, and it is exactly the kind of field a size-conscious author pins; narrowing it would make every canvas the same and would delete the clipping and out-of-bounds paths that only a varied canvas can reach.",
+      "type": "unconstrained",
+      "description": "Width in pixels of the logical screen onto which the images are composited; a little-endian ushort, so every value from 0 to 65535 is representable and legal.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 61,
+        "snippet": "ushort\tWidth;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Zero is deliberately not excluded: a zero-width logical screen is accepted by the parser and drives a decoder's degenerate-canvas handling, which is its own branch. The relationship between this and the image dimensions -- a conforming file keeps ImageLeftPosition + ImageWidth within it -- is recorded as a dependency, not as a bound here, because both the conforming and the overflowing case are worth generating. File size is bounded by the output_budget on the block sequence, never by this field."
+    },
+    "LOGICALSCREENDESCRIPTOR.Height": {
+      "tier": "C",
+      "tier_rationale": "The logical screen height sets the canvas row count a decoder allocates and composites into; constraining it would make every file the same shape and is the documented failure mode of this task.",
+      "type": "unconstrained",
+      "description": "Height in pixels of the logical screen; a little-endian ushort, every value 0 to 65535 legal.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 62,
+        "snippet": "ushort\tHeight;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag": {
+      "tier": "B",
+      "tier_rationale": "Either value produces a file a decoder reads, so this is not a front gate; but the bit decides whether a global colour table is present at all, and the template branches on it at line 88, so the two values select two structurally different files.",
+      "type": "enumerated_values",
+      "description": "Whether a global colour table follows the logical screen descriptor.",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "evidence": {
+        "line": 65,
+        "snippet": "UBYTE\tGlobalColorTableFlag : 1;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "no global colour table",
+        "global colour table follows"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 4,
+        "bit_position": 7,
+        "bit_width": 1,
+        "packing": "MSB first, selected by BitfieldLeftToRight() at line 63"
+      },
+      "notes": "Both values matter. Flag 1 is the only route into the global colour table read and the background-colour lookup; flag 0 forces a decoder either to rely on a local colour table or to fall back on a default palette, which is a separate and less exercised path. A file with neither a global nor a local table is legal by the grammar and reaches the missing-palette handling.",
+      "cross_check": {
+        "line": 88,
+        "snippet": "if (LogicalScreenDescriptor.PackedFields.GlobalColorTableFlag == 1) {"
+      }
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.ColorResolution": {
+      "tier": "C",
+      "tier_rationale": "This three-bit field is informational -- it reports the colour resolution of the original source image -- and no decoder branches on it or refuses a file for it, so all eight values already produce readable files and pinning it would only remove variation from the packed byte.",
+      "type": "unconstrained",
+      "description": "Bits per primary colour available on the source device, less one; a three-bit field whose full 0 to 7 span is legal and ignored.",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "evidence": {
+        "line": 66,
+        "snippet": "UBYTE\tColorResolution : 3;"
+      },
+      "confidence": "high",
+      "bitfield": {
+        "byte_offset_in_struct": 4,
+        "bit_position": 6,
+        "bit_width": 3,
+        "packing": "MSB first, bits 6-4"
+      },
+      "notes": "The declared three-bit width already bounds this to 0..7, so leaving it unconstrained is the same as enumerating every legal value and costs nothing. It is recorded here rather than omitted because it shares a byte with SizeOfGlobalColorTable, and a generator that pins it would be writing a constant into three bits of a byte that ought to vary."
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SortFlag": {
+      "tier": "B",
+      "tier_rationale": "A decoder reads the file either way, so this is not a front gate; but it is a one-bit flag with two defined meanings and a decoder that honours it takes a different palette-ordering path.",
+      "type": "enumerated_values",
+      "description": "Whether the global colour table is sorted in decreasing order of importance.",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "evidence": {
+        "line": 67,
+        "snippet": "UBYTE\tSortFlag : 1;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "not sorted",
+        "sorted by decreasing importance"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 4,
+        "bit_position": 3,
+        "bit_width": 1,
+        "packing": "MSB first"
+      }
+    },
+    "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable": {
+      "tier": "C",
+      "tier_rationale": "This three-bit exponent is the entire length field for the global colour table -- the table holds 2^(value+1) entries -- so it feeds both an allocation and a loop bound, which makes it precisely the field a careful reader is tempted to pin at 7 so that every palette index is always in range; pinning it would collapse the palette-size space to one point and delete every short-palette and index-out-of-range branch in the decoder.",
+      "type": "unconstrained",
+      "description": "Exponent giving the global colour table size: the table contains 2 raised to the power (this value plus one) entries, so 0 means 2 entries and 7 means 256.",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "evidence": {
+        "line": 68,
+        "snippet": "UBYTE\tSizeOfGlobalColorTable : 3;"
+      },
+      "confidence": "high",
+      "bitfield": {
+        "byte_offset_in_struct": 4,
+        "bit_position": 2,
+        "bit_width": 3,
+        "packing": "MSB first, bits 2-0"
+      },
+      "size_identity": "GLOBALCOLORTABLE.rgb holds 2^(SizeOfGlobalColorTable + 1) RGB triples, which is 3 * 2^(SizeOfGlobalColorTable + 1) bytes; the template computes exactly this with the doubling loop at lines 92-95",
+      "notes": "The declared three-bit width already bounds this to 0..7, which is the format's complete legal span; every one of the eight values must be generated. Small tables are the more interesting half: with a two-entry table most index values are out of range, which is the only way to reach a decoder's palette-bounds checking. The table's byte cost is at most 768 and is covered by the structure section's budget, so there is no size reason to pin it either.",
+      "cross_check": {
+        "line": 93,
+        "snippet": "for (i = 0; i <= LogicalScreenDescriptor.PackedFields.SizeOfGlobalColorTable; i++) {"
+      }
+    },
+    "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex": {
+      "tier": "C",
+      "tier_rationale": "The background index is looked up in the global colour table and used to clear the canvas; an out-of-range value is not refused by the parser and is exactly what reaches a decoder's index-bounds check, so constraining it would remove both the diversity and that branch.",
+      "type": "unconstrained",
+      "description": "Index into the global colour table of the colour used for the parts of the canvas no image covers.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 70,
+        "snippet": "UBYTE\tBackgroundColorIndex;"
+      },
+      "confidence": "high",
+      "notes": "GIF89a says this field is meaningless and should be 0 when GlobalColorTableFlag is 0, and should be less than the table size when it is 1; both rules are recorded as dependencies rather than as bounds here, because the violating cases are the ones that reach the checks."
+    },
+    "LOGICALSCREENDESCRIPTOR.PixelAspectRatio": {
+      "tier": "C",
+      "tier_rationale": "The aspect ratio byte is read and either ignored or turned into a ratio by the formula (value + 15) / 64; no value makes a decoder refuse the file, and the special case 0 means 'no ratio given', so leaving it free reaches both the special case and the arithmetic.",
+      "type": "unconstrained",
+      "description": "Pixel aspect ratio of the source image; 0 means none was given, otherwise the ratio is (this value + 15) / 64.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 71,
+        "snippet": "UBYTE\tPixelAspectRatio;"
+      },
+      "confidence": "high",
+      "notes": "0 is a meaningful special case and must stay reachable; it is deliberately not excluded."
+    },
+    "GLOBALCOLORTABLE.rgb": {
+      "tier": "A",
+      "tier_rationale": "GIF stores no length for the colour table: its size is implied entirely by SizeOfGlobalColorTable, so if the generator writes a different number of entries than 2^(SizeOfGlobalColorTable+1) every byte after the table is at the wrong offset and the decoder mis-parses the first block it meets.",
+      "type": "calculated_value",
+      "description": "The global colour table: exactly 2 raised to the power (SizeOfGlobalColorTable plus one) RGB triples, written back to back with no length prefix and no terminator.",
+      "field_type": "RGB[size]",
+      "source": "both",
+      "evidence": {
+        "line": 96,
+        "snippet": "RGB rgb[size];"
+      },
+      "confidence": "high",
+      "algorithm": "entry count = 2^(LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable + 1); byte count = 3 * entry count",
+      "covers": "the colour table bytes only; the count is not stored anywhere in the file",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable",
+        "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag"
+      ],
+      "size_identity": "the template's local `size` starts at 1 and doubles once per iteration of the loop `for (i = 0; i <= SizeOfGlobalColorTable; i++)` at line 93, so it ends at 2^(SizeOfGlobalColorTable + 1): 2 entries for exponent 0, 256 for exponent 7",
+      "notes": "This is Tier A as a length rule, not as a content rule: the NUMBER of entries is pinned by the exponent, while every byte inside them is free (see RGB.R, RGB.G and RGB.B). The table is present only when GlobalColorTableFlag is 1, which the template tests at line 88. Do not confuse pinning the count with pinning the exponent -- the exponent is Tier C and must vary.",
+      "cross_check": {
+        "line": 93,
+        "snippet": "for (i = 0; i <= LogicalScreenDescriptor.PackedFields.SizeOfGlobalColorTable; i++) {"
+      }
+    },
+    "IMAGEDESCRIPTOR.ImageSeperator": {
+      "tier": "A",
+      "tier_rationale": "This byte is the block-type marker the decoder dispatches on; the template selects the image branch only when a lookahead sees 0x2C at line 104, and a decoder that reads anything else here treats the bytes as a different block entirely or gives up on an unknown block type.",
+      "type": "fixed_value",
+      "description": "The image separator introducing an image descriptor block.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 107,
+        "snippet": "UBYTE\tImageSeperator;"
+      },
+      "confidence": "high",
+      "required_value": 44,
+      "required_value_hex": "0x2C",
+      "required_value_ascii": ",",
+      "lookahead": {
+        "function": "ReadUByte",
+        "call_site_line": 104,
+        "values": [
+          44
+        ],
+        "preferred": [
+          44
+        ]
+      },
+      "notes": "The field name is spelled ImageSeperator in the template; that spelling is reproduced in this key deliberately. The lookahead at line 104 and the one at line 102 share a call position: the dispatch byte is 0x3B for the trailer, 0x2C for an image and 0x21 for every extension, and those three are the complete set of block introducers in the format. Never give this field an evil value."
+    },
+    "IMAGEDESCRIPTOR.ImageLeftPosition": {
+      "tier": "C",
+      "tier_rationale": "The horizontal placement of the frame on the canvas selects the clipping and column-offset arithmetic in the compositor; pinning it to 0 leaves every frame at the origin and deletes that arithmetic along with the out-of-canvas rejection path.",
+      "type": "unconstrained",
+      "description": "Column of the logical screen at which the left edge of this image is placed; little-endian ushort.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 108,
+        "snippet": "ushort\tImageLeftPosition;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "IMAGEDESCRIPTOR.ImageTopPosition": {
+      "tier": "C",
+      "tier_rationale": "The vertical placement selects which canvas rows the compositor writes and restores between frames; pinning it removes the row-offset arithmetic and the partial-canvas update paths.",
+      "type": "unconstrained",
+      "description": "Row of the logical screen at which the top edge of this image is placed; little-endian ushort.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 109,
+        "snippet": "ushort\tImageTopPosition;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "IMAGEDESCRIPTOR.ImageWidth": {
+      "tier": "C",
+      "tier_rationale": "This is the field the previous run on this format wrongly restricted to the set {1, 2, 4, 8}, costing 1.7 coverage points: it sets the LZW decode loop bound, the row stride, the row-copy width and the interlace pass arithmetic, and every generated file came out near-identical once it was pinned.",
+      "type": "unconstrained",
+      "description": "Width of this image in pixels; a little-endian ushort, so every value from 0 to 65535 is representable and legal.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 110,
+        "snippet": "ushort\tImageWidth;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "DO NOT NARROW THIS FIELD. The LZW payload must decode to ImageWidth * ImageHeight indices, and that agreement is satisfied by computing the payload from the dimensions -- the construction in DATASUBBLOCK.Data was measured working at widths of 1, 2, 17, 37, 255, 300 and 640 without any adjustment. There is no size reason to cap it either: the generator stops emitting LZW sub-blocks when the running output_budget in the structure section is reached. Zero is not excluded, because a zero-width image is accepted by the parser and reaches a decoder's degenerate-image handling.",
+      "size_identity": "the LZW stream for this image must decode to exactly ImageWidth * ImageHeight colour indices, whatever the interlace flag says"
+    },
+    "IMAGEDESCRIPTOR.ImageHeight": {
+      "tier": "C",
+      "tier_rationale": "Together with ImageWidth this sets how many indices the LZW stream must produce and how many rows the decoder walks; it was pinned alongside the width in the previous run and cost the same coverage, and narrowing it would again collapse every generated frame onto one shape.",
+      "type": "unconstrained",
+      "description": "Height of this image in pixels; a little-endian ushort, every value 0 to 65535 legal.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 111,
+        "snippet": "ushort\tImageHeight;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "DO NOT NARROW THIS FIELD. Height interacts with InterlaceFlag: the four-pass interlace visits rows 0,8,16..., then 4,12,20..., then 2,6,10..., then 1,3,5..., so heights below 8 leave some passes empty and reach the empty-pass branch that no larger height touches. The payload is derived from this value, never the value from the payload."
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag": {
+      "tier": "B",
+      "tier_rationale": "A decoder reads the file with either value, so it is not a front gate; but the bit decides whether a local colour table is present, which the template branches on at line 120, and the two values produce structurally different blocks.",
+      "type": "enumerated_values",
+      "description": "Whether a local colour table follows this image descriptor and overrides the global one for this image.",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "evidence": {
+        "line": 113,
+        "snippet": "UBYTE\tLocalColorTableFlag : 1;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "use the global colour table",
+        "local colour table follows"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 9,
+        "bit_position": 7,
+        "bit_width": 1,
+        "packing": "MSB first"
+      },
+      "notes": "Flag 1 is the only route into the local colour table read and the per-image palette switch; flag 0 is the only route into the global-table fallback. Generate both.",
+      "cross_check": {
+        "line": 120,
+        "snippet": "if (ImageDescriptor.PackedFields.LocalColorTableFlag == 1) {"
+      }
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.InterlaceFlag": {
+      "tier": "B",
+      "tier_rationale": "Both values give a file a decoder reads to the end, so it is not a front gate; but this single bit selects between the sequential row path and the four-pass interlace reassembly, which is the largest fork in a GIF decoder's row handling.",
+      "type": "enumerated_values",
+      "description": "Whether the image's rows are stored in four interlaced passes rather than top to bottom.",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "evidence": {
+        "line": 114,
+        "snippet": "UBYTE\tInterlaceFlag : 1;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "sequential rows",
+        "four-pass interlace"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 9,
+        "bit_position": 6,
+        "bit_width": 1,
+        "packing": "MSB first"
+      },
+      "notes": "Both values are named as preferred on purpose. Flag 1 is the sole entry into the interlace row-offset and row-increment tables and the pass loop -- rows 0,8,16..., then 4,12,20..., then 2,6,10..., then 1,3,5... -- a body of code flag 0 never touches. The flag changes only the ORDER of the rows in the LZW stream, not the number of indices, so the payload construction is identical either way; this was measured with the flag both clear and set at every dimension tested."
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.SortFlag": {
+      "tier": "B",
+      "tier_rationale": "Neither value makes a decoder refuse the file, but it is a one-bit flag with two defined meanings and a decoder that honours it orders the local palette differently.",
+      "type": "enumerated_values",
+      "description": "Whether the local colour table is sorted in decreasing order of importance.",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "evidence": {
+        "line": 115,
+        "snippet": "UBYTE\tSortFlag : 1;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "not sorted",
+        "sorted by decreasing importance"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 9,
+        "bit_position": 5,
+        "bit_width": 1,
+        "packing": "MSB first"
+      }
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.Reserved": {
+      "tier": "C",
+      "tier_rationale": "GIF89a reserves these two bits for future use and no decoder inspects them, so a non-zero value still yields a file that decodes fully; per the rule for reserved fields nobody checks, they stay free, and setting them is a cheap way to vary the packed byte.",
+      "type": "unconstrained",
+      "description": "Two reserved bits in the image descriptor's packed field.",
+      "field_type": "UBYTE : 2",
+      "source": "both",
+      "evidence": {
+        "line": 116,
+        "snippet": "UBYTE\tReserved : 2;"
+      },
+      "confidence": "high",
+      "bitfield": {
+        "byte_offset_in_struct": 9,
+        "bit_position": 4,
+        "bit_width": 2,
+        "packing": "MSB first, bits 4-3"
+      },
+      "notes": "The spec says these should be zero, but no decoder validates them, so they are Tier C rather than a Tier A pinned zero. A strict conformance checker will flag a non-zero value, which is itself a branch worth reaching."
+    },
+    "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable": {
+      "tier": "C",
+      "tier_rationale": "Like its global counterpart this three-bit exponent is the entire length field for the local colour table, feeding an allocation and a loop bound, and it is exactly the field a careful reader is tempted to pin at 7 so indices are always in range; pinning it deletes every short-palette and out-of-range-index branch.",
+      "type": "unconstrained",
+      "description": "Exponent giving the local colour table size: the table contains 2 raised to the power (this value plus one) entries, from 2 to 256.",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "evidence": {
+        "line": 117,
+        "snippet": "UBYTE\tSizeOfLocalColorTable : 3;"
+      },
+      "confidence": "high",
+      "bitfield": {
+        "byte_offset_in_struct": 9,
+        "bit_position": 2,
+        "bit_width": 3,
+        "packing": "MSB first, bits 2-0"
+      },
+      "size_identity": "LOCALCOLORTABLE.rgb holds 2^(SizeOfLocalColorTable + 1) RGB triples, which the template computes with the doubling loop at lines 124-127",
+      "notes": "The three-bit width already bounds this to 0..7, the format's complete legal span; generate all eight. It is read only when LocalColorTableFlag is 1, but the bits are written either way.",
+      "cross_check": {
+        "line": 125,
+        "snippet": "for (i = 0; i <= ImageDescriptor.PackedFields.SizeOfLocalColorTable; i++) {"
+      }
+    },
+    "LOCALCOLORTABLE.rgb": {
+      "tier": "A",
+      "tier_rationale": "As with the global table, GIF stores no length for a local colour table: its size is implied by SizeOfLocalColorTable alone, so writing the wrong number of entries puts the LZW minimum code size byte and everything after it at the wrong offset and the image is mis-parsed immediately.",
+      "type": "calculated_value",
+      "description": "The local colour table for this image: exactly 2 raised to the power (SizeOfLocalColorTable plus one) RGB triples, with no length prefix and no terminator.",
+      "field_type": "RGB[size]",
+      "source": "both",
+      "evidence": {
+        "line": 128,
+        "snippet": "RGB rgb[size];"
+      },
+      "confidence": "high",
+      "algorithm": "entry count = 2^(IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable + 1); byte count = 3 * entry count",
+      "covers": "the local colour table bytes only; the count is not stored anywhere in the file",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable",
+        "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag"
+      ],
+      "size_identity": "the template's local `size` doubles once per iteration of `for (i = 0; i <= SizeOfLocalColorTable; i++)` at line 125, ending at 2^(SizeOfLocalColorTable + 1)",
+      "notes": "Tier A as a length rule only: the entry count is pinned by the exponent while every colour byte inside is free. Present only when LocalColorTableFlag is 1 (template line 120).",
+      "cross_check": {
+        "line": 125,
+        "snippet": "for (i = 0; i <= ImageDescriptor.PackedFields.SizeOfLocalColorTable; i++) {"
+      }
+    },
+    "IMAGEDATA.LZWMinimumCodeSize": {
+      "tier": "B",
+      "tier_rationale": "Close call with Tier A: this byte sets the LZW clear code, the end-of-information code and the starting code width, and the payload must be encoded at exactly the width it declares -- a declared 8 with a payload encoded at 4 was measured to fail with Pillow's 'image file is truncated'; but the value itself was measured to be accepted across its whole plausible span by both decoders tested, so the gate is the AGREEMENT rather than the value, and the legal set is a seven-value enumeration in which each value is a different code width.",
+      "type": "enumerated_values",
+      "description": "The initial LZW code size in bits, equal to the number of bits per pixel of the image; it fixes ClearCode at 2 to this power and the starting code width at one more than this.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 133,
+        "snippet": "UBYTE\tLZWMinimumCodeSize;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "value_names": [
+        "2 bits per pixel",
+        "3 bits per pixel",
+        "4 bits per pixel",
+        "5 bits per pixel",
+        "6 bits per pixel",
+        "7 bits per pixel",
+        "8 bits per pixel"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "notes": "GIF89a Appendix F gives 2 as the minimum; 8 is the maximum because a colour index cannot exceed 8 bits. Every one of the seven is named as preferred because each one changes the code width, the clear-code period and therefore the entire bit-packing of the payload -- size 2 clears the table every 2 codes while size 8 clears every 254, which are very different stress patterns on a decoder's table management. Values 0, 1 and 9 and above are outside the spec; both decoders tested accepted them with a matching payload, and giflib is stricter, so they are left out of valid_values as out-of-spec rather than because they seemed unproductive. This field is an INPUT to DATASUBBLOCK.Data: encode the payload at the width declared here, never pick a width to suit a precomputed payload."
+    },
+    "GRAPHICCONTROLEXTENSION.ExtensionIntroducer": {
+      "tier": "A",
+      "tier_rationale": "0x21 is the marker that makes the decoder treat the following bytes as an extension at all; the template reaches this branch only when a lookahead ushort equals 0xF921, whose low byte is this field, and a decoder seeing anything else dispatches somewhere else entirely.",
+      "type": "fixed_value",
+      "description": "The extension introducer byte common to every GIF extension block.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 139,
+        "snippet": "UBYTE ExtensionIntroducer; // 0x21"
+      },
+      "confidence": "high",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 136,
+        "values": [
+          63777
+        ],
+        "preferred": [
+          63777
+        ]
+      },
+      "notes": "The template sets LittleEndian() at line 30, so the ushort 0xF921 tested at line 136 is the byte pair 0x21 then 0xF9: this field is the low byte and GraphicControlLabel is the high byte. 63777 is 0xF921 in decimal. Never give this field an evil value."
+    },
+    "GRAPHICCONTROLEXTENSION.GraphicControlLabel": {
+      "tier": "A",
+      "tier_rationale": "This label is what distinguishes a graphic control extension from the comment, plain text and application extensions; a wrong value sends the decoder into a different handler that reads a different structure, and the graphic control fields are never parsed.",
+      "type": "fixed_value",
+      "description": "The label identifying this extension as a graphic control extension.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 140,
+        "snippet": "UBYTE GraphicControlLabel; // 0xF9"
+      },
+      "confidence": "high",
+      "required_value": 249,
+      "required_value_hex": "0xF9",
+      "required_value_ascii": "\\xF9",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 136,
+        "values": [
+          63777
+        ],
+        "preferred": [
+          63777
+        ]
+      },
+      "notes": "High byte of the little-endian ushort 0xF921 compared at line 136. The complete set of extension labels the template dispatches on is 0xF9 graphic control, 0xFE comment, 0x01 plain text and 0xFF application; anything else falls to the UNDEFINEDDATA branch."
+    },
+    "GRAPHICCONTROLSUBBLOCK.BlockSize": {
+      "tier": "A",
+      "tier_rationale": "GIF89a fixes the graphic control extension's data sub-block at four bytes and decoders use this byte to step over the block; a different value makes the decoder consume the wrong number of bytes and the block terminator, the following image descriptor and everything after it land at the wrong offset.",
+      "type": "fixed_value",
+      "description": "Size of the graphic control extension's data sub-block, which is always four bytes: the packed field, the two-byte delay time and the transparent colour index.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 142,
+        "snippet": "UBYTE\tBlockSize;"
+      },
+      "confidence": "high",
+      "required_value": 4,
+      "required_value_hex": "0x04",
+      "required_value_ascii": "\\x04",
+      "size_identity": "4 == sizeof(PackedFields) 1 + sizeof(DelayTime) 2 + sizeof(TransparentColorIndex) 1, exactly the three fields the template declares at lines 143-150",
+      "notes": "Never give this field an evil value: it is a fixed structural length, not a free count."
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.Reserved": {
+      "tier": "C",
+      "tier_rationale": "GIF89a reserves these three bits and no decoder inspects them, so a non-zero value still yields a fully decodable file; per the rule for reserved fields nobody checks they stay free.",
+      "type": "unconstrained",
+      "description": "Three reserved bits at the top of the graphic control extension's packed field.",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "evidence": {
+        "line": 144,
+        "snippet": "UBYTE\tReserved : 3;"
+      },
+      "confidence": "high",
+      "bitfield": {
+        "byte_offset_in_struct": 1,
+        "bit_position": 7,
+        "bit_width": 3,
+        "packing": "MSB first, bits 7-5"
+      },
+      "notes": "The spec says these should be zero; because nothing validates them they are Tier C, and a non-zero value reaches a conformance checker's reserved-bit warning."
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.DisposalMethod": {
+      "tier": "B",
+      "tier_rationale": "No value here makes a decoder refuse the file, so it is not a front gate; but it is a three-bit enumeration in which each defined value selects a different canvas-restoration routine between frames, and the undefined values take yet another path.",
+      "type": "enumerated_values",
+      "description": "What the decoder should do with the frame's canvas region before the next frame is rendered.",
+      "field_type": "UBYTE : 3",
+      "source": "both",
+      "evidence": {
+        "line": 145,
+        "snippet": "UBYTE\tDisposalMethod : 3;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "value_names": [
+        "no disposal specified",
+        "do not dispose, leave the frame in place",
+        "restore to background colour",
+        "restore to previous",
+        "undefined (reserved)",
+        "undefined (reserved)",
+        "undefined (reserved)",
+        "undefined (reserved)"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 1,
+        "bit_position": 4,
+        "bit_width": 3,
+        "packing": "MSB first, bits 4-2"
+      },
+      "notes": "All eight values are recorded because the three-bit field can hold all eight and a decoder must handle every one. 0 through 3 are the defined methods and are named as preferred: 2 forces a background clear of the frame rectangle and 3 forces the decoder to keep and restore a previous-canvas snapshot, which are separate bodies of code. 4 through 7 are reserved by the spec and are NOT dropped -- a decoder meeting them takes its fallback branch, which nothing else reaches."
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.UserInputFlag": {
+      "tier": "B",
+      "tier_rationale": "Neither value makes a decoder refuse the file, but the bit selects whether the decoder waits for user input before moving on, which is a distinct branch in any decoder that implements it.",
+      "type": "enumerated_values",
+      "description": "Whether user input is expected before the animation continues to the next frame.",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "evidence": {
+        "line": 146,
+        "snippet": "UBYTE\tUserInputFlag : 1;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "no user input expected",
+        "wait for user input"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 1,
+        "bit_position": 1,
+        "bit_width": 1,
+        "packing": "MSB first"
+      }
+    },
+    "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.TransparentColorFlag": {
+      "tier": "B",
+      "tier_rationale": "Both values give a readable file, so this is not a front gate; but the bit decides whether TransparentColorIndex is honoured, and transparency handling is a whole per-pixel branch in the compositor that flag 0 never reaches.",
+      "type": "enumerated_values",
+      "description": "Whether the transparent colour index in this block is meaningful.",
+      "field_type": "UBYTE : 1",
+      "source": "both",
+      "evidence": {
+        "line": 147,
+        "snippet": "UBYTE\tTransparentColorFlag : 1;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1
+      ],
+      "value_names": [
+        "transparent index not used",
+        "transparent index is active"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1
+      ],
+      "bitfield": {
+        "byte_offset_in_struct": 1,
+        "bit_position": 0,
+        "bit_width": 1,
+        "packing": "MSB first, least significant bit"
+      },
+      "notes": "Flag 1 is the only route into the per-pixel transparency test and the skip-this-pixel path in the compositor; flag 0 is the only route into the straight opaque copy. Generate both."
+    },
+    "GRAPHICCONTROLSUBBLOCK.DelayTime": {
+      "tier": "C",
+      "tier_rationale": "The delay is timing data no decoder validates or refuses; zero means render as fast as possible, which is its own branch, so restricting the field would cost that branch and all timing variation.",
+      "type": "unconstrained",
+      "description": "Hundredths of a second to wait before continuing to the next frame; little-endian ushort.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 149,
+        "snippet": "ushort\tDelayTime;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "0 is meaningful and several decoders substitute a minimum delay for values below 2, which is a separate branch; both are worth reaching, so nothing here is excluded."
+    },
+    "GRAPHICCONTROLSUBBLOCK.TransparentColorIndex": {
+      "tier": "C",
+      "tier_rationale": "The transparent index is compared against each decoded pixel and, when TransparentColorFlag is 0, ignored entirely; no value makes a decoder refuse the file, and an index outside the active colour table is exactly what reaches a decoder's bounds handling.",
+      "type": "unconstrained",
+      "description": "The colour table index that is to be treated as transparent when TransparentColorFlag is 1.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 150,
+        "snippet": "UBYTE\tTransparentColorIndex;"
+      },
+      "confidence": "high",
+      "notes": "The spec's rule that the index should be within the active colour table is recorded as a dependency rather than as a bound here, because the out-of-table case reaches the check and the in-table case reaches the transparency path; both are wanted."
+    },
+    "GRAPHICCONTROLEXTENSION.BlockTerminator": {
+      "tier": "A",
+      "tier_rationale": "The graphic control extension ends with a zero byte, and a decoder that does not find it keeps reading further sub-blocks; the image descriptor that should follow is then consumed as extension data and the frame is lost.",
+      "type": "fixed_value",
+      "description": "The zero byte terminating the graphic control extension's sub-block chain.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 152,
+        "snippet": "UBYTE\tBlockTerminator;"
+      },
+      "confidence": "high",
+      "required_value": 0,
+      "required_value_hex": "0x00",
+      "required_value_ascii": "\\x00",
+      "notes": "Unlike the other extensions, the template declares this terminator explicitly at line 152 rather than reaching it through DATASUBBLOCKS, because the graphic control extension has exactly one fixed-size sub-block. Never give this field an evil value."
+    },
+    "COMMENTEXTENSION.ExtensionIntroducer": {
+      "tier": "A",
+      "tier_rationale": "0x21 is what makes the decoder treat the following bytes as an extension; the template reaches this branch only when the lookahead ushort at line 154 equals 0xFE21, whose low byte is this field, and any other value dispatches elsewhere.",
+      "type": "fixed_value",
+      "description": "The extension introducer byte opening a comment extension.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 157,
+        "snippet": "UBYTE ExtensionIntroducer; // 0x21"
+      },
+      "confidence": "high",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 154,
+        "values": [
+          65057
+        ],
+        "preferred": [
+          65057
+        ]
+      },
+      "notes": "65057 is 0xFE21; with LittleEndian() in force at line 30 that ushort is the byte pair 0x21 then 0xFE."
+    },
+    "COMMENTEXTENSION.CommentLabel": {
+      "tier": "A",
+      "tier_rationale": "This label is the only thing distinguishing a comment extension from the other three extension types; a wrong value sends the decoder into a handler expecting a different structure and the comment sub-blocks are never walked.",
+      "type": "fixed_value",
+      "description": "The label identifying this extension as a comment extension.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 158,
+        "snippet": "UBYTE CommentLabel; // 0xFE"
+      },
+      "confidence": "high",
+      "required_value": 254,
+      "required_value_hex": "0xFE",
+      "required_value_ascii": "\\xFE",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 154,
+        "values": [
+          65057
+        ],
+        "preferred": [
+          65057
+        ]
+      }
+    },
+    "PLAINTEXTEXTENTION.ExtensionIntroducer": {
+      "tier": "A",
+      "tier_rationale": "0x21 opens every extension; the template reaches this branch only when the lookahead ushort at line 161 equals 0x0121, whose low byte is this field.",
+      "type": "fixed_value",
+      "description": "The extension introducer byte opening a plain text extension.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 164,
+        "snippet": "UBYTE ExtensionIntroducer; // 0x21"
+      },
+      "confidence": "high",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 161,
+        "values": [
+          289
+        ],
+        "preferred": [
+          289
+        ]
+      },
+      "notes": "289 is 0x0121, the byte pair 0x21 then 0x01. The struct name is spelled PLAINTEXTEXTENTION in the template; that spelling is reproduced in this key deliberately."
+    },
+    "PLAINTEXTEXTENTION.PlainTextLabel": {
+      "tier": "A",
+      "tier_rationale": "This label distinguishes the plain text extension from the other three; a wrong value routes the decoder to a handler expecting a different layout and the twelve-byte text grid header is never read.",
+      "type": "fixed_value",
+      "description": "The label identifying this extension as a plain text extension.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 165,
+        "snippet": "UBYTE PlainTextLabel; // 0x01"
+      },
+      "confidence": "high",
+      "required_value": 1,
+      "required_value_hex": "0x01",
+      "required_value_ascii": "\\x01",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 161,
+        "values": [
+          289
+        ],
+        "preferred": [
+          289
+        ]
+      }
+    },
+    "PLAINTEXTSUBBLOCK.BlockSize": {
+      "tier": "A",
+      "tier_rationale": "GIF89a fixes the plain text extension's first sub-block at twelve bytes and decoders step over it by this count; a different value makes the text sub-blocks, the terminator and the next block all land at the wrong offset.",
+      "type": "fixed_value",
+      "description": "Size of the plain text extension's fixed header sub-block, always twelve bytes.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 167,
+        "snippet": "UBYTE\tBlockSize;"
+      },
+      "confidence": "high",
+      "required_value": 12,
+      "required_value_hex": "0x0C",
+      "required_value_ascii": "\\x0C",
+      "size_identity": "12 == TextGridLeftPosition 2 + TextGridTopPosition 2 + TextGridWidth 2 + TextGridHeight 2 + CharacterCellWidth 1 + CharacterCellHeight 1 + TextForegroundColorIndex 1 + TextBackgroundColorIndex 1, exactly the eight fields the template declares at lines 168-175",
+      "notes": "Never give this field an evil value."
+    },
+    "PLAINTEXTSUBBLOCK.TextGridLeftPosition": {
+      "tier": "C",
+      "tier_rationale": "The text grid's horizontal placement is layout data a decoder either ignores or uses to position a render; no value makes it refuse the file, so constraining it removes variation and the clipping branch for nothing.",
+      "type": "unconstrained",
+      "description": "Column of the logical screen at which the text grid begins; little-endian ushort.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 168,
+        "snippet": "ushort\tTextGridLeftPosition;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "PLAINTEXTSUBBLOCK.TextGridTopPosition": {
+      "tier": "C",
+      "tier_rationale": "The text grid's vertical placement is layout data no decoder validates; pinning it costs variation and the clipping branch.",
+      "type": "unconstrained",
+      "description": "Row of the logical screen at which the text grid begins; little-endian ushort.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 169,
+        "snippet": "ushort\tTextGridTopPosition;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "PLAINTEXTSUBBLOCK.TextGridWidth": {
+      "tier": "C",
+      "tier_rationale": "This is a dimension that a renderer divides by the character cell width to get a column count, so it feeds a loop bound and is tempting to pin; but no value makes a decoder refuse the file and narrowing it would collapse the text layout onto one shape.",
+      "type": "unconstrained",
+      "description": "Width of the text grid in pixels; little-endian ushort.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 170,
+        "snippet": "ushort\tTextGridWidth;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "PLAINTEXTSUBBLOCK.TextGridHeight": {
+      "tier": "C",
+      "tier_rationale": "A dimension feeding a row-count division in any renderer that implements plain text; constraining it removes layout variation without buying depth.",
+      "type": "unconstrained",
+      "description": "Height of the text grid in pixels; little-endian ushort.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 171,
+        "snippet": "ushort\tTextGridHeight;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "PLAINTEXTSUBBLOCK.CharacterCellWidth": {
+      "tier": "C",
+      "tier_rationale": "A renderer divides the grid width by this byte, so zero reaches a divide-by-zero guard that no non-zero value can, and no value makes the parser refuse the file; constraining it would delete that guard branch.",
+      "type": "unconstrained",
+      "description": "Width in pixels of each character cell in the text grid.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 172,
+        "snippet": "UBYTE\tCharacterCellWidth;"
+      },
+      "confidence": "high",
+      "notes": "Zero is deliberately not excluded: it is the value that reaches the division guard in a renderer that honours the plain text extension."
+    },
+    "PLAINTEXTSUBBLOCK.CharacterCellHeight": {
+      "tier": "C",
+      "tier_rationale": "As with the cell width, a renderer divides by this byte and zero reaches the guard; no value makes the parser refuse the file.",
+      "type": "unconstrained",
+      "description": "Height in pixels of each character cell in the text grid.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 173,
+        "snippet": "UBYTE\tCharacterCellHeight;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.TextForegroundColorIndex": {
+      "tier": "C",
+      "tier_rationale": "A colour table index used only for rendering text; an out-of-table value is not refused and is what reaches a bounds check, so constraining it costs both variation and that branch.",
+      "type": "unconstrained",
+      "description": "Index into the global colour table of the text foreground colour.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 174,
+        "snippet": "UBYTE\tTextForegroundColorIndex;"
+      },
+      "confidence": "high"
+    },
+    "PLAINTEXTSUBBLOCK.TextBackgroundColorIndex": {
+      "tier": "C",
+      "tier_rationale": "A colour table index used only for rendering text; no value makes a decoder refuse the file.",
+      "type": "unconstrained",
+      "description": "Index into the global colour table of the text background colour.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 175,
+        "snippet": "UBYTE\tTextBackgroundColorIndex;"
+      },
+      "confidence": "high"
+    },
+    "APPLICATIONEXTENTION.ExtensionIntroducer": {
+      "tier": "A",
+      "tier_rationale": "0x21 opens every extension; the template reaches this branch only when the lookahead ushort at line 179 equals 0xFF21, whose low byte is this field.",
+      "type": "fixed_value",
+      "description": "The extension introducer byte opening an application extension.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 182,
+        "snippet": "UBYTE ExtensionIntroducer; // 0x21"
+      },
+      "confidence": "high",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 179,
+        "values": [
+          65313
+        ],
+        "preferred": [
+          65313
+        ]
+      },
+      "notes": "65313 is 0xFF21, the byte pair 0x21 then 0xFF. The struct name is spelled APPLICATIONEXTENTION in the template; that spelling is reproduced in this key deliberately."
+    },
+    "APPLICATIONEXTENTION.ApplicationLabel": {
+      "tier": "A",
+      "tier_rationale": "This label distinguishes the application extension from the other three; a wrong value routes the decoder elsewhere and the eleven-byte identifier header is never read, which for a NETSCAPE loop block means the animation loop count is lost.",
+      "type": "fixed_value",
+      "description": "The label identifying this extension as an application extension.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 183,
+        "snippet": "UBYTE ApplicationLabel; // 0xFF"
+      },
+      "confidence": "high",
+      "required_value": 255,
+      "required_value_hex": "0xFF",
+      "required_value_ascii": "\\xFF",
+      "lookahead": {
+        "function": "ReadUShort",
+        "call_site_line": 179,
+        "values": [
+          65313
+        ],
+        "preferred": [
+          65313
+        ]
+      }
+    },
+    "APPLICATIONSUBBLOCK.BlockSize": {
+      "tier": "A",
+      "tier_rationale": "GIF89a fixes the application extension's identifier sub-block at eleven bytes and decoders step over it by this count; a different value puts the application data sub-blocks and everything after them at the wrong offset.",
+      "type": "fixed_value",
+      "description": "Size of the application extension's identifier sub-block, always eleven bytes.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 185,
+        "snippet": "UBYTE\tBlockSize;"
+      },
+      "confidence": "high",
+      "required_value": 11,
+      "required_value_hex": "0x0B",
+      "required_value_ascii": "\\x0B",
+      "size_identity": "11 == sizeof(ApplicationIdentifier) 8 + sizeof(ApplicationAuthenticationCode) 3, exactly the two fields the template declares at lines 186-187",
+      "notes": "Never give this field an evil value."
+    },
+    "APPLICATIONSUBBLOCK.ApplicationIdentifier": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised identifier makes a decoder skip the extension rather than refuse the file, so it is not a front gate; but the registered identifiers are a finite set and matching one is what routes the block into a real handler instead of the skip path.",
+      "type": "enumerated_values",
+      "description": "Eight-character application identifier naming the application that defined this extension; not null-terminated.",
+      "field_type": "char[8]",
+      "source": "both",
+      "evidence": {
+        "line": 186,
+        "snippet": "char\tApplicationIdentifier[8];"
+      },
+      "confidence": "high",
+      "valid_values": [
+        "NETSCAPE",
+        "ANIMEXTS",
+        "XMP Data",
+        "ICCRGBG1",
+        "GIFPLAY0",
+        "MGK8BIM0",
+        "MGKIPTC0"
+      ],
+      "value_names": [
+        "Netscape looping extension",
+        "Animation extensions looping variant",
+        "Adobe XMP metadata",
+        "Embedded ICC colour profile",
+        "GIF playback control",
+        "ImageMagick 8BIM profile",
+        "ImageMagick IPTC profile"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "The field is eight free bytes and GIF89a lets any application define its own identifier, so no list can be exhaustive. Those above are the identifiers real decoders actually branch on. Arbitrary eight-byte identifiers remain legal and should also be generated, because an unregistered identifier is the only way to reach a decoder's unknown-application skip path.",
+      "preferred_value": [
+        "NETSCAPE",
+        "ANIMEXTS",
+        "XMP Data",
+        "ICCRGBG1"
+      ],
+      "notes": "NETSCAPE is by far the highest-value value: it is the one every animation-capable decoder looks for, and it makes the following application data sub-block a fixed three-byte loop record rather than free bytes (see DATASUBBLOCK.Data.alternate_payloads). Note that 'XMP Data' contains a space and is eight characters including it."
+    },
+    "APPLICATIONSUBBLOCK.ApplicationAuthenticationCode": {
+      "tier": "B",
+      "tier_rationale": "A decoder that does not recognise the code skips the extension rather than refusing the file, so it is not a front gate; but the code must pair correctly with the identifier for the block to be handled, and the legal pairings are a small finite set.",
+      "type": "enumerated_values",
+      "description": "Three-character code authenticating the application identifier; not null-terminated.",
+      "field_type": "char[3]",
+      "source": "both",
+      "evidence": {
+        "line": 187,
+        "snippet": "char\tApplicationAuthenticationCode[3];"
+      },
+      "confidence": "high",
+      "valid_values": [
+        "2.0",
+        "XMP",
+        "012",
+        "1.0"
+      ],
+      "value_names": [
+        "NETSCAPE and ANIMEXTS looping",
+        "XMP Data metadata",
+        "ICCRGBG1 colour profile",
+        "alternative looping variant"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "Like the identifier this is a free three-byte field that any application may define; the values listed are the ones real decoders match against. Arbitrary codes are legal and reach the unknown-application skip path.",
+      "preferred_value": [
+        "2.0",
+        "XMP",
+        "012"
+      ],
+      "notes": "The pairing matters more than the value: a decoder looking for a loop count requires the identifier 'NETSCAPE' and the code '2.0' together. The valid pairings are recorded in the dependencies section."
+    },
+    "UNDEFINEDDATA.ExtensionIntroducer": {
+      "tier": "A",
+      "tier_rationale": "This branch is reached only when the next byte is neither the trailer 0x3B nor the image separator 0x2C and the following ushort matches none of the four known extensions; for the parse to stay synchronised the byte must still be 0x21, because anything else is not a block introducer at all and the decoder has no way to know how many bytes to skip.",
+      "type": "fixed_value",
+      "description": "The extension introducer byte opening an extension whose label the format does not define.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 194,
+        "snippet": "UBYTE\tExtensionIntroducer; // 21"
+      },
+      "confidence": "high",
+      "required_value": 33,
+      "required_value_hex": "0x21",
+      "required_value_ascii": "!",
+      "notes": "This is the fall-through branch of the dispatch chain at lines 102-198, reached when none of the lookahead comparisons at lines 104, 136, 154, 161 and 179 match. Emitting 0x21 with an unregistered label is the only way to reach a decoder's unknown-extension skip path, which walks the sub-block chain blindly; emitting some other byte here instead desynchronises the parse and usually ends the file early."
+    },
+    "UNDEFINEDDATA.Label": {
+      "tier": "B",
+      "tier_rationale": "Any label reaches a decoder that reads the file to the end, so it is not a front gate; but to land in this branch at all the value must avoid the four labels the earlier comparisons claim, which makes its legal set a finite and describable one.",
+      "type": "pattern_constraint",
+      "description": "The label of an extension the format does not define; any byte other than the four the template dispatches on explicitly.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 195,
+        "snippet": "UBYTE\tLabel; // F9"
+      },
+      "confidence": "high",
+      "pattern": "any value in 0x00..0xFF except 0x01 (plain text), 0xF9 (graphic control), 0xFE (comment) and 0xFF (application); expressed as a set that is 252 values wide, it is recorded as a pattern rather than an enumeration because listing 252 literals would obscure the single rule",
+      "notes": "The template's comment on line 195 says 'F9', which is misleading: 0xF9 is caught by the earlier graphic control branch at line 136 and can never reach here. The genuinely useful values are the registered-but-unhandled labels and wholly unknown ones, both of which exercise the unknown-extension skip path. Every value in the permitted set should be generated freely; none is more productive than another."
+    },
+    "TRAILER.GIFTrailer": {
+      "tier": "A",
+      "tier_rationale": "0x3B is the single byte that ends the GIF data stream, and the template's main loop at line 102 runs until it sees it; without it the loop consumes the rest of the file as further blocks and a real decoder reports a truncated or unterminated stream.",
+      "type": "fixed_value",
+      "description": "The GIF trailer, the final byte of every GIF file.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 203,
+        "snippet": "UBYTE GIFTrailer;"
+      },
+      "confidence": "high",
+      "required_value": 59,
+      "required_value_hex": "0x3B",
+      "required_value_ascii": ";",
+      "lookahead": {
+        "function": "ReadUByte",
+        "call_site_line": 102,
+        "values": [
+          59
+        ],
+        "preferred": [
+          59
+        ]
+      },
+      "notes": "The lookahead at line 102 is the loop guard for the whole block sequence: it compares against 0x3B, so the set of bytes that can legally start a block is everything else, in practice 0x2C for an image and 0x21 for an extension. Never give this field an evil value: it is the file's only terminator.",
+      "cross_check": {
+        "line": 102,
+        "snippet": "while (ReadUByte(FTell()) != 0x3B) {"
+      }
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 1
+      },
+      "then": {
+        "section": "GLOBALCOLORTABLE",
+        "required": true
+      },
+      "description": "The global colour table is present if and only if the flag is set; the template reads it inside the if at line 88.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "section": "GLOBALCOLORTABLE",
+        "forbidden": true
+      },
+      "description": "With the flag clear no table bytes follow the logical screen descriptor, and the next byte is a block introducer.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable",
+        "in": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      "then": {
+        "field": "GLOBALCOLORTABLE.rgb",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "the table holds exactly 2^(SizeOfGlobalColorTable + 1) RGB triples: 2, 4, 8, 16, 32, 64, 128 or 256 entries, that is 6, 12, 24, 48, 96, 192, 384 or 768 bytes"
+      },
+      "description": "The three-bit exponent is the table's only length field, so the entry count is fully determined by it; this constrains the table, never the exponent.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "equals": 1
+      },
+      "then": {
+        "section": "LOCALCOLORTABLE",
+        "required": true
+      },
+      "description": "The local colour table is present if and only if the flag is set; the template reads it inside the if at line 120.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "section": "LOCALCOLORTABLE",
+        "forbidden": true
+      },
+      "description": "With the flag clear the LZW minimum code size byte follows the image descriptor immediately.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable",
+        "in": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      "then": {
+        "field": "LOCALCOLORTABLE.rgb",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "the table holds exactly 2^(SizeOfLocalColorTable + 1) RGB triples, from 2 to 256 entries"
+      },
+      "description": "As with the global table, the exponent is the only length field and fully determines the entry count.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDATA.LZWMinimumCodeSize",
+        "in": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      },
+      "then": {
+        "field": "DATASUBBLOCK.Data",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "rule": "the LZW stream must use ClearCode = 2^LZWMinimumCodeSize, EndOfInformation = 2^LZWMinimumCodeSize + 1 and a starting code width of LZWMinimumCodeSize + 1 bits, and every literal index in it must be less than 2^LZWMinimumCodeSize"
+      },
+      "description": "The declared code size and the payload's actual bit width must agree; declaring 8 while encoding at 4 was measured to fail with Pillow's 'image file is truncated'. Encode the payload at the declared width -- do not choose the width to suit a payload.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR.ImageWidth",
+        "present": true
+      },
+      "then": {
+        "field": "DATASUBBLOCK.Data",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "rule": "the LZW stream must decode to exactly ImageWidth * ImageHeight colour indices, no more and no fewer"
+      },
+      "description": "This is the format's central agreement, and the one the previous run resolved backwards: compute the pixel count from the dimensions, never shrink the dimensions to fit a precomputed payload.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.InterlaceFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "DATASUBBLOCK.Data",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "rule": "the decoded indices are the image's rows in four passes -- rows 0,8,16,... then 4,12,20,... then 2,6,10,... then 1,3,5,... -- rather than top to bottom; the total index count is unchanged at ImageWidth * ImageHeight"
+      },
+      "description": "Interlacing reorders the rows inside the stream but does not change its length, so the payload construction is identical for both flag values; this was measured with the flag clear and set at every dimension tested.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "DATASUBBLOCK.Data",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "rule": "for every decoded index to resolve, the indices should be less than 2^(SizeOfLocalColorTable + 1); larger indices are still emitted by the parser and reach a decoder's palette-bounds handling"
+      },
+      "description": "A local colour table overrides the global one for this image, so the meaningful index span follows the local exponent; out-of-table indices are worth generating because they are the only route into the bounds check.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "field": "DATASUBBLOCK.Data",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "rule": "the indices resolve against the global colour table, so they should be less than 2^(SizeOfGlobalColorTable + 1); if no global table is present either, the file has no palette at all and the decoder falls back on a default"
+      },
+      "description": "Without a local table the global one applies, and with neither the decoder takes its missing-palette path, which is a legal and distinctly exercised case.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "for the background to resolve the index should be less than 2^(SizeOfGlobalColorTable + 1); larger values reach a decoder's index-bounds check and are also worth generating"
+      },
+      "description": "The background index refers into the global table, so its meaningful span follows the table size rather than any fixed bound.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+        "equals": 0
+      },
+      "then": {
+        "field": "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "GIF89a says the field is meaningless and should be written as 0, but nothing validates it and every value still parses"
+      },
+      "description": "With no global table the background index has nothing to index into; the spec's should-be-zero rule is advisory only.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.TransparentColorFlag",
+        "equals": 1
+      },
+      "then": {
+        "field": "GRAPHICCONTROLSUBBLOCK.TransparentColorIndex",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "the index is compared against every decoded pixel; for the transparency path to fire it should fall inside the active colour table, and out-of-table values reach the bounds handling instead"
+      },
+      "description": "The flag decides whether this index is consulted at all; both the matching and the out-of-table case exercise different code.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.TransparentColorFlag",
+        "equals": 0
+      },
+      "then": {
+        "field": "GRAPHICCONTROLSUBBLOCK.TransparentColorIndex",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "the index is ignored entirely and any value parses; the compositor takes its straight opaque-copy path"
+      },
+      "description": "With transparency off the index byte is dead data, so nothing constrains it.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDATA.LZWMinimumCodeSize",
+        "present": true
+      },
+      "then": {
+        "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "GIF89a describes the minimum code size as the image's bits per pixel, which for a conforming file is SizeOfLocalColorTable + 1 (or SizeOfGlobalColorTable + 1 when no local table is present), but decoders derive the code width from the declared byte alone and do not enforce the relationship"
+      },
+      "description": "The spec ties the code size to the palette size, but no decoder checks it; files where they disagree still decode and are worth generating, so neither field is narrowed to match the other.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "GIFHEADER.Version",
+        "equals": "87a"
+      },
+      "then": {
+        "section": "GRAPHICCONTROLEXTENSION",
+        "forbidden": true
+      },
+      "description": "The graphic control, comment, plain text and application extensions are all GIF89a additions; a decoder that honours the version string rejects or skips them in an 87a file, which is itself a distinct path worth generating.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationIdentifier",
+        "equals": "NETSCAPE"
+      },
+      "then": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationAuthenticationCode",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          "2.0"
+        ]
+      },
+      "description": "The looping extension is recognised only as the exact pair NETSCAPE plus 2.0; with that pair the application data must be a single three-byte sub-block of 0x01 followed by a little-endian loop count.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationIdentifier",
+        "equals": "XMP Data"
+      },
+      "then": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationAuthenticationCode",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          "XMP"
+        ]
+      },
+      "description": "The Adobe XMP metadata extension is recognised only as the pair XMP Data plus XMP.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationIdentifier",
+        "equals": "ICCRGBG1"
+      },
+      "then": {
+        "field": "APPLICATIONSUBBLOCK.ApplicationAuthenticationCode",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          "012"
+        ]
+      },
+      "description": "The embedded ICC profile extension is recognised only as the pair ICCRGBG1 plus 012.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "IMAGEDESCRIPTOR.ImageWidth",
+        "present": true
+      },
+      "then": {
+        "field": "IMAGEDESCRIPTOR.ImageLeftPosition",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "a conforming file keeps ImageLeftPosition + ImageWidth within LOGICALSCREENDESCRIPTOR.Width and ImageTopPosition + ImageHeight within LOGICALSCREENDESCRIPTOR.Height; files that overflow the canvas are accepted by the parser and reach a decoder's clipping or rejection path"
+      },
+      "description": "The spec expects frames to fit the logical screen, but no decoder tested refuses an overflowing frame, so both cases are generated and neither dimension is narrowed.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "DATASUBBLOCK.Size",
+        "equals": 0
+      },
+      "then": {
+        "section": "DATASUBBLOCK",
+        "forbidden": true
+      },
+      "description": "A size byte of 0 is not a zero-length sub-block: it is the chain terminator, and the template's loop at line 45 exits on it before a DATASUBBLOCK is read at all.",
+      "source": "both",
+      "confidence": "high"
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "GIFHEADER",
+      "detail": "the file begins with the six bytes 'GIF' followed by a version string, and nothing may precede them",
+      "description": "The header is read first at line 77 and its signature is checked immediately afterwards.",
+      "source": "both",
+      "generation_note": "emit as a fixed 6-byte head: the three signature bytes then the chosen version string"
+    },
+    {
+      "rule": "required",
+      "subject": "LOGICALSCREENDESCRIPTOR",
+      "detail": "exactly one, immediately after the header, seven bytes long",
+      "description": "The logical screen descriptor always follows the header and is never optional or repeated.",
+      "source": "both",
+      "generation_note": "emit as a fixed 7-byte element: width, height, the packed byte, the background index and the aspect ratio"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "GLOBALCOLORTABLE",
+      "detail": "when present it begins immediately after the logical screen descriptor, with no marker and no length prefix, and runs for exactly 3 * 2^(SizeOfGlobalColorTable + 1) bytes",
+      "condition": "only when GlobalColorTableFlag is 1",
+      "description": "The table is identified purely by position and its size is implied by the exponent in the packed byte.",
+      "source": "both",
+      "output_budget": "768 bytes, which is the format's own ceiling of 256 three-byte entries rather than a chosen budget; the exponent stays free across its whole 0..7 span and the table's cost follows from it",
+      "generation_note": "emit the entry count implied by the exponent, with every colour byte chosen freely"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "the block sequence inside DATA",
+      "detail": "zero or more blocks, each introduced by 0x2C for an image or 0x21 for an extension, repeating until the trailer byte 0x3B is seen",
+      "description": "The main loop at line 102 reads blocks until the lookahead finds the trailer, so the block count is the file's principal repeating dimension.",
+      "source": "both",
+      "output_budget": "1048576 bytes (1 MiB) for the whole block sequence, tracked as a running total the generator checks before starting each new block; when the total is reached the generator stops opening blocks and emits the trailer. The sub-allocations below (768 KiB of LZW image data, 128 KiB of extension data) are parts of this figure and are tracked the same way. A megabyte holds a genuinely large image or a multi-frame animation with a full set of extensions while keeping generation and decoding fast across a large corpus. NO FIELD IS EVER NARROWED TO ACHIEVE THIS -- in particular ImageWidth and ImageHeight stay free, and the budget is spent by stopping the block sequence, not by shrinking a frame.",
+      "generation_note": "emit as a fixed head (header, logical screen descriptor, optional global colour table), then a repeated array of blocks bounded by the running output_budget, then the fixed 1-byte trailer"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "the table-based image: IMAGEDESCRIPTOR, optional LOCALCOLORTABLE, IMAGEDATA",
+      "detail": "the ten-byte image descriptor is followed immediately by the local colour table when its flag is set, then by the LZW minimum code size byte and the sub-block chain; nothing may be interleaved",
+      "description": "The grammar's Table-Based Image is one indivisible unit, which the template encodes as the straight-line sequence at lines 106-135.",
+      "source": "both",
+      "output_budget": "786432 bytes (768 KiB) of LZW image data summed across every image in the file, counted as sub-block data bytes. The generator keeps a running total and stops adding further images once it is reached. It never truncates a single image's stream to fit: a partial LZW stream fails the decoder's pixel count and loses the whole frame, so the budget ends the image sequence instead.",
+      "generation_note": "emit the descriptor, then the table if flagged, then the code size byte, then the sub-blocked LZW stream computed from ImageWidth, ImageHeight and LZWMinimumCodeSize, then the 0x00 terminator"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "the sub-block chain of one IMAGEDATA",
+      "detail": "all the sub-blocks carrying one image's LZW stream are consecutive and are ended by a single 0x00 byte; the concatenated Data arrays form one stream and the split points carry no meaning",
+      "description": "There is no marker between sub-blocks other than each one's length byte, so the chain is positional and must not be interrupted.",
+      "source": "both",
+      "output_budget": "covered by the 768 KiB image-data budget above; the chain adds one length byte per 255 data bytes plus one terminator, which the running total should count",
+      "generation_note": "cut the LZW byte string at arbitrary points of at most 255 bytes; vary the split lengths rather than always using 255, because short sub-blocks make a decoder refill its input buffer far more often"
+    },
+    {
+      "rule": "ordering",
+      "subject": "GRAPHICCONTROLEXTENSION",
+      "detail": "a graphic control extension applies to the graphic-rendering block that immediately follows it, which must be either a table-based image or a plain text extension",
+      "description": "The GIF89a grammar defines a Graphic Block as an optional graphic control extension followed by a graphic-rendering block, so a trailing graphic control extension with nothing after it is malformed.",
+      "source": "spec",
+      "output_budget": "8192 bytes total across every graphic control extension in the file; each is exactly 8 bytes, so this is really a cap on the frame count and is tracked as part of the 1 MiB running total",
+      "generation_note": "emit as an optional 8-byte prefix to an image or plain text block, never on its own"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "GRAPHICCONTROLEXTENSION",
+      "detail": "at most one per graphic-rendering block",
+      "description": "The grammar permits a single optional graphic control extension per graphic block; two in a row is malformed, though most decoders simply let the second overwrite the first, which is itself a path worth reaching.",
+      "source": "spec"
+    },
+    {
+      "rule": "required",
+      "subject": "at least one table-based image",
+      "detail": "a GIF data stream should contain at least one image",
+      "description": "The GIF89a grammar requires an image, but every decoder tested accepts a file with none and reports zero frames, so the zero-image case is legal in practice and reaches a distinct empty-stream path.",
+      "source": "spec",
+      "output_budget": "covered by the image-data budget; the image count itself is free and is bounded only by the running total",
+      "generation_note": "emit one or more images; also generate the zero-image case occasionally, since it is accepted and exercises the empty-animation handling"
+    },
+    {
+      "rule": "ordering",
+      "subject": "the NETSCAPE2.0 APPLICATIONEXTENTION",
+      "detail": "decoders that honour the loop count expect the looping application extension before the first image, conventionally immediately after the global colour table",
+      "condition": "only when ApplicationIdentifier is NETSCAPE and the authentication code is 2.0",
+      "description": "The loop count must be known before playback begins, so an application extension placed after the images is generally ignored.",
+      "source": "spec",
+      "output_budget": "19 bytes per occurrence and conventionally one per file; counted within the 1 MiB running total",
+      "generation_note": "emit immediately after the global colour table when an animation is being generated; also generate it in other positions, since the ignored case is a separate branch"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "COMMENTEXTENSION, PLAINTEXTEXTENTION, APPLICATIONEXTENTION and UNDEFINEDDATA",
+      "detail": "each may appear any number of times, anywhere in the block sequence",
+      "description": "GIF89a places no ordering or count limit on the special-purpose blocks; they may be interleaved freely among the images.",
+      "source": "spec",
+      "output_budget": "131072 bytes (128 KiB) total across every comment, plain text, application and undefined extension combined, tracked as a running total of block bytes written. The number of such blocks and the length of each stays free within that total.",
+      "generation_note": "emit as a repeated array interleaved among the images, stopping when the running total is reached; scatter them before and after images rather than clustering them"
+    },
+    {
+      "rule": "last_element",
+      "subject": "TRAILER",
+      "detail": "the final byte of the file is 0x3B, and nothing may follow it",
+      "description": "The main loop at line 102 ends on this byte and line 203 consumes it; a decoder stops reading there.",
+      "source": "both",
+      "generation_note": "emit as a fixed 1-byte tail"
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any data after TRAILER",
+      "detail": "bytes following the trailer are outside the GIF data stream and are not read by a conforming decoder",
+      "description": "The format has no provision for trailing data; appending it is a distinct malformation rather than a legal extension.",
+      "source": "spec"
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "IMAGEDESCRIPTOR.ImageWidth",
+      "tier": "C",
+      "why": "THIS IS THE FIELD THE PREVIOUS RUN BROKE. It was restricted to {1, 2, 4, 8} so that a handful of precomputed LZW payloads would fit, every generated file came out 976 bytes, and coverage fell 1.7 points. It sets the LZW decode loop bound, the row stride, the row-copy width and the interlace pass arithmetic. The payload is computed from it; it is never computed from the payload.",
+      "decoder_paths": "a width of 1 makes every row a single index and stresses the per-row boundary logic; widths that are not multiples of the sub-block size change where row boundaries fall inside the LZW stream; wide images force the decoder to refill its input buffer mid-row; width against ImageLeftPosition and the logical screen width selects the clipping and out-of-canvas paths.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATASUBBLOCK.Data"
+      ]
+    },
+    {
+      "field": "IMAGEDESCRIPTOR.ImageHeight",
+      "tier": "C",
+      "why": "Pinned alongside the width in the previous run and cost the same coverage. It sets how many rows the decoder walks and, with the interlace flag, which of the four passes are non-empty. The payload's index count is derived from it.",
+      "decoder_paths": "a height of 1 means there is only one row and the interlace passes after the first are all empty, a branch no taller image reaches; heights below 8 leave some passes empty; tall images exercise the row callback and buffer refill repeatedly.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATASUBBLOCK.Data"
+      ]
+    },
+    {
+      "field": "IMAGEDATA.LZWMinimumCodeSize",
+      "tier": "B",
+      "why": "It fixes the clear code, the end-of-information code and the starting code width, so it changes the entire bit packing of the payload; for a Tier B axis staying unconstrained means emitting all seven legal values, not settling on 8.",
+      "decoder_paths": "size 2 gives a 3-bit code width and forces a clear code every 2 codes, hammering the decoder's table-reset path; size 8 gives a 9-bit width and clears every 254 codes, so the table grows far larger before reset; the intermediate sizes each produce a different bit alignment against the byte boundaries.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATASUBBLOCK.Data"
+      ]
+    },
+    {
+      "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.InterlaceFlag",
+      "tier": "B",
+      "why": "One bit that selects between the sequential row path and the four-pass interlace reassembly, the largest fork in a GIF decoder's row handling; emitting only one value throws the other half away.",
+      "decoder_paths": "flag 1 is the sole entry into the pass-offset and pass-increment tables and the four-pass outer loop; flag 0 is the sole entry into the straight sequential row write.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATASUBBLOCK.Data"
+      ]
+    },
+    {
+      "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable",
+      "tier": "C",
+      "why": "A three-bit exponent that is the global colour table's entire length field, feeding both an allocation and a loop bound; it is exactly the field a careful reader pins at 7 so every index is always in range, which would delete every short-palette and out-of-range-index branch at once.",
+      "decoder_paths": "small exponents give two- or four-entry palettes against which most decoded indices are out of range, the only route into the palette-bounds checking; exponent 7 gives the full 256-entry table and the straightforward lookup; the exponent also decides whether a given background index resolves.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "GLOBALCOLORTABLE.rgb",
+        "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex"
+      ]
+    },
+    {
+      "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.SizeOfLocalColorTable",
+      "tier": "C",
+      "why": "The local colour table's entire length field, with the same temptation and the same cost as its global counterpart.",
+      "decoder_paths": "a small local table against a large code size produces indices past the end of the palette and reaches the bounds handling; a full table takes the direct lookup; the exponent also decides how many bytes sit between the image descriptor and the code size byte.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LOCALCOLORTABLE.rgb"
+      ]
+    },
+    {
+      "field": "LOGICALSCREENDESCRIPTOR.Width",
+      "tier": "C",
+      "why": "The canvas width a decoder allocates and clips every frame against; pinning it would make every canvas identical and would delete the clipping paths that only a varied canvas reaches.",
+      "decoder_paths": "a canvas narrower than a frame drives the clipping and rejection code; a canvas much wider leaves large uncovered regions filled with the background colour, exercising the background fill; zero reaches the degenerate-canvas handling.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "IMAGEDESCRIPTOR.ImageWidth"
+      ]
+    },
+    {
+      "field": "LOGICALSCREENDESCRIPTOR.Height",
+      "tier": "C",
+      "why": "The canvas row count a decoder allocates and composites into; narrowing it makes every file the same shape.",
+      "decoder_paths": "canvas height against frame height and top position selects the vertical clipping and the background fill of uncovered rows.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "IMAGEDESCRIPTOR.ImageHeight"
+      ]
+    },
+    {
+      "field": "IMAGEDESCRIPTOR.ImageLeftPosition",
+      "tier": "C",
+      "why": "The horizontal placement of a frame on the canvas, which selects the column-offset and clipping arithmetic; pinning it to 0 leaves every frame at the origin and deletes that arithmetic.",
+      "decoder_paths": "a non-zero offset reaches the column-offset addressing in the composite loop and, combined with the width, the canvas-overflow path; zero takes the aligned fast path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": []
+    },
+    {
+      "field": "IMAGEDESCRIPTOR.ImageTopPosition",
+      "tier": "C",
+      "why": "The vertical placement, which selects which canvas rows are written and restored between frames; pinning it removes the row-offset arithmetic.",
+      "decoder_paths": "a non-zero offset reaches the row-offset addressing and the partial dispose-region restore; zero takes the aligned path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": []
+    },
+    {
+      "field": "GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.DisposalMethod",
+      "tier": "B",
+      "why": "Three bits selecting the canvas-restoration routine between frames; for a Tier B axis staying unconstrained means emitting all eight values, including the four the spec reserves.",
+      "decoder_paths": "method 2 forces a background clear of the frame rectangle; method 3 forces the decoder to keep and restore a previous-canvas snapshot, a whole extra buffer and copy path; methods 0 and 1 leave the canvas alone; the reserved values 4 to 7 reach the fallback branch nothing else touches.",
+      "must_remain_unconstrained": true,
+      "interacts_with": []
+    },
+    {
+      "field": "GRAPHICCONTROLSUBBLOCK.TransparentColorIndex",
+      "tier": "C",
+      "why": "Compared against every decoded pixel when the transparency flag is set, so it decides how often the skip-this-pixel path fires; pinning it would make every frame's transparency behaviour identical.",
+      "decoder_paths": "an index that occurs frequently in the image drives the transparency skip on most pixels; one that never occurs leaves the opaque path dominant; an index past the end of the palette reaches the bounds handling.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATASUBBLOCK.Data"
+      ]
+    },
+    {
+      "field": "GRAPHICCONTROLSUBBLOCK.DelayTime",
+      "tier": "C",
+      "why": "Timing data that several decoders clamp or substitute a minimum for; pinning it would make every animation tick identically and miss the clamping branch.",
+      "decoder_paths": "0 means render immediately; values below 2 are rewritten to a default by several decoders, a distinct branch; large values exercise the timer arithmetic.",
+      "must_remain_unconstrained": true,
+      "interacts_with": []
+    },
+    {
+      "field": "LOGICALSCREENDESCRIPTOR.BackgroundColorIndex",
+      "tier": "C",
+      "why": "Used to clear the canvas and to fill regions no frame covers; an out-of-table value is the only route into the index-bounds check, so pinning it to 0 removes both the fill diversity and that branch.",
+      "decoder_paths": "an in-table index drives the background fill with a real colour; an out-of-table index reaches the bounds check and the fallback; with no global table the field is ignored entirely.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.SizeOfGlobalColorTable"
+      ]
+    },
+    {
+      "field": "LOGICALSCREENDESCRIPTOR_PACKEDFIELDS.GlobalColorTableFlag",
+      "tier": "B",
+      "why": "Decides whether a global palette exists at all; both values must be emitted, because flag 0 combined with images that have no local table is the only way to reach a decoder's missing-palette fallback.",
+      "decoder_paths": "flag 1 reaches the global table read and the background lookup; flag 0 reaches the local-table-only and the no-palette-at-all paths.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "GLOBALCOLORTABLE.rgb"
+      ]
+    },
+    {
+      "field": "IMAGEDESCRIPTOR_PACKEDFIELDS.LocalColorTableFlag",
+      "tier": "B",
+      "why": "Decides whether this image overrides the global palette; both values must be emitted, since flag 1 is the only route into the per-image palette switch and flag 0 the only route into the global fallback.",
+      "decoder_paths": "flag 1 reaches the local table read and the palette swap; flag 0 reaches the global table reuse, and with no global table the default-palette fallback.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LOCALCOLORTABLE.rgb"
+      ]
+    },
+    {
+      "field": "APPLICATIONSUBBLOCK.ApplicationIdentifier",
+      "tier": "B",
+      "why": "Selects which application handler runs, and for NETSCAPE it changes the following data sub-block from free bytes into a fixed loop record; staying unconstrained means generating the registered identifiers AND arbitrary ones, since an unregistered identifier is the only route into the unknown-application skip path.",
+      "decoder_paths": "NETSCAPE with code 2.0 reaches the loop-count parser and the animation repeat logic; XMP Data reaches the metadata extraction; an unrecognised identifier reaches the generic sub-block skip.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATASUBBLOCK.Data"
+      ]
+    },
+    {
+      "field": "DATASUBBLOCK.Size",
+      "tier": "A",
+      "why": "Listed here with a narrower meaning than the other axes: the VALUE is pinned by the identity Size == length of the Data that follows and must never be chosen freely, but WHICH split lengths the generator picks when cutting a stream into sub-blocks is entirely free, and standardising on 255 would remove that freedom. The Tier A rule and this axis do not conflict -- one governs the value, the other the segmentation.",
+      "decoder_paths": "long sub-blocks let a decoder consume a whole buffer at once; short ones force it to refill its input mid-code and mid-row repeatedly, which is a different path through the bit reader; a chain of many one-byte sub-blocks is the extreme case and is perfectly legal.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATASUBBLOCK.Data"
+      ]
+    }
+  ]
+}

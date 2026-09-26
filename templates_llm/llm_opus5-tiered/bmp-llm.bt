@@ -1,0 +1,206 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: BMP.bt
+//    Author: SweetScape Software
+//   Version: 2.3
+//   Purpose: Parse BMP image files.
+//  Category: Image
+// File Mask: *.bmp
+//  ID Bytes: 42 4D //BM
+//   History:  
+//   2.4   FormatFuzzer rewrite from llm_reterived_constraints_bmp-llm_opus5-tiered.json.
+//   2.3   2016-02-26 SweetScape: Allow negative heights.
+//   2.2   2015-10-13 SweetScape: Updated header for repository submission.
+//   2.1   SweetScape: Bug fix for ReadRGBQUAD function.
+//   2.0   SweetScape: Added read functions.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at
+//  https://en.wikipedia.org/wiki/BMP_file_format
+//------------------------------------------------
+
+// Tier B: the complete compression set, preferred_value [0,1,2,3] weighted by repetition
+// and never filtered; a top-down image may not be compressed. The init values are cleared
+// so these per-call-site sets win. output_budget: 256 palette entries, 32 KiB of pixels.
+const local uint ReadUIntInitValues[0];
+local DWORD allComp[] = { 0,0,0,0,0, 1,1,1,1, 2,2,2,2, 3,3,3,3, 4, 5, 6, 11, 12, 13 };
+local DWORD topComp[] = { 0, 0, 0, 3 };
+local int64 g_palmax = 256; local int64 g_pixmax = 32768; local int64 g_linemax = 8192;
+
+// Define structures used in BMP files
+
+typedef struct {   // bmfh
+    local int evil_sig = SetEvilBit(false);  CHAR bfType[2] = { "BM" };  SetEvilBit(evil_sig);
+    DWORD   bfSize;                         // calculated_value, backpatched at the end
+    WORD    bfReserved1;                    // Tier C
+    WORD    bfReserved2;                    // Tier C
+    DWORD   bfOffBits;                      // calculated_value, backpatched at the end
+} BITMAPFILEHEADER;
+
+typedef struct {    // bmih
+    local int evil_hs = SetEvilBit(false);  DWORD biSize = { 40 };  SetEvilBit(evil_hs);
+    LONG    biWidth;                        // Tier C - DO NOT NARROW
+    LONG    biHeight;                       // Tier C - DO NOT NARROW (its sign is an axis)
+    local int evil_pl = SetEvilBit(false);  WORD biPlanes = { 1 };  SetEvilBit(evil_pl);
+    // dependencies: the compression fixes the legal depths, so it is drawn by lookahead.
+    local int evil_cv = SetEvilBit(false);  local DWORD cv = 0;
+    if( biHeight < 0 ) cv = ReadUInt( FTell() + 2, topComp );
+    else               cv = ReadUInt( FTell() + 2, allComp );
+    SetEvilBit(evil_cv);
+    if( cv == 1 )                 WORD biBitCount = { 8 };        // BI_RLE8 is 8bpp only
+    else if( cv == 2 )            WORD biBitCount = { 4 };        // BI_RLE4 is 4bpp only
+    else if( cv == 3 )            WORD biBitCount = { 16, 32 };   // BI_BITFIELDS
+    else if( cv == 4 || cv == 5 ) WORD biBitCount = { 0, 24 };    // BI_JPEG / BI_PNG
+    else WORD biBitCount = { 0, 1, 1, 2, 4, 4, 8, 8, 16, 24, 24, 32, 32 };  // Tier B, whole
+    DWORD   biCompression;                  // Tier B, pinned by the lookahead above
+    DWORD   biSizeImage;                    // calculated when the payload is compressed
+    LONG    biXPelsPerMeter;                // Tier C
+    LONG    biYPelsPerMeter;                // Tier C
+    DWORD   biClrUsed;                      // Tier C - DO NOT NARROW
+    DWORD   biClrImportant;                 // Tier C
+} BITMAPINFOHEADER;
+
+typedef struct {   // rgbq
+    UBYTE   rgbBlue;                        // Tier C
+    UBYTE   rgbGreen;                       // Tier C
+    UBYTE   rgbRed;                         // Tier C
+    UBYTE   rgbReserved;                    // Tier C - spec says 0, no decoder checks it
+} RGBQUAD <read=ReadRGBQUAD>;
+
+typedef struct {   // rgbt
+    UBYTE   rgbBlue;                        // Tier C
+    UBYTE   rgbGreen;                       // Tier C
+    UBYTE   rgbRed;                         // Tier C
+} RGBTRIPLE <read=ReadRGBTRIPLE>;
+
+//---------------------------------------------
+// Custom read functions for color types - this allows the
+//  color to be displayed without having to open up the structure.
+
+string ReadRGBQUAD( RGBQUAD &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X%02X", a.rgbReserved, a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+string ReadRGBTRIPLE( RGBTRIPLE &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X", a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+//---------------------------------------------
+
+// Define the headers
+LittleEndian(); 
+SetBackColor( cLtGray );
+BITMAPFILEHEADER bmfh;
+BITMAPINFOHEADER bmih;
+
+// Check for header
+if( bmfh.bfType != "BM" )
+{
+    Warning( "File is not a bitmap. Template stopped." );
+    return -1;
+}
+
+// Define the color table
+// output_budget: biClrUsed or the 1 << biBitCount fallback, capped at the format's own 256-entry ceiling.
+local int64 nclr = bmih.biClrUsed;
+if( nclr == 0 ) nclr = 1 << bmih.biBitCount;  if( nclr > g_palmax ) nclr = g_palmax;
+if( (bmih.biBitCount != 24) && (bmih.biBitCount != 32) )
+{
+    SetBackColor( cLtAqua );
+    if( bmih.biClrUsed > 0 ) RGBQUAD aColors[ nclr ];
+    else                     RGBQUAD aColors[ nclr ];
+}
+
+// Define the bytes of the data
+SetBackColor( cNone );
+local int64 pos_pix = FTell();
+// Calculate bytes per line and padding. The clamps are the pixel output_budget only; biWidth/biHeight stay free.
+local int64 nwidth = bmih.biWidth;
+if( nwidth < 0 ) nwidth = 0;  if( nwidth > g_linemax ) nwidth = g_linemax;
+local int64 bytesPerLine = ( nwidth * bmih.biBitCount + 7 ) / 8;
+local int64 padding      = 4 - (bytesPerLine % 4);
+if( padding == 4 )
+    padding = 0;
+local int64 rows = bmih.biHeight;  if( rows < 0 ) rows = -rows;
+if( (bytesPerLine + padding) > 0 && rows * (bytesPerLine + padding) > g_pixmax )
+    rows = g_pixmax / (bytesPerLine + padding);
+
+if( bmih.biCompression > 0 )
+{
+    // Bytes are compressed
+    local int64 r = 0; local int64 n = 0; local int64 k = 0; local int64 ab = 0; local int64 sg = 0;
+    local int evil_p = SetEvilBit(false);
+    if( bmih.biCompression == 3 ) {
+        // payload_wellformedness: BI_BITFIELDS is not a compression - three depth-correct masks, then raw rows.
+        if( bmih.biBitCount == 16 ) { DWORD rleMaskR = { 0xF800, 0x7C00 }; DWORD rleMaskG = { 0x07E0, 0x03E0 }; DWORD rleMaskB = { 0x001F }; }
+        else { DWORD rleMaskR = { 0x00FF0000 }; DWORD rleMaskG = { 0x0000FF00 }; DWORD rleMaskB = { 0x000000FF }; }
+        SetEvilBit(evil_p);
+        while( r < rows ) { UBYTE rleData[ bytesPerLine + padding ]; r++; }
+    } else if( (bmih.biCompression == 1) || (bmih.biCompression == 2) ) {
+        // payload_wellformedness: a Microsoft RLE stream sized from the free dimensions.
+        // Rows alternate encoded mode ([count][index], a nibble pair under RLE4) with
+        // absolute mode ([00][count] then literals); every third row opens with a delta.
+        while( r < rows ) {
+            if( (r % 3) == 2 ) DWORD rleDelta = { 0x01000200 };     // 00 02 dx=0 dy=1
+            n = nwidth;
+            while( n > 0 ) {
+                k = n; if( k > 255 ) k = 255;
+                if( ((r & 1) == 0) || (k < 3) ) {
+                    UBYTE rleRun = { (UBYTE)k };  SetEvilBit(evil_p);   // encoded mode
+                    UBYTE rleData;  SetEvilBit(false);                  // index: free content
+                } else {
+                    WORD  rleAbs = { (WORD)(k * 256) };                 // absolute: 00 count
+                    ab = k; if( bmih.biCompression == 2 ) ab = (k + 1) / 2;
+                    SetEvilBit(evil_p);  UBYTE rleData[ ab ];  SetEvilBit(false);
+                    if( (ab % 2) != 0 ) UBYTE rlePad = { 0x00 };
+                }
+                n -= k;
+            }
+            WORD rleEol = { 0x0000 };  r++;                             // end of line
+        }
+        WORD rleEob = { 0x0100 };  SetEvilBit(evil_p);                  // end of bitmap
+    } else {
+        // BI_JPEG/BI_PNG embed a whole image file; its signature is counted in biSizeImage.
+        if( bmih.biCompression == 4 ) sg = 2; else if( bmih.biCompression == 5 ) sg = 4;
+        local int64 pn = bmih.biSizeImage;  if( pn > g_pixmax ) pn = g_pixmax;  if( pn < sg ) pn = sg;
+        if( bmih.biCompression == 4 )      WORD  rleSoi = { 0xD8FF };       // JPEG SOI
+        else if( bmih.biCompression == 5 ) DWORD rlePng = { 0x474E5089 };   // PNG magic
+        SetEvilBit(evil_p);  UBYTE rleData[ pn - sg ];
+    }
+}
+else
+{
+    // Define each line of the image
+    struct BITMAPLINE {
+
+        // Define color data
+        if( (bmih.biBitCount < 8) || (bmih.biBitCount == 16) )
+             UBYTE     imageData[ bytesPerLine ];   // 16bpp has no branch in the original
+        else if( bmih.biBitCount == 8 )
+             UBYTE     colorIndex[ nwidth ];
+        else if( bmih.biBitCount == 24 )
+             RGBTRIPLE colors[ nwidth ];
+        else if( bmih.biBitCount == 32 )
+             RGBQUAD   colors[ nwidth ];
+
+        // Pad if necessary        
+        if( padding != 0 )
+             UBYTE padBytes[ padding ];
+
+    } lines[ rows ] <optimize=true>;
+}
+
+// calculated_value: bfSize, bfOffBits and biSizeImage, all written last from the real layout.
+local int64 pos_end = FTell();
+local int evil_bp = SetEvilBit(false);
+if( bmfh.bfSize != pos_end )    { FSeek(2);  DWORD bfSize    = { (DWORD)pos_end }; }
+if( bmfh.bfOffBits != pos_pix ) { FSeek(10); DWORD bfOffBits = { (DWORD)pos_pix }; }
+if( (bmih.biCompression > 0) && (bmih.biSizeImage != pos_end - pos_pix) ) { FSeek(34); DWORD biSizeImage = { (DWORD)(pos_end - pos_pix) }; }
+SetEvilBit(evil_bp);  FSeek(pos_end);

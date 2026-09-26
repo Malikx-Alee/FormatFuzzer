@@ -1,0 +1,329 @@
+//------------------------------------------------
+//--- 010 Editor v3.0.3 Binary Template
+//
+//      File: PCAP.bt
+//   Authors: Didier Stevens
+//   Website: https://DidierStevens.com
+//   Version: 0.5 
+//   Purpose: Parse a PCAP network capture file.
+//  Category: Network
+// File Mask: *.pcap
+//  ID Bytes: D4 C3 B2 A1
+//   History:
+//   0.5   2019-12-24 Tony Saigut: fix L2 padding.
+//   0.4   2019-05-22 S Gorbov: support for VLAN header.
+//   0.3   2018-03-15 Banny: support raw data pcap file.
+//   0.2   2016-02-12 SweetScape Software: Updated header for repository submission.
+//   0.1   D Stevens: Initial release.
+//
+// References:
+//  http://wiki.wireshark.org/Development/LibpcapFileFormat
+//------------------------------------------------
+
+// Generative rewrite. Edits implement numbered entries of
+// llm_reterived_constraints_pcap-llm_opus5-tiered.json. Five notes apply throughout.
+// (1) PCAPRECORD PLANS THE FRAME before writing the record header, because incl_len (structure[8] - one
+//     byte out and every reader refuses the file) and the trailing padding both need the frame's exact
+//     length up front. Every seed is an ordinary FREE draw at a Tier C byte: ReadUByte/ReadUShort with no
+//     value set use exactly the distribution the bare declaration would, and that declaration then takes
+//     the committed byte, so planning changes no field's distribution. The plan reads in the FRAME's byte
+//     order, not the record header's.
+// (2) COMPARISONS GO THROUGH A LOCAL COPY: ffcompile mines `<field> == <const>` into that field's known
+//     value set and pins it, and classes are shared by name. The names the original compares - network,
+//     L3type, L4proto, magic_number - are the four highest-leverage Tier B fields in the format.
+// (3) TIER B SETS ARE THE COMPLETE valid_values ARRAYS; preferred_value is applied by REPEATING members,
+//     which weights without dropping any (file_integer picks uniformly from the vector it is handed).
+// (4) ffcompile DROPS a bitfield's <values=> when the declaration sits in an if/switch/while, so struct
+//     TCPOFFSET exists only to hold one at struct scope.
+// (5) TWO TIER C FIELDS ARE DERIVED, against their tier, on measured evidence from the target: libpcap
+//     1.10.6 sf-pcap.c:637 TRUNCATES every packet to snaplen, and tcpdump 4.99.6 print.c:354-377 DISCARDS
+//     any packet with orig_len < incl_len or orig_len > 262144 before a printer runs. Left bare they
+//     dropped 90% of records and no packet over 16 bytes was ever dissected. Both keep a free component.
+
+local uint32 LINKTYPE[] = { 1,1,1,1,1,1,1,1,1,1,101,101,101,101,101,101,228,228,228,228,229,229,113,113,0,0,9,9,105,105,127,127,276,276, 0,1,3,6,7,8,9,10,32,50,51,99,100,101,104,105,106,107,108,113,114,117,119,122,123,127,129,138,139,140,141,142,143,144,147,162,163, 165,166,169,170,171,177,187,189,192,195,196,197,201,202,203,204,205,206,209,215,220,224,225,226,227,228,229,230,231,235,236,237,239, 240,241,242,243,244,245,247,248,249,250,251,253,254,255,256,257,258,259,260,261,262,263,264,265,266,268,270,271,272,273,274,275,276 };
+local ushort ETYPE[] = { 2048,2048,2048,2048,2048,2048,2048,2048,2048,2048,2048,2048,2048,2048,33024,33024,33024,34525,34525,2054,2054, 2048,2054,2114,8944,8947,8938,24578,24579,32821,32923,33011,33024,33026,33027,33079,33284,34525,34824,34825,34841,34887,34888,34915, 34916,34939,34958,34962,34970,34978,34980,34984,34987,35000,35001,35002,35020,35021,35041,35043,35045,35047,35063,35064,35067,35074, 35078,35092,35093,35101,35130,35119,36864,37120,61889 };
+local ushort VETYPE[] = { 2048,2048,34525,2048,2054,33024,34887,34888,34915,34916,34958,34984,35020,37120 };
+local UBYTE PROTO[] = { 6,6,6,6,6,6,6,6,17,17,17,17,17,17,17,17,1,1,1,132,132,47,47, 0,1,2,4,6,8,9,17,27,33,41,43,44,46,47,50,51,58,59,60,88,89,94,97,103,108,112,115,124,132,133,136,137,138,139,140,141,142,143,253,254,255 };
+local uint32 MAGIC[] = { 0xA1B2C3D4, 0xA1B2C3D4, 0xA1B2C3D4, 0xA1B23C4D };  local ushort MINOR[] = { 4,4,4,0,1,2,3 };  // Tier A, dep[0]/[16]
+// Tier B bitmask_constraint: the three named bits (32768 reserved, 16384 DF, 8192 MF), the unfragmented 0, and a spread of the free 13-bit offset that opens the reassembly path.
+local ushort IPFLAG[] = { 0,0,0,0,0,0,0,0,16384,16384,16384,16384,8192,8192,32768,8193,8377,185,1,8191,16385,65535,24576 };
+local ushort PRI[] = { 0,1,2,3,4,5,6,7 };  local ushort DEI[] = { 0,1 };  local UBYTE V4[] = { 4 };
+// A_IHL/A_THL are the planned Tier A header lengths and OB is a plant buffer. All three are filled at run
+// time and MUST carry an initialiser: a bare `local UBYTE x[1];` compiles to an EMPTY vector, so x[0]= is
+// out of bounds and <values=x> silently degrades to a free draw.
+local UBYTE A_IHL[] = { 5 };  local UBYTE A_THL[] = { 5 };  local UBYTE OB[] = { 0 };
+local uint16 G_TL = 20;  local uint16 G_UL = 8;  local uint32 G_IL = 20;
+
+// payload_wellformedness PCAPRECORD.AppData, dependencies[9]/[10]/[11]: the PORT selects the codec and the
+// payload is derived from it, never the other way round. Both ports stay bare Tier C draws and this reads
+// whichever was emitted. Each message is self-delimiting, so a longer payload carries trailing bytes.
+local UBYTE A_DNS[] = { 0x01,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,7,101,120,97,109,112,108,101,3,99,111,109,0,0x00,0x01,0x00,0x01 };
+local UBYTE A_HTTP[] = { 71,69,84,32,47,32,72,84,84,80,47,49,46,49,13,10,72,111,115,116,58,32,97,13,10,13,10 };
+local UBYTE A_SNMP[] = { 0x30,0x26,0x02,0x01,0x00,0x04,0x06,112,117,98,108,105,99,0xA0,0x19,0x02,0x01,0x00,0x02,0x01,0x00,0x02,0x01,0x00, 0x30,0x0E,0x30,0x0C,0x06,0x08,0x2B,0x06,0x01,0x02,0x01,0x01,0x01,0x00,0x05,0x00 };
+local UBYTE A_TFTP[] = { 0x00,0x01,116,101,115,116,0,111,99,116,101,116,0 };
+local UBYTE A_BOOT[] = { 0x63,0x82,0x53,0x63 };
+
+int AppFill( int64 at, int64 n, uint16 sp, uint16 dp ) {
+    local int64 i = 0;  local uint16 pt = dp;
+    if( pt != 53 && pt != 80 && pt != 161 && pt != 67 && pt != 68 && pt != 69 ) pt = sp;
+    local int evil_ap = SetEvilBit(false);
+    if( pt == 53 && n >= 29 )       for( i = 0; i < 27; i++ ) { OB[0]=A_DNS[i];  ReadUByte(at+2+i, OB); }  // DNS,  RFC 1035
+    else if( pt == 80 && n >= 26 )  for( i = 0; i < 26; i++ ) { OB[0]=A_HTTP[i]; ReadUByte(at+i, OB); }    // HTTP, RFC 9110
+    else if( pt == 161 && n >= 40 ) for( i = 0; i < 40; i++ ) { OB[0]=A_SNMP[i]; ReadUByte(at+i, OB); }    // SNMP GetRequest, BER
+    else if( pt == 69 && n >= 13 )  for( i = 0; i < 13; i++ ) { OB[0]=A_TFTP[i]; ReadUByte(at+i, OB); }    // TFTP RRQ, RFC 1350
+    else if( (pt == 67 || pt == 68) && n >= 240 ) {                                                        // DHCP, RFC 2131
+        OB[0]=1; ReadUByte(at, OB);  OB[0]=1; ReadUByte(at+1, OB);  OB[0]=6; ReadUByte(at+2, OB);  OB[0]=0; ReadUByte(at+3, OB);
+        for( i = 0; i < 4; i++ ) { OB[0]=A_BOOT[i]; ReadUByte(at+236+i, OB); }
+    }
+    SetEvilBit(evil_ap);  return 0;
+}
+
+typedef struct {
+        local int evil_mg = SetEvilBit(false);  uint32 magic_number <values=MAGIC, format=hex>;  SetEvilBit(evil_mg);
+        local uint32 mg = magic_number;   // note (2). dep[0]: 0xA1B23C4D is the nanosecond variant,
+        if(mg != 0xA1B2C3D4 && mg != 0xA1B23C4D) {   // measured to decode in all three readers, so
+            Warning("Not a valid PCAP file");  return 1;   // the original's guard is widened to admit it
+        }
+        local int evil_vr = SetEvilBit(false);   // Tier A fixed + Tier A enum, dep[16]
+        uint16 version_major = { 2 };  uint16 version_minor <values=MINOR>;  SetEvilBit(evil_vr);
+        int32  thiszone;       /* GMT to local correction */   // Tier C
+        uint32 sigfigs;        /* accuracy of timestamps */    // Tier C
+        // note (5); a free sigfigs still leaves ~12% of files a truncating snaplen, the reader path the JSON keeps.
+        uint32 snaplen = { (sigfigs % 8) == 0 ? sigfigs : 262144 };  /* max length of a captured packet */
+        uint32 network <values=LINKTYPE>;  /* data link type */  // Tier B: this one 32-bit field
+} PCAPHEADER;                                                    // selects an entire dissector chain
+
+typedef struct {
+    uchar Byte[6];      // Tier C - broadcast, multicast and local bits stay reachable
+} MACaddr<read=MACname>;
+
+typedef struct {
+        MACaddr DstMac<name="Destination MAC">;
+        MACaddr SrcMac<name="Source MAC">;
+        uint16 L3type<values=ETYPE, name="Layer 3 Protocol">;   // Tier B
+} Layer_2 <size=14>;
+
+typedef struct {
+        uint16 priority:3 <values=PRI>;    // Tier B - eight 802.1p classes
+        uint16 dei:1 <values=DEI>;         // Tier B
+        uint16 id:12<name="Vlan Id">;      // Tier C - free across the 12-bit span
+        uint16 L3type<values=VETYPE, name="Layer 3 Protocol">;   // Tier B
+} Dot1q <size=4>;
+
+typedef struct {
+    uchar Byte[4];      // Tier C - 0.0.0.0, broadcast, loopback, multicast, RFC 1918
+} IPv4addr<read=IPv4addrName>;
+
+string IPv4addrName(IPv4addr &IP) {
+    string strReturn;
+    SPrintf(strReturn,"%d.%d.%d.%d",IP.Byte[0],IP.Byte[1],IP.Byte[2],IP.Byte[3]);
+    return strReturn;
+}
+typedef struct (uint16 proto_type) {
+     local int evil_vi = SetEvilBit(false);   // version is Tier A + dependencies[3];
+     uchar version:4 <values=V4>;  uchar ip_hdr_len:4 <values=A_IHL>;  // ip_hdr_len is Tier A
+     SetEvilBit(evil_vi);                     // calculated and matches the header emitted
+     local int hdr_length = ip_hdr_len*4;
+     BYTE DiffServField;                      // Tier C - DSCP and ECN
+     local int evil_tl = SetEvilBit(false);  uint16 total_length = { G_TL };  SetEvilBit(evil_tl);  // Tier A, dep[12]/[13]
+     local uint16 pt = proto_type;         // note (2)
+     if (pt == 0x0800) {   // IP
+        uint16 Identification;             // Tier C - the reassembly key
+        uint16 Flags <values=IPFLAG>;      // Tier B bitmask_constraint
+        BYTE   TTL;                        // Tier C
+        BYTE   L4proto<name="Layer 4 Protocol",read=L4protoName>;  // Tier B, applied
+        uint16 HdrChecksum;                // at the plan's lookahead: BYTE is signed
+        IPv4addr SRC_IP<name="Source IP">; // so a vector<UBYTE> will not bind here.
+        IPv4addr DST_IP<name="Dest IP">;   // HdrChecksum is Tier C - measured NOT
+        // diversity_axes[6]: without an options array an ip_hdr_len above 5 cannot balance
+        if (hdr_length > 20) { BYTE IPOptions[hdr_length-4-16]; }
+     }
+     else { BYTE Unknown[hdr_length-4]; }
+} Layer_3;
+
+typedef struct {                       // note (4)
+    uchar tcp_hdr_len:4 <values=A_THL>;  // Tier A calculated
+    uchar Reserved:4;                    // Tier C - RFC 3168/3540 ECN bits
+} TCPOFFSET <size=1>;
+
+typedef struct (ushort VER_HDR,uint16 total_length,uint L4proto) {
+    local uint16 ip_hdr_length = VER_HDR*4;
+    local uint lp = L4proto;               // note (2)
+
+    if (lp == 0x11) {  // UDP
+        uint16 SrcPort<name="Source Port">;       // Tier C - with DstPort this is
+        uint16 DstPort<name="Destination Port">;  // the application dissector key
+        local int evil_ul = SetEvilBit(false);  uint16 udp_hdr_len = { G_UL } <name="Datagram Length">;  SetEvilBit(evil_ul);  // Tier A, dep[7]
+        uint16 ChkSum<name="Checksum">;    // Tier C - optional over IPv4
+    }
+    else if (lp == 0x6) {  // TCP
+        uint16 SrcPort<name="Source Port">;
+        uint16 DstPort<name="Destination Port">;
+        uint32 SEQ;                        // Tier C
+        uint32 ACK;                        // Tier C
+        local int evil_th = SetEvilBit(false);  TCPOFFSET off;  SetEvilBit(evil_th);  // Tier A + Tier C Reserved
+        // payload_wellformedness Layer_4.Crap: byte 0 flags, 1-2 window, 3-4 checksum, 5-6 urgent pointer,
+        // all free and all 256 flag combinations reachable. Bytes 7.. are a well-formed option list whose
+        // LENGTH is derived from tcp_hdr_len (dep[14]), filled exactly and padded with NOP - the header is
+        // never shrunk to fit a fixed option list.
+        local int64 co = FTell() + 7;  local int64 ce = FTell() + off.tcp_hdr_len*4 - 13;
+        local int evil_to = SetEvilBit(false);
+        while( co < ce ) {
+            if( ce-co >= 10 )     { OB[0]=8; ReadUByte(co,OB); OB[0]=10; ReadUByte(co+1,OB); co+=10; }
+            else if( ce-co >= 4 ) { OB[0]=2; ReadUByte(co,OB); OB[0]=4;  ReadUByte(co+1,OB); co+=4;  }
+            else if( ce-co >= 3 ) { OB[0]=3; ReadUByte(co,OB); OB[0]=3;  ReadUByte(co+1,OB); co+=3;  }
+            else if( ce-co >= 2 ) { OB[0]=4; ReadUByte(co,OB); OB[0]=2;  ReadUByte(co+1,OB); co+=2;  }
+            else                  { OB[0]=1; ReadUByte(co,OB); co+=1; }
+        }
+        SetEvilBit(evil_to);
+        BYTE Crap[off.tcp_hdr_len*4-13];
+    }
+    else { BYTE packet[total_length-ip_hdr_length]<name="Unknown Layer 4 Data">; }
+} Layer_4;
+
+string L4protoName(BYTE val) {
+    if (val == 0x06)
+    {
+        return "TCP";
+    }
+    else if (val == 0x11)
+    {
+        return "UDP";
+    }
+    else
+    {
+        return "Unknown";
+    }
+}
+
+typedef struct (uint32 network) {
+        local uint32 len_before_l3;
+        local uint32 nw = network;        // note (2)
+        local int64 rp = FTell();  local int64 fp = rp + 16;   // frame starts at fp
+        local int shape = 2;   // 2 full IPv4, 1 Layer_3 Unknown, 0 opaque L2 body
+        local int l2 = 0;  local uint16 et = 0x0800;  local UBYTE pr = 17;  local int64 hdrs = 20;
+        local int64 ihl = 5;  local int64 thl = 5;  local int64 sd = 0;  local int64 app = 0;  local int64 pad = 0;  local int64 tl = 20;
+        BigEndian();                      // note (1): plan in the frame's byte order
+        if (nw != 101) {                  // dependencies[1] / structure[9]
+            l2 = 14;
+            et = ReadUShort(fp + 12, ETYPE);      // Layer_2.L3type, Tier B
+            if (et == 0x8100) {                   // dependencies[4]
+                l2 = 18;
+                et = ReadUShort(fp + 16, VETYPE); // Dot1q.L3type, Tier B
+                shape = (et == 0x0800) ? 2 : 1;
+            } else shape = (et == 0x0800) ? 2 : 0;
+        }
+        local int64 ip = fp + l2;
+        if (shape == 2) {
+            sd  = ReadUByte(ip + 1);              // DiffServField seeds the IHL
+            app = ReadUShort(ip + 4);             // Identification seeds the size
+            thl = 5 + (ReadUByte(ip + 8) % 11);   // TTL seeds the data offset
+            pr  = ReadUByte(ip + 9, PROTO);       // Layer_3.L4proto, Tier B
+            pad = ReadUShort(ip + 10) % 24;       // HdrChecksum seeds the L2 padding
+            ihl = 5 + (sd % 11);
+            // 87.5% of a bare draw lands in 1..16, so the small half of the free size is spread over an
+            // ordinary frame's range while the tail keeps its own values. The size is NOT capped to steer
+            // the file size (diversity_axes[5]); the limits below are hard ceilings - total_length is 16
+            // bits, and formatfuzzer.h caps any generated file at MAX_FILE_SIZE.
+            if (app <= 16) app = app * 12 + (sd % 12);
+            hdrs = ihl*4;  if (pr == 6) hdrs += thl*4; else if (pr == 17) hdrs += 8;
+            if (app > 65535 - hdrs) app = 65535 - hdrs;
+            if (app > 65400 - fp - l2 - pad - hdrs) app = 65400 - fp - l2 - pad - hdrs;
+            if (app < 0) app = 0;
+            tl = hdrs + app;  G_TL = tl;  G_UL = 8 + app;  A_IHL[0] = ihl;  A_THL[0] = thl;  G_IL = l2 + tl + pad;
+        } else if (shape == 1) {
+            ihl = 5 + (ReadUByte(ip + 1) % 11);  tl = ihl*4;  G_TL = tl;  A_IHL[0] = ihl;  G_IL = l2 + tl;
+        } else G_IL = l2 + 1 + ReadUByte(fp + 14);
+        LittleEndian();                   // the record header is little-endian
+        time_t ts_sec;         /* timestamp seconds */        // Tier C
+        uint32 ts_usec;        /* timestamp microseconds */   // Tier C, dep[0]
+        local int evil_il = SetEvilBit(false);  uint32 incl_len = { G_IL };  SetEvilBit(evil_il);  // Tier A, structure[8]
+        // note (5); the slack keeps the sliced-capture case the JSON asks for, and the unguarded evil bit still yields ~0.8% invalid-header packets.
+        uint32 orig_len = { G_IL + (ts_usec % 61) };  /* actual length of packet */
+        BigEndian();
+
+        len_before_l3 = 0;
+        if (nw == 101) { // Raw IP; the packet begins with an IPv4 or IPv6 header
+            Layer_3 L3(0x0800) <name="Layer 3">;
+        } else { // other wise create L2 header
+            Layer_2 L2 <name="Layer 2">;
+            len_before_l3 += 14;
+            local uint16 e2 = L2.L3type;   // note (2)
+            if (e2 == 0x0800) { Layer_3 L3(e2) <name="Layer 3">; }
+            else if (e2 == 0x8100) {
+                Dot1q d1q <name="802.1Q Vitual LAN">;
+                len_before_l3 += 4;
+                Layer_3 L3(d1q.L3type) <name="Layer 3">;
+            }
+            // Every other EtherType leaves L3 undeclared, which the original's unconditional reference
+            // below could not survive; Tier B keeps all 54 of them (diversity_axes[1]).
+            else if (incl_len > 14) { BYTE L2Payload[incl_len-14]<name="Layer 3 Payload">; }
+        }
+        if (shape == 2) {
+            Layer_4 L4(L3.ip_hdr_len,L3.total_length,L3.L4proto)<name="Layer 4">;
+            local uint l4p = L3.L4proto;   // note (2)
+            if (l4p == 0x6) {
+                local uint16 AppDataLen = L3.total_length - L3.ip_hdr_len*4 - L4.off.tcp_hdr_len*4;
+                if (AppDataLen > 0) {   // structure[7]: a zero-length payload emits no field
+                    AppFill(FTell(), AppDataLen, L4.SrcPort, L4.DstPort);
+                    BYTE AppData[AppDataLen]<name="TCP Application Data">;
+                }
+            }
+            else if (l4p == 0x11) {
+                local uint AppDataLen = L4.udp_hdr_len-8;
+                if (AppDataLen > 0) {
+                    AppFill(FTell(), AppDataLen, L4.SrcPort, L4.DstPort);
+                    BYTE AppData[AppDataLen]<name="UDP Application Data">;
+                }
+            }
+        }
+        // structure[3]: the record ends exactly at incl_len. The original wrote this as incl_len -
+        // len_before_l3 - L3.total_length, the same number whenever a full IPv4 Layer_3 was emitted but
+        // undefined for the EtherTypes that leave L3 undeclared, so it is counted from the position
+        // instead. dependencies[15]; the contents are Tier C.
+        local int64 padLen = incl_len - (FTell() - fp);
+        if (padLen > 0) { uchar padding[padLen]<name="Layer 2 Padding">; }
+        LittleEndian();
+} PCAPRECORD <read=ReadPCAPRECORD,comment=PCAPcomments>;
+
+string PCAPcomments(PCAPRECORD &P) {
+    local uint16 L4_proto = P.L3.L4proto;
+    string strReturn;
+    local uint16 AppDataLen = 0;
+    if (L4_proto == 0x6) {
+        AppDataLen = P.L3.total_length - P.L3.ip_hdr_len*4 - P.L4.off.tcp_hdr_len*4;
+    }
+    else if (L4_proto == 0x11) {
+        AppDataLen = P.L4.udp_hdr_len - 8;
+    }   
+    SPrintf(strReturn,"%s:%d -> %s:%d  %s %s",IPv4addrName(P.L3.SRC_IP),P.L4.SrcPort,IPv4addrName(P.L3.DST_IP),P.L4.DstPort,L4protoName(L4_proto), AppDataLen > 0 ? "***" : "");
+    return strReturn;
+}
+string ReadPCAPRECORD(PCAPRECORD &record) {
+	string strReturn;
+	
+	SPrintf(strReturn, "%s.%06u", TimeTToString(record.ts_sec), record.ts_usec);
+	return strReturn;
+}
+
+string MACname(MACaddr &addr) {
+    string strReturn;
+    SPrintf(strReturn,"%.02x:%.02x:%.02x:%.02x:%.02x:%.02x",addr.Byte[0],addr.Byte[1],addr.Byte[2],addr.Byte[3],addr.Byte[4],addr.Byte[5]);
+    return strReturn;
+}
+
+// Define the headers
+LittleEndian();
+PCAPHEADER header;
+
+// structure[1] cardinality. output_budget asks for ~4 MB of records; the engine's own
+// MAX_FILE_SIZE is 65536, so that is the budget and the figure below is it less one record's
+// headroom. The budget stops the generator ADDING RECORDS - no frame length, payload length or
+// snaplen is capped to reach it. FEof's probability is lowered from its 0.125 default so a file
+// carries tens of records rather than eight: one file has one link type, so more records is what
+// varies the EtherType, the protocol number and the port pair beneath it. Zero records stays
+// reachable.
+while( FTell() < 64000 && !FEof(0.01) )
+{
+	PCAPRECORD record(header.network) <name="Frame">;
+}

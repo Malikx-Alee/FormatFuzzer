@@ -1,0 +1,456 @@
+//------------------------------------------------
+//--- 010 Editor v1.2 Binary Template
+//
+//      File: AVI.bt
+//   Authors: Blaine Lefebvre [bl], Elias Bachaalany [eb]
+//   Version: 1.3
+//   Purpose: Parse an AVI movie file.
+//  Category: Video
+// File Mask: *.avi
+//  ID Bytes: 52 49 46 46 [+4] 41 56 49 20 //RIFF????AVI 
+//   History: 
+//   1.3   FormatFuzzer rewrite from llm_reterived_constraints_avi-llm_opus5-tiered.json.
+//   1.2   2016-01-27 SweetScape: Updated header for repository submission, added coloring for header.
+//   1.1   2006-10-02 eb: Added BITMAPINFO and WAVEFORMATEX proper strfHEADER recognition,
+//                      Fixed 'idx1' parsing.
+//   1.0   bl: Initial release.
+//------------------------------------------------
+
+// Cross-structure state. structure[3] guarantees strf precedes movi, so the geometry is
+// known by the time the media chunks are emitted and the payload is DERIVED from it.
+local int64 g_pay  = 0;     // payload bytes of one media chunk
+local int64 g_fsz  = 0;     // bytes one media chunk occupies, 8-byte header and pad included
+local int64 g_nfr  = 0;     // media chunks emitted, for idx1
+local int64 g_str  = 0;     // strl lists emitted so far
+local int64 g_movi = 0;     // 1 once the movi list has been written
+local int64 g_hpos = -1;    // position of the hdrl length, backpatched when movi starts
+local char ttag[4];         // structure[1],[3],[4],[8]: the legal list type at each point
+local string t_hdrl[] = { "hdrl" };  local string t_strl[] = { "strl" };
+local string t_mix[] = { "strl", "movi", "movi", "movi", "movi" };  local string t_other[] = { "INFO", "odml" };
+
+// output_budget: structure[5] budgets movi to 4 MB and structure[2] hdrl to 64 KB, both far
+// above FormatFuzzer's MAX_FILE_SIZE of 65536, so the engine ceiling binds first. Every array
+// length goes through Room(); no dimension, depth or codec is ever capped.
+int64 Room( int64 want )
+{
+    local int64 r = 64512 - FTell();
+    if( r < 0 ) r = 0;
+    if( want < 0 ) return 0;
+    if( want > r ) return r;
+    return want;
+}
+
+typedef struct
+{ 
+  // Tier B: the registered WAVE_FORMAT catalogue; measured, this one WORD selects seven
+  // different audio decoders. preferred_value is weighted by repetition, nothing filtered.
+  WORD  wFormatTag = { 1,1,1,1, 2,2, 3,3, 6,6, 7,7, 17,17, 85,85, 0,16,32,34,49,50,64,69,80,105,112,353,354,355,8192,8193,65534,65535 }; 
+  WORD  nChannels;                          // Tier C - DO NOT NARROW (diversity_axes[5])
+  DWORD nSamplesPerSec;                     // Tier C - DO NOT NARROW (diversity_axes[6])
+  // nBlockAlign derives from a depth declared LATER in the struct, so the depth is drawn by
+  // lookahead first and wBitsPerSample below is then declared bare and takes that value.
+  local int64 wbps = ReadUShort( FTell() + 6 );
+  local int64 ba = nChannels * wbps / 8;
+  if( wFormatTag == 2 || wFormatTag == 17 ) ba = 256;   // dependencies[8]: block codecs
+  if( ba < 1 ) ba = 1;
+  local int evil_wf = SetEvilBit(false);
+  DWORD nAvgBytesPerSec = { (uint32)((nSamplesPerSec * ba) & 0xFFFFFFFF) };  // Tier A calculated
+  WORD  nBlockAlign     = { (uint16)(ba & 0xFFFF) };                         // Tier A, dependencies[8]
+  SetEvilBit(evil_wf);
+  WORD  wBitsPerSample;                     // Tier C - DO NOT NARROW (diversity_axes[7])
+  local int64 cbs = 0;
+  if( wFormatTag == 65534 ) cbs = 22;       // dependencies[9]: EXTENSIBLE needs 22 bytes
+  else if( wFormatTag == 85 ) cbs = 12;     // MPEGLAYER3 extension
+  local int evil_cb = SetEvilBit(false);
+  WORD  cbSize = { (uint16)cbs };           // Tier A: must equal strfHEADER_WAVE.datalen - 18
+  SetEvilBit(evil_cb);
+} WAVEFORMATEX; 
+
+// head structure info
+typedef struct 
+{
+    DWORD  dwMicroSecPerFrame;              // Tier C
+    DWORD  dwMaxBytesPerSec;                // Tier C
+    DWORD  dwReserved1;                     // Tier C
+    // Tier B bitmask: AVIF_HASINDEX 0x10, MUSTUSEINDEX 0x20, ISINTERLEAVED 0x100,
+    // TRUSTCKTYPE 0x800, WASCAPTUREFILE 0x10000, COPYRIGHTED 0x20000, and combinations.
+    DWORD  dwFlags = { 0, 16, 16, 32, 48, 256, 272, 2048, 2064, 65536, 131072, 197120, 262064, 2320 };
+    DWORD  dwTotalFrames;                   // Tier C - DO NOT NARROW (diversity_axes[13])
+    DWORD  dwInitialFrames;                 // Tier C
+    DWORD  dwStreams;                       // Tier C - DO NOT NARROW (diversity_axes[9])
+    DWORD  dwSuggestedBufferSize;           // Tier C
+    DWORD  dwWidth;                         // Tier C
+    DWORD  dwHeight;                        // Tier C
+    DWORD  dwScale;                         // Tier C
+    DWORD  dwRate;                          // Tier C
+    DWORD  dwStart;                         // Tier C
+    DWORD  dwLength;                        // Tier C
+} MainAVIHeader;
+
+typedef struct
+{
+  local int evil_bs = SetEvilBit(false);
+  uint32 biSize = { 40 };                   // Tier A: the struct this template declares is 40 bytes
+  SetEvilBit(evil_bs);
+  uint32 biWidth;                           // Tier C - DO NOT NARROW (diversity_axes[0])
+  uint32 biHeight;                          // Tier C - DO NOT NARROW; its SIGN is the axis
+  uint16 biPlanes;                          // Tier C
+  uint16 biBitCount = { 0, 1, 2, 4, 8, 8, 16, 16, 24, 24, 32, 32 };   // Tier B, whole set
+  // Tier B and by a wide margin the highest-leverage field in AVI: measured, eight distinct
+  // decoders from one DWORD. The whole catalogue is emitted, preferred_value weighted.
+  uint32 biCompression = { 0,0,0, 1,1, 2,2, 3, 1196444237,1196444237, 1735420525, 1129730893,1129730893, 1296126531, 1684633187,1684633187, 1145656920, 1482049860, 808802372, 877677894, 1446269005, 875967048, 875967080, 842225225, 825513545, 808801865, 540561494, 808996950, 1431914056, 827737670, 1196575829, 844715353, 1498831189, 808596553, 842094169, 1094862674 };
+  // The frame length is the product of three FREE fields; none of them is ever shrunk to fit.
+  local int64 bih_h = biHeight;
+  if( bih_h > 2147483647 ) bih_h = 4294967296 - bih_h;
+  local int64 bih_rb = ((biWidth * biBitCount + 31) / 32) * 4;
+  local int64 bih_sz = bih_rb * bih_h;
+  local int evil_si = SetEvilBit(false);
+  uint32 biSizeImage = { (uint32)(bih_sz & 0xFFFFFFFF) };   // Tier A calculated from the geometry
+  SetEvilBit(evil_si);
+  uint32 biXPelsPerMeter;                   // Tier C
+  uint32 biYPelsPerMeter;                   // Tier C
+  uint32 biClrUsed;                         // Tier C - DO NOT NARROW (diversity_axes[14])
+  uint32 biClrImportant;                    // Tier C
+} BITMAPINFOHEADER;
+
+typedef struct 
+{
+  unsigned char rgbBlue;                    // Tier C
+  unsigned char rgbGreen;                   // Tier C
+  unsigned char rgbRed;                     // Tier C
+  unsigned char rgbReserved;                // Tier C
+} RGBQUAD;
+
+typedef struct 
+{
+  BITMAPINFOHEADER bmiHeader;
+  RGBQUAD bmiColors;
+} BITMAPINFO;
+
+typedef struct 
+{
+  local int evil_ah = SetEvilBit(false);
+  char id[4] = { "avih" };                  // Tier A fixed_value
+  uint32 datalen = { 56 };                  // Tier A: measured the strictest length in AVI
+  SetEvilBit(evil_ah);
+  MainAVIHeader data;
+} avihHEADER;
+
+
+// header stream structure info
+typedef struct 
+{
+    // Tier B: the four stream kinds. Which one a file declares selects the strf variant
+    // (dependencies[0..2]) and therefore which decoder family the movi payload feeds.
+    char   fccType[4] = { {"vids"}, {"vids"}, {"vids"}, {"auds"}, {"auds"}, {"auds"}, {"txts"}, {"mids"} };
+    char   fccHandler[4];                   // Tier C
+    DWORD  dwFlags = { 0, 0, 1, 65536, 65537 };   // Tier B: AVISF_DISABLED, AVISF_VIDEO_PALCHANGES
+    DWORD  dwReserved1;                     // Tier C
+    DWORD  dwInitialFrames;                 // Tier C
+    DWORD  dwScale;                         // Tier C - DO NOT NARROW (diversity_axes[11])
+    DWORD  dwRate;                          // Tier C - DO NOT NARROW (diversity_axes[12])
+    DWORD  dwStart;                         // Tier C
+    DWORD  dwLength;                        // Tier C
+    DWORD  dwSuggestedBufferSize;           // Tier C
+    DWORD  dwQuality;                       // Tier C
+    DWORD  dwSampleSize;                    // Tier C
+    DWORD  xdwQuality;                      // Tier C
+    DWORD  xdwSampleSize;                   // Tier C
+} AVIStreamHeader;
+
+typedef struct 
+{
+  local int evil_sh = SetEvilBit(false);
+  char id[4] = { "strh" };                  // Tier A fixed_value
+  uint32  datalen = { 56 };                 // Tier A: measured 56 exactly
+  SetEvilBit(evil_sh);
+  AVIStreamHeader data;
+}strhHEADER;
+
+
+// Generic strfHEADER - dependencies[2]: the branch txts and mids streams take
+typedef struct 
+{
+  local int evil_gi = SetEvilBit(false);  char id[4] = { "strf" };  SetEvilBit(evil_gi);
+  uint32  datalen;                          // Tier A calculated, backpatched below
+  local int64 gn = Room( datalen & 255 );
+  local int64 gp = FTell();
+  if (gn % 2)
+	  char data[gn+1];                      // Tier C - free
+  else
+	  char data[gn];
+  if( g_str == 0 && gn > 0 ) g_pay = gn;    // txts and mids chunks carry opaque bytes
+  if( datalen != gn ) { FSeek(gp-4);  local int evil_g = SetEvilBit(false);  uint32 datalen = { (uint32)gn };  SetEvilBit(evil_g);  FSeek(gp + gn + (gn % 2)); }
+} strfHEADER;
+
+// strfHEADER with BITMAPINFOHEADER - dependencies[0]
+typedef struct 
+{
+  local int evil_bi = SetEvilBit(false);  char id[4] = { "strf" };  SetEvilBit(evil_bi);
+  uint32  datalen;                          // Tier A calculated, backpatched below
+  local int64 bp = FTell();  local int64 bdl = datalen;   // a copy: `datalen == 44` mines 44 into every length
+  BITMAPINFOHEADER bmiHeader;
+  local int sz = sizeof(bmiHeader);
+  // dependencies[7]: the indexed depths need a colour table of biClrUsed (or 2^biBitCount)
+  // entries; dependencies[6]: the MPEG-4 fourccs need decoder configuration. The template can
+  // name one RGBQUAD, only at datalen == 44, so a real table lands in exData.
+  local int64 nclr = bmiHeader.biClrUsed;
+  if( nclr == 0 && bmiHeader.biBitCount >= 1 && bmiHeader.biBitCount <= 8 ) nclr = 1 << bmiHeader.biBitCount;
+  if( nclr > 256 ) nclr = 256;
+  local int64 ex = nclr * 4;
+  if( bmiHeader.biCompression == 1145656920 || bmiHeader.biCompression == 1482049860 || bmiHeader.biCompression == 875967046 ) ex = 51;
+  if (bdl == 44)
+  {
+    RGBQUAD bmiColors;                      // Tier C - free
+    sz += 4;
+    ex -= 4;
+  }
+  Printf("left: %d\n", sz);
+  ex = Room( ex );
+  char exData[ex];                          // Tier C - free; palette or codec extradata
+  local int64 be = FTell();
+  if( datalen != be - bp ) { FSeek(bp-4);  local int evil_b = SetEvilBit(false);  uint32 datalen = { (uint32)(be - bp) };  SetEvilBit(evil_b);  FSeek(be); }
+  // payload_wellformedness: rowbytes * abs(biHeight), DERIVED from three free fields.
+  if( g_str == 0 )
+  {
+    local int64 vh = bmiHeader.biHeight;
+    if( vh > 2147483647 ) vh = 4294967296 - vh;
+    g_pay = ((bmiHeader.biWidth * bmiHeader.biBitCount + 31) / 32) * 4 * vh;
+    if( g_pay > 32768 ) g_pay = 32768;
+    if( g_pay < 1 ) g_pay = 1;
+  }
+} strfHEADER_BIH;
+
+
+// strfHEADER with WAVEFORMAT - dependencies[1]
+typedef struct 
+{
+  local int evil_wi = SetEvilBit(false);  char id[4] = { "strf" };  SetEvilBit(evil_wi);
+  uint32  datalen;                          // Tier A calculated, backpatched below
+  local int64 wp = FTell();
+  WAVEFORMATEX wave;
+  char exData[wave.cbSize];                 // Tier C - free; cbSize bytes, dependencies[9]
+  local int64 we = FTell();
+  if( datalen != we - wp ) { FSeek(wp-4);  local int evil_w = SetEvilBit(false);  uint32 datalen = { (uint32)(we - wp) };  SetEvilBit(evil_w);  FSeek(we); }
+  // payload_wellformedness: a whole number of nBlockAlign frames, from two free fields.
+  if( g_str == 0 )
+  {
+    g_pay = wave.nBlockAlign * 64;
+    if( g_pay > 32768 ) g_pay = 32768;
+    if( g_pay < 1 ) g_pay = 1;
+  }
+} strfHEADER_WAVE;
+
+//
+typedef struct 
+{
+  local int evil_ni = SetEvilBit(false);  char id[4] = { "strn" };  SetEvilBit(evil_ni);
+  uint32  datalen;                          // Tier A calculated, backpatched below
+  local int64 nn = Room( datalen & 63 );
+  local int64 np = FTell();
+  if ( nn % 2 )
+    char data[nn+1];                         // Tier C - free
+  else
+    char data[nn];
+  if( datalen != nn ) { FSeek(np-4);  local int evil_n = SetEvilBit(false);  uint32 datalen = { (uint32)nn };  SetEvilBit(evil_n);  FSeek(np + nn + (nn % 2)); }
+} strnHEADER;
+
+//
+typedef struct 
+{
+  // Tier C axis, but dependencies[14] is a real format rule: the digits are the stream index
+  // and the suffix the kind. Measured on ffmpeg 6.1 a non-digit prefix makes get_stream_idx
+  // return 100, every chunk is skipped and the whole decode pipeline is lost.
+  char id[4] = { {"00db"}, {"00dc"}, {"00dc"}, {"00wb"}, {"00wb"}, {"00pc"}, {"00tx"}, {"01dc"}, {"01wb"}, {"02dc"}, {"10dc"} };
+  local int evil_gd = SetEvilBit(false);
+  uint32 datalen = { (uint32)g_pay };       // Tier A calculated from the payload emitted
+  SetEvilBit(evil_gd);
+  // payload_wellformedness: the length is a product of the free geometry fields, not a cap.
+  if ( datalen % 2 )
+    char data[datalen+1];
+  else
+    char data[datalen];
+} genericblock;
+
+
+
+typedef struct 
+{
+  char id[4];                               // Tier A "LIST"
+  uint32 datalen;                           // Tier A calculated, backpatched below
+  local int64 lp = FTell();
+  local int evil_ty = SetEvilBit(false);
+  if( g_hpos < 0 )      ReadBytes(ttag, FTell(), 4, t_hdrl, t_hdrl);
+  else if( g_str == 0 ) ReadBytes(ttag, FTell(), 4, t_strl, t_strl);
+  else if( !g_movi )    ReadBytes(ttag, FTell(), 4, t_mix, t_mix);
+  else                  ReadBytes(ttag, FTell(), 4, t_other, t_other);
+  SetEvilBit(evil_ty);
+  char type[4];                             // Tier B, pinned by the ordering lookahead above
+  local int is_h = 0;
+  if (!Memcmp(type,"hdrl",4))
+  {
+    is_h = 1;
+    g_hpos = lp - 4;                        // its length spans every strl list; written at movi
+    avihHEADER avhi;
+  }
+  else if (!Memcmp(type,"strl",4))
+  {
+    strhHEADER strh;
+
+    // Printf("->%c%c%c%c\n", strh.data.fccHandler[0], strh.data.fccHandler[1],strh.data.fccHandler[2],strh.data.fccHandler[3]);
+    if (Memcmp(strh.data.fccType, "vids", 4) == 0)
+    {
+      strfHEADER_BIH strf;
+    }
+    else if (Memcmp(strh.data.fccType, "auds", 4) == 0)
+    {
+      strfHEADER_WAVE strf;
+    }
+    else
+    {
+      strfHEADER strf;
+    }
+    strnHEADER strn;
+    g_str += 1;
+  }
+  else if (Memcmp(type,"movi",4) == 0)
+  {
+    // The hdrl list ends where the movi list begins, so its length is written now.
+    if( g_hpos >= 0 ) { FSeek(g_hpos);  local int evil_h = SetEvilBit(false);  uint32 datalen = { (uint32)(lp - 8 - g_hpos - 4) };  SetEvilBit(evil_h);  FSeek(lp + 4); }   // lp predates type[4]
+    // output_budget on movi: the frame COUNT is the free choice it spends and datalen follows.
+    // The do/while terminates on exact equality, so stop must be a whole number of chunks.
+    g_fsz = 8 + g_pay + (g_pay % 2);
+    local int32 nfr = (datalen - 4) / g_fsz;
+    if( nfr < 1 ) nfr = 1;
+    if( nfr * g_fsz > Room( nfr * g_fsz ) ) nfr = Room( nfr * g_fsz ) / g_fsz;
+    if( nfr < 1 ) nfr = 1;
+    local int32 pointer = 0;
+    local int32 stop = nfr * g_fsz;
+    g_nfr = nfr;
+    g_movi = 1;
+
+    do
+    {
+      genericblock gb;
+      pointer += sizeof(gb);
+      //Printf("+%x = %d\n", gb.datalen, pointer);
+    } while (pointer != stop);
+  }
+  else
+  {
+    local int64 on = Room( (datalen - 4) & 1023 );
+    char data[on];                          // Tier C - free; the INFO and odml payloads
+  }
+  local int64 le = FTell();
+  // hdrl is the exception: its length spans every strl list and was written at the movi list.
+  if( !is_h && datalen != le - lp ) { FSeek(lp-4);  local int evil_l = SetEvilBit(false);  uint32 datalen = { (uint32)(le - lp) };  SetEvilBit(evil_l);  FSeek(le); }
+} LISTHEADER;
+
+
+// junk structure info
+typedef struct 
+{
+  char id[4];                               // Tier A "JUNK"
+  uint32  datalen;                          // Tier A calculated, backpatched below
+  local int64 jn = Room( datalen & 2047 );  // output_budget: JUNK is the designated filler
+  local int64 jp = FTell();
+  if ( jn % 2 )
+    char data[jn+1];                        // Tier C - DO NOT NARROW (diversity_axes[15])
+  else
+    char data[jn];
+  if( datalen != jn ) { FSeek(jp-4);  local int evil_j = SetEvilBit(false);  uint32 datalen = { (uint32)jn };  SetEvilBit(evil_j);  FSeek(jp + jn + (jn % 2)); }
+} JUNKHEADER;
+
+
+// aviindex structure info
+typedef struct (int64 ioff, int64 ilen)
+{
+    // Tier C, but avi_read_idx1 derives the stream index from these same two ASCII digits and
+    // drops every out-of-range entry: measured, a bare ckid loses the whole index-loading path.
+    DWORD  ckid = { 1650615344, 1667392560, 1667392560, 1651729968, 1651729968, 1667392816, 1651730224 };
+    DWORD  dwFlags = { 0, 16, 16, 16, 1, 1048576, 17 };   // Tier B: AVIIF_KEYFRAME, LIST, NO_TIME
+    local int evil_ix = SetEvilBit(false);
+    DWORD  dwChunkOffset = { (uint32)ioff };   // Tier A: offset from the movi FOURCC
+    DWORD  dwChunkLength = { (uint32)ilen };   // Tier A: the referenced chunk's payload length
+    SetEvilBit(evil_ix);
+} AVIINDEXENTRY;
+
+const DWORD AVIINDEXENTRYLEN = 16;
+
+typedef struct 
+{
+  char id[4];                               // Tier A "idx1"
+  local int evil_i1 = SetEvilBit(false);
+  uint32  datalen = { (uint32)(g_nfr * AVIINDEXENTRYLEN) };   // Tier A: 16 per media chunk
+  SetEvilBit(evil_i1);
+  // structure[9]: one entry per media chunk, offsets computed as the chunks were laid out.
+  local int64 ii = 0;
+  while( ii < datalen/AVIINDEXENTRYLEN ) { AVIINDEXENTRY data( 4 + ii * g_fsz, g_pay ); ii += 1; }
+} idx1HEADER;
+
+// root structure info
+typedef struct xroot 
+{
+  local int evil_r = SetEvilBit(false);
+  char id[4] = { "RIFF" };                  // Tier A fixed_value
+  local char rid3 = id[3];                  // a local copy: comparing the field mines 'X' into it
+  if (rid3 == 'X')
+  {
+    Printf("Motorola format\n");
+    BigEndian();
+  }
+  else
+  {
+    Printf("Intel format\n");
+    LittleEndian();
+  }
+
+  uint32  datalen;                          // Tier A calculated, backpatched at end of file
+  char form[4] = { "AVI " };                // Tier A fixed_value, dependencies[15]
+  SetEvilBit(evil_r);
+
+  if (Strcmp(form, "AVI "))
+  {
+    Warning("Not a valid AVI file");
+    return -1;
+  }
+} ROOT <bgcolor=cLtGray>;
+
+local char nheader[4];
+// structure[10] and [11]: only LIST, JUNK and idx1 may appear here - anything else makes the
+// loop below abandon the parse - and idx1 is legal only once the movi list exists.
+local string pre_m[] = { "LIST", "LIST", "LIST", "JUNK" };
+local string pre_e[] = { "idx1", "JUNK", "LIST" };
+
+ROOT root;
+
+while (!g_movi || !FEof())
+{
+  local int evil_t = SetEvilBit(false);
+  if( !g_movi ) ReadBytes(nheader,FTell(), 4, pre_m, pre_m);
+  else          ReadBytes(nheader,FTell(), 4, pre_e, pre_e);
+  SetEvilBit(evil_t);
+
+  if (Memcmp(nheader,"LIST",4) == 0)
+  {
+    LISTHEADER list;
+  }
+  else if (Memcmp(nheader, "JUNK",4) == 0)
+  {
+    JUNKHEADER junk;
+  }
+  else if (Memcmp(nheader, "idx1",4) == 0)
+  {
+    idx1HEADER idx1;
+  }
+  else
+  {
+    if (!FEof())
+      Printf("unknown chunk: %c%c%c%c", nheader[0],nheader[1],nheader[2],nheader[3]);
+    return -1;
+  }
+}
+
+// Tier A: the outermost length, written last from the bytes actually emitted.
+local int64 fend = FTell();
+if( root.datalen != fend - 8 ) { FSeek(4);  local int evil_rd = SetEvilBit(false);  uint32 datalen = { (uint32)(fend - 8) };  SetEvilBit(evil_rd);  FSeek(fend); }

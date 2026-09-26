@@ -1,0 +1,855 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: WAV.bt
+//    Author: SweetScape Software, Paulo Max Gil I Reis
+//   Version: 1.3
+//   Purpose: Parse WAV audio files.
+//  Category: Audio
+// File Mask: *.wav
+//  ID Bytes: 52 49 46 46 [+4] 57 41 56 45 //RIFF????WAVE
+//   History:  
+//   1.3   FormatFuzzer rewrite from llm_reterived_constraints_wav-llm_opus5-tiered.json.
+//   1.2   2020-02-04 Paulo Max: Improved to correct parsing of DVI ADPCM and fix some issues in subchunk list parsing.
+//   1.1   2015-10-05 SweetScape: Updated header for repository submission.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at:
+//  https://en.wikipedia.org/wiki/WAV
+//------------------------------------------------
+
+// Record whether we have found a format chunk yet
+local int haveValidFormat = false;
+local int haveData = false;
+
+// output_budget, from structure[4] (1 MiB per file, 768 KiB of audio, 64 KiB of LIST, 64 KiB
+// of unmodelled chunks, 8 KiB for the fact/cue/smpl group), scaled with its ratios kept to
+// FormatFuzzer's own MAX_FILE_SIZE of 65536. Spent by ending a chunk, never by narrowing.
+local int64 g_audio = 49152;
+local int64 g_list  = 3072;
+local int64 g_unk   = 3072;
+local int64 g_meta  = 384;
+local int64 g_cap   = 61440;
+
+// Every array length below is passed through this: FormatFuzzer's buffer ends at
+// MAX_FILE_SIZE (65536) and an array running past it aborts generation, so this is the
+// engine's ceiling on the output_budget - never a bound on a field.
+int64 Room( int64 want )
+{
+    local int64 r = 64768 - FTell();
+    if( r < 0 ) r = 0;
+    if( want < 0 ) return 0;
+    if( want > r ) return r;
+    return want;
+}
+
+// Tier B wBitsPerSample: the complete valid_values set, preferred_value weighted by
+// repetition, plus the per-tag subsets dependencies[1], [8] and [9] require.
+local ushort bitAll[] = { 8,8,8, 16,16,16, 32,32,32, 4,4, 24,24, 12, 20, 64 };
+local ushort bit4[]   = { 4 };
+local ushort bit8[]   = { 8 };
+local ushort bitF[]   = { 32, 32, 32, 32, 32, 64 };
+
+//-----------------------------------
+// Define structures used in WAV files
+
+// Stores the file header information
+typedef struct 
+{
+    local int evil_rif = SetEvilBit(false);
+    char   groupID[4] = { "RIFF" };         // Tier A fixed_value
+    long   hsize;                           // Tier A calculated_value, backpatched at EOF
+    char   riffType[4] = { "WAVE" };        // Tier A fixed_value
+    SetEvilBit(evil_rif);
+} WAVRIFFHEADER;
+
+// Stores the format information for the file
+typedef struct {
+    char           chunkID[4];              // Tier A "fmt ", pinned by the shared lookahead
+    long           chunkSize;               // Tier A calculated_value, backpatched below
+    local int64 pos = FTell();
+    // Tier B: the registered WAVEFORMATEX tags, complete, with preferred_value weighted by
+    // repetition and nothing filtered out.
+    short          wFormatTag = { 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,17,17,17,2,2,2,6,6,6,7,7,7,85,85,85,0,20,49,64,80,102,103,273,325,353,354,355,8192,8193,-1 };
+    unsigned short wChannels;               // Tier C - DO NOT NARROW (diversity_axes[0])
+    local int64 nc = wChannels;             // see DATACHUNK: never compare the field to a constant
+    unsigned long  dwSamplesPerSec;         // Tier C - DO NOT NARROW (diversity_axes[1])
+    // wBlockAlign and dwAvgBytesPerSec derive from a depth declared LATER in the chunk, so
+    // the depth is drawn by lookahead. Unguarded: Tier B wants out-of-set depths (axis 2).
+    local int ftag = wFormatTag & 0xFFFF;
+    local int64 bps = 0;
+    if( ftag == 17 )                   bps = ReadUShort( FTell() + 6, bit4 );   // dependencies[1]
+    else if( ftag == 6 || ftag == 7 )  bps = ReadUShort( FTell() + 6, bit8 );   // dependencies[8]
+    else if( ftag == 3 )               bps = ReadUShort( FTell() + 6, bitF );   // dependencies[9]
+    else                               bps = ReadUShort( FTell() + 6, bitAll ); // Tier B, whole set
+    local int64 bsz = (bps + 7) / 8;
+    local int64 ba  = wChannels * bsz;                               // dependencies[5]
+    // dependencies[2]: for DVI/IMA ADPCM the block size is a free choice of at least
+    // 4 * wChannels and the samples per block follow FROM it, never the reverse.
+    if( ftag == 17 ) ba = 4 * wChannels + 1 + (dwSamplesPerSec % 2039);
+    local int64 spb = 1;
+    if( bps > 0 && nc > 0 ) spb = ((ba - 4 * nc) * 8) / (bps * nc) + 1;
+    if( spb < 1 ) spb = 1;
+    local int64 abps = dwSamplesPerSec * ba;                         // dependencies[6]
+    if( ftag == 17 || ftag == 2 ) abps = (dwSamplesPerSec / spb) * ba; // dependencies[7]
+    local int evil_der = SetEvilBit(false);
+    unsigned long  dwAvgBytesPerSec = { (uint32)abps };   // Tier A calculated_value
+    unsigned short wBlockAlign      = { (uint16)ba };     // Tier A calculated_value
+    SetEvilBit(evil_der);
+    unsigned short wBitsPerSample;          // Tier B, pinned by the lookahead above
+    if (wFormatTag == 17) //DVI IMA ADPCM
+    {
+        local int evil_cb = SetEvilBit(false);
+        unsigned short wcbsize = { 2 };                    // Tier A fixed_value, dependencies[0]
+        unsigned short wSamplesPerBlock = { (uint16)spb }; // Tier A calculated_value
+        SetEvilBit(evil_cb);
+    }
+    // dependencies[12]: WAVE_FORMAT_EXTENSIBLE moves the codec identity into a GUID and needs a
+    // 40-byte format chunk. FORMATCHUNK.unknown's note asks for the tail to be written out here.
+    else if( ftag == 65534 )
+    {
+        local int evil_xt = SetEvilBit(false);
+        unsigned short wcbsize = { 22 };
+        SetEvilBit(evil_xt);
+        unsigned short wValidBitsPerSample = { (uint16)bps, (uint16)bps, (uint16)bps, 0, 8, 16, 20, 24, 32 };
+        unsigned long  dwChannelMask;        // Tier C - free
+        unsigned short SubFormat = { 1,1,1,1,1,1,1,1,3,3,3,3,2,6,7,17,85 };
+        uchar          GUIDtail[14];         // Tier C - no reader checks the GUID suffix
+    }
+
+    // Mark that we have found a valid format chunk
+    haveValidFormat = true;
+
+    // Unknown data at the end of the chunk, sized by FORMATCHUNK.chunkSize's size_identity:
+    // 16 or 18 for a bare WAVEFORMAT, 20 for DVI/IMA (dependencies[0]), 40 for EXTENSIBLE
+    // ([12]), 50 for Microsoft ADPCM ([10]) and 30 for MPEGLAYER3 ([11]) - the last two land
+    // here because the template declares neither layout.
+    local int64 tail = (dwSamplesPerSec & 1) * 2;
+    if( ftag == 2 )       tail = 34;
+    else if( ftag == 85 ) tail = 14;
+    else if( ftag == 17 || ftag == 65534 ) tail = 0;
+    tail = Room( tail );
+    if( tail > 0 )
+        uchar unknown[ tail ];              // Tier C - free; a cbSize of 2 trips Adobe mode
+
+    // calculated_value: written last, from the bytes actually produced
+    local int64 fend = FTell();
+    local int64 fsz  = fend - pos;
+    if( chunkSize != fsz )
+    {
+        FSeek( pos - 4 );
+        local int evil_fl = SetEvilBit(false);
+        long chunkSize = { (int)fsz };
+        SetEvilBit(evil_fl);
+        FSeek( fend );
+    }
+
+    // Padding so the next chunk starts on an even byte
+    if( fsz & 1 )
+        uchar padding;                      // Tier C value, structural presence
+} FORMATCHUNK;
+
+// Stores the actual wave data
+typedef struct 
+{
+    char           chunkID[4];              // Tier A "data", pinned by the shared lookahead
+    long           chunkSize;               // Tier A calculated_value, backpatched below
+
+    // Test if we have a valid format
+    if( !haveValidFormat )
+    {
+        Warning( "File contains no valid WAVE format chunk." );
+        return -1;
+    }
+
+    // structure[3] output_budget: the audio LENGTH is the free choice this budget spends.
+    // diversity_axes[0]: ffcompile mines any constant compared against a FIELD into that
+    // field's known values, so `wChannels == 1` below would pin the count to 1 - hence a copy.
+    local int64 nch = format.wChannels;
+    local int64 dpos = FTell();
+    local int64 ba = format.wBlockAlign;
+    local int64 nb = chunkSize;
+    if( nb < 0 ) nb = 0;
+    if( nb > g_audio ) nb = g_audio;
+    // DATACHUNK.chunkSize size_identity: the byte count is DERIVED from wBlockAlign, which is
+    // what derives_from names - the free quantity is the audio length in frames. Rounding up is
+    // idempotent, so the parse agrees; one file in eight keeps the raw, off-frame byte count,
+    // which diversity_axes[5] asks for.
+    if( ba > 0 && (format.dwSamplesPerSec & 7) != 0 ) nb = ((nb + ba - 1) / ba) * ba;
+    nb = Room( nb );
+
+    // Parse the samples of the data
+    if( ((format.wBitsPerSample != 8) && (format.wBitsPerSample != 16) && (format.wBitsPerSample != 32)) 
+        || format.wBlockAlign == 0 || (nb % (int)format.wBlockAlign != 0) )
+    {
+        // payload_wellformedness (dependencies[3]): for DVI/IMA ADPCM the data is a whole
+        // number of wBlockAlign-byte blocks, each opening with four header bytes per channel -
+        // a 16-bit predictor, a step index in 0 to 88 and one reserved byte. The block COUNT is
+        // derived from wBlockAlign, wChannels and the free audio length. Nibbles: content_is_free.
+        local int64 nblk = 0;
+        local int64 c = 0;
+        if( (format.wFormatTag == 17) && (nch > 0)
+            && (format.wBlockAlign >= 4 * nch) )
+            nblk = nb / (int)format.wBlockAlign;
+        if( nblk > 0 )
+        {
+            while( nblk > 0 )
+            {
+                c = format.wChannels;
+                while( c > 0 )
+                {
+                    short imaPredictor;                     // free initial predictor
+                    local int evil_ix = SetEvilBit(false);
+                    uchar imaStepIndex = { 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88 };   // step table index, the whole 0..88 range
+                    uchar imaReserved = { 0 };
+                    SetEvilBit(evil_ix);
+                    c--;
+                }
+                unsigned char waveformData[ format.wBlockAlign - 4 * format.wChannels ];
+                nblk--;
+            }
+        }
+        else
+            // Unsupported storage method used
+            unsigned char  waveformData[nb];
+    }
+    else if( (nch == 1) && (format.wBitsPerSample == 8) )
+    {
+        // Define an array of 8-bit samples - common case
+        uchar samples[ nb ];                // Tier C - DO NOT NARROW (diversity_axes[6])
+    }
+    else if( (nch == 1) && (format.wBitsPerSample == 16) )
+    {
+        // Define an array of 16-bit samples - common case
+        short samples[ nb/2 ];              // Tier C - DO NOT NARROW
+    }
+    else if( (nch == 1) && (format.wBitsPerSample == 32) )
+    {
+        // Define an array of 32-bit samples - common case
+        int samples[ nb/4 ];                // Tier C - DO NOT NARROW
+    }
+    else
+    {
+        // Define general case sample
+        struct SAMPLES {
+            if( format.wBitsPerSample == 8 )
+                 uchar channels[ format.wChannels ];    // Tier C - DO NOT NARROW
+            else if( format.wBitsPerSample == 16 )
+                 short channels[ format.wChannels ];
+            else if( format.wBitsPerSample == 32 )
+                 int   channels[ format.wChannels ];
+        } samples[ nb / (int)format.wBlockAlign ];
+    }
+
+    // calculated_value: written last, from the bytes actually produced
+    local int64 dend = FTell();
+    local int64 dsz  = dend - dpos;
+    if( chunkSize != dsz )
+    {
+        FSeek( dpos - 4 );
+        local int evil_dl = SetEvilBit(false);
+        long chunkSize = { (int)dsz };
+        SetEvilBit(evil_dl);
+        FSeek( dend );
+    }
+    g_audio -= dsz;
+    if( g_audio < 0 ) g_audio = 0;
+
+    // Padding so the next chunk starts on an even byte
+    if( dsz & 1 )
+        uchar padding;                      // Tier C value, structural presence
+} DATACHUNK;
+
+// Stores the size of the wave after decompression
+typedef struct
+{
+    char           chunkID[4];              // Tier A "fact", pinned by the shared lookahead
+    local int evil_fa = SetEvilBit(false);
+    long           chunkSize = { 4 };       // Tier A: template_parse_requirement, exactly 4
+    SetEvilBit(evil_fa);
+    unsigned long  uncompressedSize;        // Tier C - DO NOT NARROW (diversity_axes[7])
+} FACTCHUNK;
+
+// Stores a list of cue points or markers to points in the data
+typedef struct {
+    long    dwIdentifier;                   // Tier C
+    long    dwPosition;                     // Tier C - DO NOT NARROW (diversity_axes[16])
+    char    fccChunk[4] = { {"data"}, {"slnt"} };   // Tier B, both preferred
+    long    dwChunkStart;                   // Tier C
+    long    dwBlockStart;                   // Tier C
+    long    dwSampleOffset;                 // Tier C
+} CUEPOINT;
+
+typedef struct {
+    char      chunkID[4];                   // Tier A "cue ", pinned by the shared lookahead
+    long      chunkSize;                    // Tier A calculated_value, backpatched below
+    local int64 pos = FTell();
+    long      dwCuePoints;                  // Tier A calculated_value; HOW MANY stays free
+    local int64 npts = dwCuePoints;
+    if( npts < 0 || npts > 16 ) npts = dwCuePoints & 15;
+    if( npts * 24 > g_meta ) npts = g_meta / 24;       // output_budget: the fact/cue/smpl group
+    if( npts * 24 > Room( npts * 24 ) ) npts = Room( npts * 24 ) / 24;
+    if( npts < 0 ) npts = 0;
+    if( dwCuePoints != npts ) { FSeek( pos );  local int evil_np = SetEvilBit(false);  long dwCuePoints = { (int)npts };  SetEvilBit(evil_np); }
+    CUEPOINT  points[npts];
+
+    // Unknown data at the end of the chunk
+    local int64 ctail = chunkSize - (FTell() - pos);
+    if( ctail > 256 ) ctail = 256;  ctail = Room( ctail );  // output_budget on the tail
+    if( ctail > 0 )
+        uchar unknown[ ctail ];             // Tier C - free
+
+    local int64 cend = FTell();
+    local int64 csz  = cend - pos;
+    if( chunkSize != csz )
+    {
+        FSeek( pos - 4 );
+        local int evil_cl = SetEvilBit(false);
+        long chunkSize = { (int)csz };
+        SetEvilBit(evil_cl);
+        FSeek( cend );
+    }
+    g_meta -= csz;
+} CUECHUNK;
+
+// Define a list chunk with a set of subchunks
+typedef struct (int lt, int64 room) {
+    // Tier B, dependencies[19], [20] and [21]: which subchunk tags are legal is decided by
+    // the list's own type. Unregistered tags stay reachable through the evil bit.
+    if( lt == 1 )      char chunkID[4] = { {"labl"}, {"note"}, {"ltxt"}, {"file"} };
+    else if( lt == 2 ) char chunkID[4] = { {"data"}, {"slnt"} };
+    else               char chunkID[4] = { {"INAM"}, {"IART"}, {"ICMT"}, {"ISFT"}, {"ICRD"}, {"IGNR"}, {"IARL"}, {"ICMS"}, {"ICOP"}, {"ICRP"}, {"IDIM"}, {"IDPI"}, {"IENG"}, {"IKEY"}, {"ILGT"}, {"IMED"}, {"IPLT"}, {"IPRD"}, {"ISBJ"}, {"ISHP"}, {"ISMP"}, {"ISRC"}, {"ISRF"}, {"ITCH"}, {"ITRK"}, {"IDIT"} };
+    long      chunkSize;                    // Tier A calculated_value, backpatched below
+    local int64 ln = chunkSize;
+    if( ln < 0 ) ln = 0;
+    if( ln > room ) ln = room;  ln = Room( ln );     // output_budget on the LIST group
+    local int64 lpos = FTell();
+    char      listData[ln];                 // Tier C - DO NOT NARROW (diversity_axes[12])
+    if( chunkSize != ln )
+    {
+        FSeek( lpos - 4 );
+        local int evil_sl = SetEvilBit(false);
+        long chunkSize = { (int)ln };
+        SetEvilBit(evil_sl);
+        FSeek( lpos + ln );
+    }
+
+    // Padding so the next chunk starts on an even byte
+    if( ln & 1 )
+        uchar padding;                      // Tier C value, structural presence
+} LISTSUBCHUNK;
+
+typedef struct {
+    char      chunkID[4];                   // Tier A "LIST", pinned by the shared lookahead
+    long      chunkSize;                    // Tier A calculated_value, backpatched below
+    local quad pos = FTell();
+    char      chunkType[4] = { {"INFO"}, {"adtl"}, {"wavl"} };  // Tier B, all three preferred
+    local uint size;
+    local int64 lsz = chunkSize;
+    if( lsz < 4 ) lsz = 4;
+    if( lsz > g_list ) lsz = g_list;  lsz = Room( lsz );   // output_budget: LIST, scaled
+    // dependencies[19..21] keyed on the list type; compared by first byte, because a string
+    // comparison against a declared field poisons that field's known-value constructor.
+    local int lt = 0;
+    if( chunkType[0] == 0x61 ) lt = 1;        // "adtl"
+    else if( chunkType[0] == 0x77 ) lt = 2;   // "wavl"
+
+    // Read the subchunks
+    while( FTell() - pos < lsz ) {
+        size = ReadUInt( FTell()+4 );
+        if  (FTell() - pos + size<= lsz)
+            LISTSUBCHUNK subchunk( lt, lsz - (FTell() - pos) - 8 );
+        else
+            uchar unknown[ lsz - (FTell() - pos) ];   // Tier C - free
+    }
+
+    local int64 lend = FTell();
+    local int64 lcsz = lend - pos;
+    if( chunkSize != lcsz )
+    {
+        FSeek( pos - 4 );
+        local int evil_ll = SetEvilBit(false);
+        long chunkSize = { (int)lcsz };
+        SetEvilBit(evil_ll);
+        FSeek( lend );
+    }
+    g_list -= lcsz;
+    if( g_list < 8 ) g_list = 8;
+
+    // Padding so the next chunk starts on an even byte
+    if( lcsz & 1 )
+        uchar padding;                      // Tier C value, structural presence
+} LISTCHUNK;
+
+// A chunk which could not be identified
+typedef struct {
+    char      chunkID[4];                   // Tier B pattern_constraint, from the shared lookahead
+    long      chunkSize;                    // Tier A calculated_value, backpatched below
+    local int64 un = chunkSize;
+    if( un < 0 ) un = 0;
+    if( un > g_unk ) un = g_unk;  un = Room( un );   // output_budget: unmodelled chunks
+    local int64 upos = FTell();
+    uchar     unknownData[un];              // Tier C - free; a named tag's real body lands here
+    if( chunkSize != un )
+    {
+        FSeek( upos - 4 );
+        local int evil_ul = SetEvilBit(false);
+        long chunkSize = { (int)un };
+        SetEvilBit(evil_ul);
+        FSeek( upos + un );
+    }
+    g_unk -= un;
+    if( g_unk < 8 ) g_unk = 8;
+
+    // Padding so the next chunk starts on an even byte
+    if( un & 1 )
+        uchar padding;                      // Tier C value, structural presence
+} UNKNOWNCHUNK;
+//---------------------------------------------
+// SMPL / SMPL Loop
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Cue_ID <read=WAV_SMPLLOOPS_Cue_ID>;
+
+string
+WAV_SMPLLOOPS_Cue_ID( SMPLLOOPS_Cue_ID cid )
+{
+    string  sret;
+    SPrintf( sret, "Cue Point ID: %u", cid );
+
+return sret;
+}
+
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Play_Count <read=WAV_SMPLLOOPS_Play_Count>;
+
+string
+WAV_SMPLLOOPS_Play_Count( SMPLLOOPS_Play_Count pc )
+{
+    string  sret;
+
+    if (pc==0)
+    {
+        SPrintf( sret, " Infinite Sustain Loop (%u)", pc );
+    }
+    else
+    {
+        SPrintf( sret, "Play Count: %u", pc );
+    }
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Start <read=WAV_SMPLLOOPS_Start>;
+
+string
+WAV_SMPLLOOPS_Start( SMPLLOOPS_Start st )
+{
+    string  sret;
+    SPrintf( sret, "Loop Start at %u byte offset", st );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_End <read=WAV_SMPLLOOPS_End>;
+
+string
+WAV_SMPLLOOPS_End( SMPLLOOPS_End end )
+{
+    string  sret;
+    SPrintf( sret, "Loop End at %u byte offset", end );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Fraction <read=WAV_SMPLLOOPS_Fraction>;
+
+string
+WAV_SMPLLOOPS_Fraction( SMPLLOOPS_Fraction f )
+{
+    string  sret;
+    SPrintf( sret, "Fraction: %u", f );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SL <read=WAV_SMPL_SL>;
+
+string
+WAV_SMPL_SL( SMPL_SL sl )
+{
+    string  sret;
+    SPrintf( sret, "Number of Samples Loops (Sustain Loops): %u", sl );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SD <read=WAV_SMPL_SD>;
+
+string
+WAV_SMPL_SD( SMPL_SD sd )
+{
+    string  sret;
+    SPrintf( sret, "Sample Data (number of bytes): %u", sd );
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPL_SMPTE_Offset <read=WAV_SMPL_SMPTE_Offset>;
+
+string
+WAV_SMPL_SMPTE_Offset( SMPL_SMPTE_Offset so )
+{
+    string  sret;
+    SPrintf( sret, "SMPTE Offset (for synchronization): %u", so );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Pitch_Fraction <read=WAV_SMPL_MIDI_Pitch_Fraction>;
+
+string
+WAV_SMPL_MIDI_Pitch_Fraction( SMPL_MIDI_Pitch_Fraction pf )
+{
+    string  sret;
+    SPrintf( sret, "MIDI Pitch Fraction: %u", pf );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Unity_Note <read=WAV_SMPL_MIDI_Unity_Note>;
+
+string
+WAV_SMPL_MIDI_Unity_Note( SMPL_MIDI_Unity_Note un )
+{
+    string  sret;
+    SPrintf( sret, "MIDI unity note value: %u", un );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Product <read=WAV_SMPL_Product>;
+
+string
+WAV_SMPL_Product( SMPL_Product product )
+{
+    string  sret;
+    SPrintf( sret, "MIDI model ID (defined by the manufacturer): %u", product );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Sample_Period <read=WAV_SMPL_Sample_Period>;
+
+string
+WAV_SMPL_Sample_Period( SMPL_Sample_Period sp )
+{
+    string  sret;
+     // The sample period specifies the duration of time that passes during the playback of one sample in nanoseconds (normally equal to 1 / Samplers Per Second, where Samples Per Second is the value found in the format chunk).
+    SPrintf( sret, "Sample Period: %u", sp );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SMPTE <read=WAV_SMPL_SMPTE>;
+
+string
+WAV_SMPL_SMPTE( SMPL_SMPTE smptef )
+{
+    string  s;
+    string  sret;
+
+    switch( smptef )
+    {
+    case 0: SPrintf( s, "No SMPTE offset" ); break;
+    case 24: SPrintf( s, "24 frames per second" ); break;
+    case 25: SPrintf( s, "25 frames per second" ); break;
+    case 29: SPrintf( s, "30 frames per second with frame dropping (30 drop)" ); break;
+    case 30: SPrintf( s, "30 frames per second" ); break;
+    default: SPrintf( s, "unknown (%u)", smptef ); break;
+    }
+
+    SPrintf( sret, "SMPTE Format: %s", s );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Manufacturer <read=WAV_SMPL_Manufacturer>;
+
+string
+WAV_SMPL_Manufacturer( SMPL_Manufacturer manufacture )
+{
+    string  s;
+    string  sret;
+
+    switch( manufacture )
+    {
+    case 0: SPrintf( s, "Unknown" ); break;
+    case 1: SPrintf( s, "Sequential Circuits"); break;
+    case 2: SPrintf( s, "Big Briar"); break;
+    case 3: SPrintf( s, "Octave / Plateau"); break;
+    case 4: SPrintf( s, "Moog"); break;
+    case 5: SPrintf( s, "Passport Designs"); break;
+    case 6: SPrintf( s, "Lexicon"); break;
+    case 7: SPrintf( s, "Kurzweil"); break;
+    case 8: SPrintf( s, "Fender"); break;
+    case 9: SPrintf( s, "Gulbransen"); break;
+    case 10: SPrintf( s, "Delta Labs"); break;
+    case 11: SPrintf( s, "Sound Comp."); break;
+    case 12: SPrintf( s, "General Electro"); break;
+    case 13: SPrintf( s, "Techmar"); break;
+    case 14: SPrintf( s, "Matthews Research"); break;
+    case 16: SPrintf( s, "Oberheim"); break;
+    case 17: SPrintf( s, "PAIA"); break;
+    case 18: SPrintf( s, "Simmons"); break;
+    case 19: SPrintf( s, "DigiDesign"); break;
+    case 20: SPrintf( s, "Fairlight"); break;
+    case 21: SPrintf( s, "JL Cooper"); break;
+    case 22: SPrintf( s, "Lowery"); break;
+    case 23: SPrintf( s, "Lin"); break;
+    case 24: SPrintf( s, "Emu"); break;
+    case 27: SPrintf( s, "Peavey"); break;
+    case 32: SPrintf( s, "Bon Tempi"); break;
+    case 33: SPrintf( s, "S.I.E.L."); break;
+    case 35: SPrintf( s, "SyntheAxe"); break;
+    case 36: SPrintf( s, "Hohner"); break;
+    case 37: SPrintf( s, "Crumar"); break;
+    case 38: SPrintf( s, "Solton"); break;
+    case 39: SPrintf( s, "Jellinghaus Ms"); break;
+    case 40: SPrintf( s, "CTS"); break;
+    case 41: SPrintf( s, "PPG"); break;
+    case 47: SPrintf( s, "Elka"); break;
+    case 54: SPrintf( s, "Cheetah"); break;
+    case 62: SPrintf( s, "Waldorf"); break;
+    case 64: SPrintf( s, "Kawai"); break;
+    case 65: SPrintf( s, "Roland"); break;
+    case 66: SPrintf( s, "Korg"); break;
+    case 67: SPrintf( s, "Yamaha"); break;
+    case 68: SPrintf( s, "Casio"); break;
+    case 70: SPrintf( s, "Kamiya Studio"); break;
+    case 71: SPrintf( s, "Akai"); break;
+    case 72: SPrintf( s, "Victor"); break;
+    case 75: SPrintf( s, "Fujitsu"); break;
+    case 76: SPrintf( s, "Sony"); break;
+    case 78: SPrintf( s, "Teac"); break;
+    case 80: SPrintf( s, "Matsushita"); break;
+    case 81: SPrintf( s, "Fostex"); break;
+    case 82: SPrintf( s, "Zoom"); break;
+    case 84: SPrintf( s, "Matsushita"); break;
+    case 85: SPrintf( s, "Suzuki"); break;
+    case 86: SPrintf( s, "Fuji Sound"); break;
+    case 87: SPrintf( s, "Acoustic Technical Laboratory"); break;
+    default: SPrintf( s, "Unknown"); break;
+    }
+
+SPrintf( sret, "Manufacturer: %s", s);
+
+return sret;
+}
+
+//----------------------------------------------------------------------
+typedef long SMPLLOOPS_Type <read=WAV_SMPL_Loop_Type>;
+
+string
+WAV_SMPL_Loop_Type( SMPLLOOPS_Type loop )
+{
+    string  s;
+
+    switch( loop )
+    {
+        case 0 :
+            SPrintf( s, "Loop: Forward (%u)", loop );
+            break;
+
+        case 1 :
+            SPrintf( s, "Loop: Ping Pong (%u)", loop );
+            break;
+
+        case 2 :
+            SPrintf( s, "Loop: Reverse (%u)", loop );
+            break;
+
+        case 3 :
+            SPrintf( s, "Loop [reserved for future standard types] (%u)", loop );
+            break;
+
+        default:
+            s = "Loop: <unknown>";
+    }
+
+    return s;
+}
+
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// SMPL Loop
+typedef struct {
+    SMPLLOOPS_Cue_ID     Cue_Point;         // Tier C - a dangling id is a branch too
+    SMPLLOOPS_Type       Type = { 0, 1, 2, 3 };   // Tier B, complete, case 3 included
+    SMPLLOOPS_Start      Start;             // Tier C
+    SMPLLOOPS_End        End;               // Tier C
+    SMPLLOOPS_Fraction   Fraction;          // Tier C
+    SMPLLOOPS_Play_Count Play_Count;        // Tier C - zero stays reachable
+
+} SMPLLOOPS;
+
+//----------------------------------------------------------------------
+// Chunk SMPL
+typedef struct {
+    char                     chunkID[4];    // Tier A "smpl", pinned by the shared lookahead
+    long                     chunkSize;     // Tier A calculated_value, backpatched below
+    local int64 spos = FTell();
+    // Tier B: the fifty-five manufacturer codes the template's own switch names, preferred
+    // ones weighted; every other value is legal and reaches the switch's default arm.
+    SMPL_Manufacturer        Manufacturer = { 0,0,0,1,1,4,4,65,65,66,66,67,67,71,71,2,3,5,6,7,8,9,10,11,12,13,14,16,17,18,19,20,21,22,23,24,27,32,33,35,36,37,38,39,40,41,47,54,62,64,68,70,72,75,76,78,80,81,82,84,85,86,87 };
+    SMPL_Product             Product; // Product code (Manufacture)
+    SMPL_Sample_Period       Sample_Period;         // Tier C - dependencies[24] is advisory
+    SMPL_MIDI_Unity_Note     MIDI_Unity_Note;       // Tier C - values above 127 are a branch
+    SMPL_MIDI_Pitch_Fraction MIDI_Pitch_Fraction;   // Tier C
+    SMPL_SMPTE               SMPTE = { 0, 24, 25, 29, 30 };  // Tier B, complete
+    SMPL_SMPTE_Offset        SMPTE_Offset;          // Tier C - dependencies[23]
+    SMPL_SL                  Num_Sample_Loops;      // Tier A calculated; HOW MANY stays free
+    local int64 nlp = Num_Sample_Loops;
+    if( nlp < 0 || nlp > 8 ) nlp = Num_Sample_Loops & 7;
+    if( nlp * 24 > g_meta ) nlp = g_meta / 24;         // output_budget: the fact/cue/smpl group
+    if( nlp * 24 > Room( nlp * 24 ) ) nlp = Room( nlp * 24 ) / 24;
+    if( nlp < 0 ) nlp = 0;
+    if( Num_Sample_Loops != nlp ) { FSeek( spos + 28 );  local int evil_nl = SetEvilBit(false);  SMPL_SL Num_Sample_Loops = { (int)nlp };  SetEvilBit(evil_nl); }
+    local int evil_sd = SetEvilBit(false);
+    SMPL_SD                  Sampler_Data = { 0 };  // Tier A: template_parse_requirement
+    SetEvilBit(evil_sd);
+    SMPLLOOPS                loops[nlp];
+
+    local int64 send = FTell();
+    local int64 ssz  = send - spos;
+    if( chunkSize != ssz )
+    {
+        FSeek( spos - 4 );
+        local int evil_sc = SetEvilBit(false);
+        long chunkSize = { (int)ssz };
+        SetEvilBit(evil_sc);
+        FSeek( send );
+    }
+    g_meta -= ssz;
+
+    //Padding so the next chunk starts on an even byte
+     if( ssz & 1 )
+     uchar padding;
+
+} SMPLCHUNK;
+
+
+
+//---------------------------------------------
+
+// Define the headers
+LittleEndian(); 
+SetBackColor( cLtPurple );
+WAVRIFFHEADER header;
+
+// Check for valid header
+if( header.groupID != "RIFF" || header.riffType != "WAVE" )
+{
+    Warning( "File is not a valid wave file. Template stopped." );
+    return -1;
+}
+
+// Read the file as a set of chunks
+local char tag[4];
+local uint size;
+// structure[2] ordering: the format chunk MUST precede the data chunk, so until one has been
+// seen the lookahead offers nothing else. structure[9]: the unmodelled tags are named rather
+// than random, because a real reader HAS handlers for them (UNKNOWNCHUNK.chunkID notes).
+local string pre0[] = { "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "fmt ", "data" };
+local string pref[] = { "data", "data", "data", "data", "fact", "LIST", "cue ", "smpl", "ds64", "bext" };
+local string poss[] = { "data", "fact", "cue ", "smpl", "LIST", "fmt ", "ds64", "bext", "id3 ", "ID3 ", "JUNK", "PAD ", "inst", "plst", "slnt", "wavl", "iXML", "axml", "acid", "DISP", "cset", "minf", "elm1", "regn", "umid", "SyLp", "strc", "_PMX", "FLLR", "afsp", "CDif", "labl", "note", "ltxt" };
+// structure[1] and [3]: one format chunk and at least one data chunk are both REQUIRED, so
+// the loop cannot end before it has produced them; FEof is only consulted once it has.
+while( !haveValidFormat || !haveData || !FEof() )
+{
+    // Read the chunk tag 
+    if( !haveValidFormat )
+        ReadBytes( tag, FTell(), 4, pre0, pre0 );
+    else
+        ReadBytes( tag, FTell(), 4, pref, poss );
+
+    // See which chunk this is
+    switch( tag )
+    {
+        case "fmt ":
+            // structure[6]: exactly one format chunk; a second one is a real reader's
+            // duplicate-fmt branch, and this parser reads it as an opaque chunk.
+            if( !haveValidFormat )
+            {
+                SetBackColor( cLtGray );
+                FORMATCHUNK format;
+            }
+            else
+            {
+                SetBackColor( cNone );
+                UNKNOWNCHUNK unknown;
+            }
+            break;
+        case "data":
+            SetBackColor( cNone );
+            // dependencies[18]: a data chunk without a format chunk is forbidden, so before
+            // one has been seen the same bytes are read as an opaque chunk instead.
+            if( haveValidFormat ) { DATACHUNK data;  haveData = true; }
+            else                  { UNKNOWNCHUNK unknown; }
+            break;
+        case "fact":
+            SetBackColor( cLtBlue );
+            FACTCHUNK   fact;
+            break;
+        case "cue ":
+            SetBackColor( cLtGray );
+            CUECHUNK    cue;
+            break;
+        case "smpl":
+            SetBackColor( cLtGray );
+            SMPLCHUNK    smpl;
+            break;
+        case "LIST":
+            SetBackColor( cLtYellow );
+            LISTCHUNK   list;
+            break;
+        default:
+            // Unknown chunk
+            size = ReadUInt( FTell()+4 );
+            Printf( "Encountered unknown chunk '%s' of size %d at position %Ld.\n",
+                tag, size, FTell() );
+            SetBackColor( cNone );
+            UNKNOWNCHUNK unknown;
+            break;
+    }
+
+    // structure[4] output_budget: stop opening chunks once the running total is spent.
+    if( FTell() > g_cap )
+        break;
+}
+
+// calculated_value: hsize is everything after it, written last from the bytes produced.
+local int64 wend = FTell();
+if( header.hsize != wend - 8 )
+{
+    FSeek( 4 );
+    local int evil_hs = SetEvilBit(false);
+    long hsize = { (int)(wend - 8) };
+    SetEvilBit(evil_hs);
+    FSeek( wend );
+}

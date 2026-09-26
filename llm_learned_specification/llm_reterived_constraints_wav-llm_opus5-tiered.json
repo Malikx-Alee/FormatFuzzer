@@ -1,0 +1,2505 @@
+{
+  "meta": {
+    "format": "wav",
+    "source_template": "templates_originals/wav-orig.bt",
+    "model": "claude-opus-5",
+    "strategy": "tiered",
+    "spec_reference": "Microsoft/IBM Multimedia Programming Interface and Data Specifications 1.0 (August 1991), the RIFF WAVE form; Microsoft WAVEFORMATEX and WAVEFORMATEXTENSIBLE (mmreg.h registered wFormatTag values); IMA/DVI ADPCM Wave Type as specified by the IMA Digital Audio Focus and Technical Working Group; the Sampler (smpl) and Cue (cue ) chunk definitions from the RIFF WAVE extensions",
+    "schema_extensions": [
+      {
+        "name": "applies_when",
+        "where": "constraints.DATACHUNK.waveformData",
+        "why": "The audio payload's required structure is decided entirely by FORMATCHUNK.wFormatTag, and for the PCM tags there is no structure at all. The constraints map is keyed by field, so the format-tag qualification has to live inside the entry."
+      },
+      {
+        "name": "alternate_payloads",
+        "where": "constraints.DATACHUNK.waveformData",
+        "why": "One .bt field carries raw PCM, IMA ADPCM blocks, MS ADPCM blocks, an MPEG elementary stream or companded 8-bit samples depending on the format tag. Each needs its own codec, gate and construction, and a map key cannot be repeated."
+      },
+      {
+        "name": "size_identity",
+        "where": "every chunkSize entry and the fields whose length they imply",
+        "why": "RIFF is built entirely out of length fields, and each chunk's size has an exact arithmetic relationship to the fields the template declares inside it. Stating the identity in template terms lets the generator compute the size from the bytes it wrote instead of guessing."
+      },
+      {
+        "name": "excluded_values",
+        "where": "constraints.FORMATCHUNK.wChannels and constraints.FORMATCHUNK.wBlockAlign",
+        "why": "Zero is not a small channel count or a small block size, it is a value that makes decoders bail out and makes the template's own modulo at line 78 a division by zero. This names exactly that one value without bounding the field: every other value stays free."
+      },
+      {
+        "name": "signedness_note",
+        "where": "constraints.FORMATCHUNK.wFormatTag and every chunkSize entry",
+        "why": "The template declares wFormatTag as a signed short and every chunkSize as a signed long, so format tags at or above 0x8000 (notably EXTENSIBLE 0xFFFE) read back negative and chunk sizes above 2^31-1 read back negative. A generator that assumes unsigned will emit comparisons the template cannot match."
+      },
+      {
+        "name": "template_parse_requirement",
+        "where": "constraints.FACTCHUNK.chunkSize, constraints.SMPLCHUNK.Sampler_Data",
+        "why": "These two carry a constraint that comes from the template rather than from the format: the template reads a fixed number of bytes and provides no skip for anything extra, so a chunk that is legal per the spec would desynchronise this particular parser. The distinction between a format rule and a template rule matters to the rewrite step and has no other home."
+      },
+      {
+        "name": "tier",
+        "where": "each element of diversity_axes",
+        "why": "must_remain_unconstrained means different things for a Tier C axis (emit the whole declared field width), a Tier B axis (emit every legal value) and the two Tier A axes listed (the value is derived, but the free quantity it is derived from must not be pinned). The tier disambiguates the instruction."
+      },
+      {
+        "name": "no_typedef_enum_note",
+        "where": "meta",
+        "why": "Checklist item 4 asks that every typedef enum become a Tier B entry. This template contains none; it expresses its enumerations as switch statements inside read=... display functions. The note records where those enumerations were harvested from instead."
+      }
+    ],
+    "structure_note": "WAV is a RIFF container -- the ASCII tag 'RIFF', a 32-bit size, the form type 'WAVE', then a flat sequence of four-character-tagged chunks each carrying its own 32-bit size and padded to an even byte -- in which the 'fmt ' chunk describes the audio and the 'data' chunk carries it; for the PCM format tags the data chunk is raw uncompressed samples with NO payload well-formedness requirement whatsoever, and the single payload_wellformedness entry in this file exists only for the compressed tags, chiefly the DVI/IMA ADPCM tag 17 that the template singles out at line 45, whose data must be a whole number of self-contained blocks each opening with a four-byte-per-channel predictor header.",
+    "no_typedef_enum_note": "This template declares no typedef enum. Its enumerations live in switch statements inside the read=... display functions: SMPL_SMPTE at lines 357-365, SMPL_Manufacturer at lines 381-439 and SMPLLOOPS_Type at lines 454-474. Each has been harvested into a Tier B enumerated_values entry, and the dispatch switch on the chunk tag at lines 538-571 has been harvested into the chunkID fixed_value entries and their shared lookahead.",
+    "tier_counts": {
+      "A": 25,
+      "B": 9,
+      "C": 31
+    }
+  },
+  "constraints": {
+    "WAVRIFFHEADER.groupID": {
+      "tier": "A",
+      "tier_rationale": "The template warns 'File is not a valid wave file. Template stopped.' and returns -1 when these four bytes are not 'RIFF' (lines 523-527), and every real reader -- libsndfile, ffmpeg's wav demuxer, Windows Media Foundation -- fails its probe and refuses the file before looking at a single chunk.",
+      "type": "fixed_value",
+      "description": "The RIFF container magic at offset 0.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 29,
+        "snippet": "char   groupID[4];"
+      },
+      "confidence": "high",
+      "required_value": "RIFF",
+      "required_value_hex": "0x52 0x49 0x46 0x46",
+      "required_value_ascii": "RIFF",
+      "notes": "Never give this field an evil value. The big-endian sibling container 'RIFX' exists but the template sets LittleEndian() at line 518 and compares only against 'RIFF', so RIFX would take the warning-and-stop path.",
+      "cross_check": {
+        "line": 523,
+        "snippet": "if( header.groupID != \"RIFF\" || header.riffType != \"WAVE\" )"
+      }
+    },
+    "WAVRIFFHEADER.hsize": {
+      "tier": "A",
+      "tier_rationale": "This is the RIFF container length; when it is short a reader stops early and never reaches the data chunk, and when it is long ffmpeg and libsndfile report a truncated file, so in both directions the audio is never decoded.",
+      "type": "calculated_value",
+      "description": "Size in bytes of everything after this field: the four riffType bytes plus every chunk in the file.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 30,
+        "snippet": "long   hsize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count from the start of riffType to end of file",
+      "covers": "WAVRIFFHEADER.riffType and every chunk that follows it; equivalently FileSize() - 8",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "WAVRIFFHEADER.riffType",
+        "FORMATCHUNK.chunkSize",
+        "DATACHUNK.chunkSize",
+        "FACTCHUNK.chunkSize",
+        "CUECHUNK.chunkSize",
+        "LISTCHUNK.chunkSize",
+        "SMPLCHUNK.chunkSize",
+        "UNKNOWNCHUNK.chunkSize"
+      ],
+      "size_identity": "hsize == FileSize() - 8, counting every chunk header, every chunk body and every pad byte",
+      "signedness_note": "declared as a signed long, so a file larger than 2^31-1 bytes would read back negative; the output_budget in the structure section keeps generation far below that",
+      "notes": "Compute this last, from the bytes actually written. Many readers tolerate a wrong value and fall back on the real file size, which is itself a distinct recovery path, but a reader that trusts it will truncate the audio."
+    },
+    "WAVRIFFHEADER.riffType": {
+      "tier": "A",
+      "tier_rationale": "The template's guard at line 523 tests this against 'WAVE' and stops with a warning otherwise, and a reader that finds a different form type hands the file to a different parser entirely or rejects it, so no WAVE chunk is ever examined.",
+      "type": "fixed_value",
+      "description": "The RIFF form type identifying this container's contents as WAVE audio.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 31,
+        "snippet": "char   riffType[4];"
+      },
+      "confidence": "high",
+      "required_value": "WAVE",
+      "required_value_hex": "0x57 0x41 0x56 0x45",
+      "required_value_ascii": "WAVE",
+      "notes": "Never give this field an evil value.",
+      "cross_check": {
+        "line": 523,
+        "snippet": "if( header.groupID != \"RIFF\" || header.riffType != \"WAVE\" )"
+      }
+    },
+    "FORMATCHUNK.chunkID": {
+      "tier": "A",
+      "tier_rationale": "This tag is what the dispatch switch at line 540 matches to parse the chunk as a format chunk; with any other value the chunk falls to the UNKNOWNCHUNK branch, haveValidFormat stays false, and the data chunk then aborts the template at line 73 -- and a real reader likewise reports a missing format chunk and decodes nothing.",
+      "type": "fixed_value",
+      "description": "The four-character tag identifying the format chunk; note the trailing space, which is part of the tag.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 36,
+        "snippet": "char           chunkID[4];"
+      },
+      "confidence": "high",
+      "required_value": "fmt ",
+      "required_value_hex": "0x66 0x6D 0x74 0x20",
+      "required_value_ascii": "fmt\\x20",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fmt ",
+          "data"
+        ]
+      },
+      "notes": "The lookahead at line 535 reads four bytes and the switch at line 538 compares them against these six literals; anything else reaches the default branch at line 564. That six-value set is the complete list of tags this template models and is exactly what FormatFuzzer should mine from this call site. The trailing 0x20 is mandatory -- 'fmt' with a NUL would not match.",
+      "cross_check": {
+        "line": 540,
+        "snippet": "case \"fmt \":"
+      }
+    },
+    "FORMATCHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "The format chunk's size determines where the next chunk begins; when it is wrong the reader lands mid-chunk and every subsequent tag is garbage, and when it is shorter than the WAVEFORMAT fields ffmpeg reports 'invalid fmt chunk' and refuses the stream.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the format chunk's body, excluding the eight bytes of tag and size and excluding any pad byte.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 37,
+        "snippet": "long           chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the format chunk body: 16 for the base WAVEFORMAT fields, plus 2 for wcbsize and its extension bytes when present",
+      "covers": "from wFormatTag through the end of the extension or unknown bytes; in template terms the span from the local pos taken at line 38 to the start of the padding",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wFormatTag",
+        "FORMATCHUNK.wcbsize",
+        "FORMATCHUNK.unknown"
+      ],
+      "size_identity": "16 when wFormatTag is a bare WAVEFORMAT (PCM tag 1); 18 when a cbSize of 0 is present; 20 for the DVI/IMA ADPCM layout the template models at lines 45-49 (16 + 2 wcbsize + 2 wSamplesPerBlock); 40 for WAVE_FORMAT_EXTENSIBLE (16 + 2 + 22); 50 for Microsoft ADPCM (16 + 2 + 32). Any surplus beyond what the declared fields consume is absorbed by FORMATCHUNK.unknown at line 56, so the identity is chunkSize == (FTell() - pos) + sizeof(unknown).",
+      "signedness_note": "declared as a signed long",
+      "notes": "The template computes the leftover with chunkSize > (FTell() - pos) at line 55 rather than trusting a fixed layout, so surplus bytes are tolerated; a size SMALLER than the fields consumed is not, and it makes the array length at line 56 negative."
+    },
+    "FORMATCHUNK.wFormatTag": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised tag makes a reader report an unsupported codec and skip decoding rather than refusing the container, so by the literal Tier A test it is not a front gate; but it is the registered WAVEFORMATEX enumeration and it is the single field that decides which decoder runs, how large the format chunk must be, and whether the data chunk has any internal structure at all.",
+      "type": "enumerated_values",
+      "description": "The registered Microsoft format tag naming the audio encoding used in the data chunk.",
+      "field_type": "short",
+      "source": "both",
+      "evidence": {
+        "line": 39,
+        "snippet": "short          wFormatTag;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        6,
+        7,
+        17,
+        20,
+        49,
+        64,
+        80,
+        85,
+        102,
+        103,
+        273,
+        325,
+        353,
+        354,
+        355,
+        8192,
+        8193,
+        65534,
+        65535
+      ],
+      "value_names": [
+        "WAVE_FORMAT_UNKNOWN",
+        "WAVE_FORMAT_PCM",
+        "WAVE_FORMAT_ADPCM (Microsoft)",
+        "WAVE_FORMAT_IEEE_FLOAT",
+        "WAVE_FORMAT_ALAW",
+        "WAVE_FORMAT_MULAW",
+        "WAVE_FORMAT_DVI_ADPCM (IMA ADPCM)",
+        "WAVE_FORMAT_G723_ADPCM",
+        "WAVE_FORMAT_GSM610",
+        "WAVE_FORMAT_G721_ADPCM",
+        "WAVE_FORMAT_MPEG",
+        "WAVE_FORMAT_MPEGLAYER3",
+        "WAVE_FORMAT_G726_ADPCM",
+        "WAVE_FORMAT_G722_ADPCM",
+        "WAVE_FORMAT_IBM_ADPCM",
+        "WAVE_FORMAT_CREATIVE_ADPCM",
+        "WAVE_FORMAT_WMAUDIO2",
+        "WAVE_FORMAT_WMAUDIO3",
+        "WAVE_FORMAT_WMAUDIO_LOSSLESS",
+        "WAVE_FORMAT_DVM (AC-3)",
+        "WAVE_FORMAT_DTS2",
+        "WAVE_FORMAT_EXTENSIBLE",
+        "WAVE_FORMAT_DEVELOPMENT"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "The mmreg.h registry defines well over a hundred tags and the field is sixteen bits wide, so no list can be exhaustive. Those above are the tags that real readers branch on, plus the two sentinel values 0 and 0xFFFF. Unregistered tags remain legal and must also be generated, because an unknown tag is the only route into a reader's unsupported-codec path.",
+      "preferred_value": [
+        1,
+        3,
+        17,
+        2,
+        6,
+        7,
+        85,
+        65534
+      ],
+      "signedness_note": "The template declares this as a SIGNED short, so the values 32768 and above read back negative -- WAVE_FORMAT_EXTENSIBLE 65534 reads as -2 and WAVE_FORMAT_DEVELOPMENT 65535 as -1. The generator writes the unsigned 16-bit pattern; only comparisons inside the template see the sign. The one comparison the template makes, wFormatTag == 17 at line 45, is unaffected.",
+      "notes": "Tag 1 (PCM) is the deepest path in most readers and the only one for which the data chunk needs no structure; tag 17 is the one this template models explicitly at line 45 and the one that brings wcbsize and wSamplesPerBlock into existence; tag 3 requires a fact chunk; tag 65534 requires a 40-byte format chunk with a SubFormat GUID. Every listed value is worth emitting, including 0 and 65535, which reach the unknown-format branches. This field decides the shape of DATACHUNK.waveformData and is listed in its derives_from: the payload is built from the tag, never the tag chosen to suit a payload.",
+      "cross_check": {
+        "line": 45,
+        "snippet": "if (wFormatTag == 17) //DVI IMA ADPCM"
+      }
+    },
+    "FORMATCHUNK.wChannels": {
+      "tier": "C",
+      "tier_rationale": "The channel count is a count, and it is the field a careful reader is most tempted to pin at 1 or 2; but it sets the de-interleave loop bound, the per-channel ADPCM block header count and the template's own general-case branch at line 108, so narrowing it would collapse mono, stereo and multichannel onto one shape and delete every interleaving path.",
+      "type": "unconstrained",
+      "description": "Number of interleaved audio channels; an unsigned 16-bit count.",
+      "field_type": "unsigned short",
+      "source": "both",
+      "evidence": {
+        "line": 40,
+        "snippet": "unsigned short wChannels;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "excluded_values": [
+        0
+      ],
+      "notes": "Zero channels makes libsndfile fail with SFE_CHANNEL_COUNT_ZERO and makes the derived block align zero, which is the template's own guard at line 78; every other value is free and must stay so. This field also selects which branch of the data chunk runs: channels of 1 with 8, 16 or 32 bits takes the three fast paths at lines 83-97, and ANY other channel count falls into the general SAMPLES struct at lines 101-108, a branch that only a channel count above 1 can reach. Channel counts above 2 are therefore high value, not a risk. File size is bounded by the output_budget on the chunk sequence, never by this field."
+    },
+    "FORMATCHUNK.dwSamplesPerSec": {
+      "tier": "C",
+      "tier_rationale": "The sample rate is explicitly a Tier C quantity: readers store it, compute durations from it and resample against it, but no value makes them refuse the container, so pinning it would make every generated file the same length in time and buy no depth at all.",
+      "type": "unconstrained",
+      "description": "Sampling rate in samples per second per channel; an unsigned 32-bit value.",
+      "field_type": "unsigned long",
+      "source": "both",
+      "evidence": {
+        "line": 41,
+        "snippet": "unsigned long  dwSamplesPerSec;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Zero is deliberately not excluded: it makes duration and byte-rate arithmetic divide by zero and is the only way to reach a reader's guard on that. The classic rates 8000, 11025, 22050, 44100 and 48000 carry no special status here and must not become the emitted set. This field is one of the two inputs to dwAvgBytesPerSec, which is derived from it -- the rate stays free and the derived field follows."
+    },
+    "FORMATCHUNK.dwAvgBytesPerSec": {
+      "tier": "A",
+      "tier_rationale": "Close call, resolved toward A: lenient demuxers recompute this and ignore what is written, but strict consumers -- Windows Media Foundation and several hardware decoders -- use it to size their streaming buffers and reject or mis-buffer a stream whose declared byte rate disagrees with the format; deriving it costs no diversity at all, because its value is fully determined by two fields that are themselves completely free.",
+      "type": "calculated_value",
+      "description": "Average bytes per second of the encoded stream, used by readers to size buffers and estimate duration.",
+      "field_type": "unsigned long",
+      "source": "both",
+      "evidence": {
+        "line": 42,
+        "snippet": "unsigned long  dwAvgBytesPerSec;"
+      },
+      "confidence": "medium",
+      "algorithm": "for the uncompressed and fixed-block tags, dwSamplesPerSec * wBlockAlign; for the block-compressed tags such as DVI/IMA ADPCM, (dwSamplesPerSec / wSamplesPerBlock) * wBlockAlign",
+      "covers": "nothing in the byte stream; it is a rate derived from the other format fields",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.dwSamplesPerSec",
+        "FORMATCHUNK.wBlockAlign",
+        "FORMATCHUNK.wSamplesPerBlock",
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "notes": "The two formulas are recorded as a dependency keyed on wFormatTag. Because this field is computed from dwSamplesPerSec and wBlockAlign, and both of those vary freely across the corpus, the derived value varies just as widely -- marking it Tier A pins the RELATIONSHIP, not the number. confidence is medium on the strictness claim: the formula itself is certain, but which readers enforce it varies."
+    },
+    "FORMATCHUNK.wBlockAlign": {
+      "tier": "A",
+      "tier_rationale": "Close call, resolved toward A: this is the size of one complete sample frame or compressed block, and readers use it to step through the data; ffmpeg rejects an IMA ADPCM stream whose block align is smaller than four bytes per channel, the template divides by it at line 78 and takes its unsupported-storage branch when it is zero or does not divide the data size, and deriving it costs no diversity because it follows from wChannels and wBitsPerSample, which are free.",
+      "type": "calculated_value",
+      "description": "Block alignment in bytes: the size of one sample frame for uncompressed audio, or the size of one compressed block for the block codecs.",
+      "field_type": "unsigned short",
+      "source": "both",
+      "evidence": {
+        "line": 43,
+        "snippet": "unsigned short wBlockAlign;"
+      },
+      "confidence": "high",
+      "algorithm": "for the uncompressed tags, wChannels * wBitsPerSample / 8; for DVI/IMA ADPCM, a chosen block size that is at least 4 * wChannels and from which wSamplesPerBlock is then computed",
+      "covers": "nothing in the byte stream; it describes the stride of DATACHUNK's contents",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample",
+        "FORMATCHUNK.wFormatTag"
+      ],
+      "excluded_values": [
+        0
+      ],
+      "size_identity": "for the uncompressed tags wBlockAlign == wChannels * wBitsPerSample / 8, and DATACHUNK.chunkSize should be a whole multiple of it; the template tests exactly that at line 78 and falls back to an opaque byte array when it fails",
+      "notes": "A zero block align is excluded because it is a division by zero at line 78 and a hard error in every reader. Note that the template's fallback at line 81 when the modulo is non-zero is itself a reachable and useful branch, so a data size that is NOT a multiple of the block align is worth generating deliberately; that is a choice about DATACHUNK.chunkSize, not a reason to loosen this field."
+    },
+    "FORMATCHUNK.wBitsPerSample": {
+      "tier": "B",
+      "tier_rationale": "An unusual bit depth makes a reader report an unsupported sample width and skip decoding rather than refuse the container, so it is not a front gate; but it is a small finite set in practice and the template branches on it three separate times, at lines 77, 102 and 104-106, with each value selecting a different sample array type.",
+      "type": "enumerated_values",
+      "description": "Bits per sample per channel; for the compressed tags it is the bits per encoded sample rather than per decoded sample.",
+      "field_type": "unsigned short",
+      "source": "both",
+      "evidence": {
+        "line": 44,
+        "snippet": "unsigned short wBitsPerSample;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        4,
+        8,
+        12,
+        16,
+        20,
+        24,
+        32,
+        64
+      ],
+      "value_names": [
+        "4-bit (ADPCM nibbles)",
+        "8-bit unsigned PCM",
+        "12-bit packed PCM",
+        "16-bit signed PCM",
+        "20-bit packed PCM",
+        "24-bit signed PCM",
+        "32-bit PCM or IEEE float",
+        "64-bit IEEE double"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "The field is sixteen bits wide and the spec permits any value; the eight above are the depths real readers implement. Depths outside this list are legal to write and reach a reader's unsupported-width path, which is itself worth generating, so the list is a set of high-value values rather than a closed legal set.",
+      "preferred_value": [
+        8,
+        16,
+        32,
+        4,
+        24
+      ],
+      "notes": "8, 16 and 32 are the three the template gives dedicated sample arrays; 4 is required by DVI/IMA ADPCM and is the depth that makes the format chunk grow to 20 bytes; and 24 is deliberately named as preferred even though the template has no branch for it, precisely because it falls into the unsupported-storage branch at line 81 while a real reader decodes it through its 24-bit unpacking path -- one value reaching two different pieces of interesting code. Do not let preferred_value become the emitted set; the legal values this field can hold are wider than the list, and depths the readers reject are a branch too."
+    },
+    "FORMATCHUNK.wcbsize": {
+      "tier": "A",
+      "tier_rationale": "This is the WAVEFORMATEX cbSize field counting the extension bytes that follow it; for the DVI/IMA ADPCM layout the template models it must be 2, and a reader that finds a different value steps over the wrong number of bytes and either misreads wSamplesPerBlock or lands on the next chunk at the wrong offset.",
+      "type": "fixed_value",
+      "description": "Size in bytes of the format chunk's extension data following this field; for DVI/IMA ADPCM the extension is the single wSamplesPerBlock value, so the count is two.",
+      "field_type": "unsigned short",
+      "source": "both",
+      "evidence": {
+        "line": 47,
+        "snippet": "unsigned short wcbsize;"
+      },
+      "confidence": "high",
+      "required_value": 2,
+      "required_value_hex": "0x0002",
+      "required_value_ascii": "\\x02\\x00",
+      "endianness": "little",
+      "size_identity": "wcbsize == 2 == sizeof(wSamplesPerBlock); together with the sixteen base bytes and this field's own two bytes it gives FORMATCHUNK.chunkSize == 20",
+      "notes": "This field exists only inside the if (wFormatTag == 17) block at lines 45-49, so it is present only for DVI/IMA ADPCM. For other format tags the same position in a real WAVEFORMATEX carries a different cbSize -- 0 for a bare extensible-less format, 22 for WAVE_FORMAT_EXTENSIBLE, 32 for Microsoft ADPCM -- but the template does not declare those layouts and they fall into FORMATCHUNK.unknown instead. Never give this field an evil value."
+    },
+    "FORMATCHUNK.wSamplesPerBlock": {
+      "tier": "A",
+      "tier_rationale": "For IMA ADPCM this must agree exactly with the block size, because a decoder uses it to size its output buffer per block; ffmpeg rejects the stream with 'Invalid number of samples per block' when it disagrees with wBlockAlign, and no audio is decoded.",
+      "type": "calculated_value",
+      "description": "Number of decoded samples per channel contained in one compressed block, present only for DVI/IMA ADPCM.",
+      "field_type": "unsigned short",
+      "source": "both",
+      "evidence": {
+        "line": 48,
+        "snippet": "unsigned short wSamplesPerBlock;"
+      },
+      "confidence": "high",
+      "algorithm": "((wBlockAlign - 4 * wChannels) * 8) / (wBitsPerSample * wChannels) + 1, which for the four-bit IMA nibbles reduces to (wBlockAlign - 4 * wChannels) * 2 / wChannels + 1",
+      "covers": "nothing in the byte stream; it describes how many samples one DATACHUNK block decodes to",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FORMATCHUNK.wBlockAlign",
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample"
+      ],
+      "notes": "The plus one accounts for the sample carried in the block's per-channel predictor header rather than in the nibble run. Choose wBlockAlign freely (subject to being at least 4 * wChannels) and compute this from it -- never pick a samples-per-block figure and then bend the block size to match, which is the inverted reasoning this whole extraction exists to avoid."
+    },
+    "FORMATCHUNK.unknown": {
+      "tier": "C",
+      "tier_rationale": "These are whatever surplus bytes the declared chunk size leaves over after the fields the template models, and nothing inspects them; constraining them would remove the only variation available in the format chunk's tail.",
+      "type": "unconstrained",
+      "description": "Surplus format chunk bytes beyond the fields the template declares, present whenever chunkSize exceeds what was consumed.",
+      "field_type": "uchar[chunkSize - (FTell() - pos)]",
+      "source": "template",
+      "evidence": {
+        "line": 56,
+        "snippet": "uchar unknown[ chunkSize - (FTell() - pos) ];"
+      },
+      "confidence": "high",
+      "size_identity": "sizeof(unknown) == FORMATCHUNK.chunkSize - (FTell() - pos), with pos taken at line 38 immediately after chunkSize; the array exists only when that difference is positive",
+      "notes": "This is where a real WAVE_FORMAT_EXTENSIBLE tail (cbSize 22, then wValidBitsPerSample, dwChannelMask and the sixteen-byte SubFormat GUID) or a Microsoft ADPCM coefficient table would land, since the template declares neither. Emitting a well-formed extensible tail here is worthwhile: the template treats it as opaque, but a real reader parses it and takes the extensible branch."
+    },
+    "FORMATCHUNK.padding": {
+      "tier": "C",
+      "tier_rationale": "RIFF requires a pad byte after any odd-sized chunk but specifies no value for it and no reader inspects it, so this is padding whose value is unchecked and it stays free.",
+      "type": "unconstrained",
+      "description": "A single pad byte present when the format chunk's size is odd, so the next chunk begins on an even offset.",
+      "field_type": "uchar",
+      "source": "both",
+      "evidence": {
+        "line": 60,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "The VALUE is free but the PRESENCE is not: the byte must be written if and only if chunkSize is odd, which is a structural rule recorded in the structure and dependencies sections. Note that this is the only one of the template's five padding fields without an FTell() < FileSize() guard -- the data, list, subchunk, unknown and smpl paddings at lines 112, 153, 174, 185 and 508 all suppress the pad at end of file, while this one does not."
+    },
+    "DATACHUNK.chunkID": {
+      "tier": "A",
+      "tier_rationale": "This tag is what the dispatch switch at line 544 matches to parse the chunk as audio; with any other value the bytes become an UNKNOWNCHUNK, the audio is never examined, and a real reader reports that the file contains no data chunk and decodes nothing.",
+      "type": "fixed_value",
+      "description": "The four-character tag identifying the chunk that carries the audio samples.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 66,
+        "snippet": "char           chunkID[4];"
+      },
+      "confidence": "high",
+      "required_value": "data",
+      "required_value_hex": "0x64 0x61 0x74 0x61",
+      "required_value_ascii": "data",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fmt ",
+          "data"
+        ]
+      },
+      "notes": "Never give this field an evil value.",
+      "cross_check": {
+        "line": 544,
+        "snippet": "case \"data\":"
+      }
+    },
+    "DATACHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "This is the length of the audio itself and the stride for everything after it; too large and the reader runs past end of file reporting a truncated stream, too small and it decodes a fraction of the audio and then reads the remaining samples as a chunk tag, desynchronising the rest of the file.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the audio data, excluding the eight bytes of tag and size and excluding any pad byte.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 67,
+        "snippet": "long           chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the sample data actually written",
+      "covers": "every byte of waveformData, samples or the SAMPLES array, whichever branch applies; not the pad byte at line 113",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "DATACHUNK.waveformData",
+        "DATACHUNK.samples",
+        "FORMATCHUNK.wBlockAlign",
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample"
+      ],
+      "size_identity": "for the uncompressed branches chunkSize is the whole sample run, and the template divides it by 2, by 4 or by wBlockAlign at lines 91, 96 and 108 to get the element count; for the block codecs chunkSize should be a whole multiple of wBlockAlign so the block count is exact",
+      "signedness_note": "declared as a signed long, so sizes above 2^31-1 read back negative and make every derived array length negative",
+      "notes": "The NUMBER of bytes of audio is the generator's free choice and is where the file's duration diversity comes from; this field simply records the choice, so it is Tier A as an identity rather than as a pinned number. Deliberately emitting a size that is NOT a multiple of wBlockAlign is worthwhile: it drives the template into the opaque waveformData branch at line 81 and a real reader into its partial-final-block handling."
+    },
+    "DATACHUNK.waveformData": {
+      "tier": "A",
+      "tier_rationale": "For the PCM tags these bytes are unconstrained and this entry does not apply, but for the block-compressed tags -- above all the DVI/IMA ADPCM tag 17 the template singles out at line 45 -- the bytes must be a whole number of blocks each opening with a four-byte-per-channel predictor header; ffmpeg rejects a block align below 4 * channels outright and, with a header that does not match the declared block size, produces no samples at all.",
+      "type": "payload_wellformedness",
+      "description": "The audio payload in the template's catch-all branch, taken whenever the bit depth is not 8, 16 or 32 or the data size is not a multiple of the block align -- which is exactly where every compressed format tag lands.",
+      "field_type": "unsigned char[chunkSize]",
+      "source": "both",
+      "evidence": {
+        "line": 81,
+        "snippet": "unsigned char  waveformData[chunkSize];"
+      },
+      "confidence": "high",
+      "applies_when": "FORMATCHUNK.wFormatTag is 17 (DVI/IMA ADPCM) for the primary specification below; see alternate_payloads for tags 1 and 3 (PCM, no structure at all), 2 (Microsoft ADPCM), 6 and 7 (A-law and mu-law, no structure) and 85 (MPEG Layer 3). For any other or unregistered tag the bytes are free and this entry is effectively Tier C.",
+      "codec": "IMA/DVI ADPCM as registered for WAVE_FORMAT_DVI_ADPCM (tag 17): self-contained blocks of wBlockAlign bytes, four-bit nibble codes",
+      "must_produce": "A whole number of blocks, each exactly wBlockAlign bytes long. Each block begins with a four-byte header per channel, in channel order: a signed 16-bit little-endian initial predictor, one byte of step table index in the range 0 to 88, and one reserved byte. The remaining wBlockAlign - 4 * wChannels bytes are four-bit ADPCM codes, low nibble of each byte first; for more than one channel the codes are interleaved in groups of four bytes per channel. Each block decodes to wSamplesPerBlock samples per channel, counting the one carried in the header.",
+      "decoder_gate": "ffmpeg's adpcm_ima_wav decoder rejects the stream before producing a frame when wBlockAlign is smaller than 4 * wChannels, and reports 'Invalid number of samples per block' when wSamplesPerBlock disagrees with the block size; libsndfile refuses an IMA ADPCM stream whose block align is not consistent with the channel count. In either case the nibble decode loop, the step-table adaptation and the sample output are never reached, and the file yields zero audio frames.",
+      "generation_strategy": "Let B = FORMATCHUNK.wBlockAlign and C = FORMATCHUNK.wChannels, with B at least 4 * C. Emit floor(DATACHUNK.chunkSize / B) blocks. For each block: for each of the C channels in order, write two free bytes of initial predictor, then one byte of step index chosen freely in 0 to 88, then one byte of zero for the reserved field; then write B - 4 * C bytes chosen completely freely. Every four-bit value is a legal IMA code -- there is no invalid nibble and no terminator, no checksum and no escape -- so the entire nibble run is random bytes and still decodes. Finally set DATACHUNK.chunkSize to the number of bytes written and FORMATCHUNK.wSamplesPerBlock to ((B - 4 * C) * 8) / (4 * C) + 1. This is the ADPCM equivalent of a deflate stored block: the eight or so header bytes per block are the only thing pinned, everything else is free, and the decoder runs its whole sample pipeline.",
+      "derives_from": [
+        "FORMATCHUNK.wFormatTag",
+        "FORMATCHUNK.wChannels",
+        "FORMATCHUNK.wBitsPerSample",
+        "FORMATCHUNK.wBlockAlign",
+        "DATACHUNK.chunkSize"
+      ],
+      "content_is_free": true,
+      "alternate_payloads": [
+        {
+          "format_tag": 1,
+          "tag_name": "WAVE_FORMAT_PCM",
+          "codec": "none -- raw uncompressed samples",
+          "must_produce": "nothing beyond the bytes themselves; a whole number of sample frames of wBlockAlign bytes each is conventional but readers handle a partial final frame",
+          "decoder_gate": "none. There is no framing, no header, no checksum and no escape inside PCM audio; every byte sequence of the right length is valid audio. This is why WAV has no meaningful payload well-formedness requirement in its most common configuration.",
+          "generation_strategy": "emit DATACHUNK.chunkSize completely free bytes; do not attempt to make them resemble audio, since a reader cannot tell and sample values drive no branches",
+          "derives_from": [],
+          "content_is_free": true
+        },
+        {
+          "format_tag": 3,
+          "tag_name": "WAVE_FORMAT_IEEE_FLOAT",
+          "codec": "none -- raw IEEE 754 samples, 32-bit or 64-bit little-endian",
+          "must_produce": "nothing structural; note that bit patterns for NaN and infinity are representable and are not rejected",
+          "decoder_gate": "none for the container; a reader that normalises the samples may take a separate clamping path on NaN and infinity, which is worth reaching",
+          "generation_strategy": "emit free bytes; a fact chunk is required alongside this tag by the spec",
+          "derives_from": [],
+          "content_is_free": true
+        },
+        {
+          "format_tag": 2,
+          "tag_name": "WAVE_FORMAT_ADPCM (Microsoft)",
+          "codec": "Microsoft ADPCM, self-contained blocks of wBlockAlign bytes",
+          "must_produce": "each block begins with one byte of predictor index per channel, which MUST be less than the wNumCoef in the format chunk's coefficient table (7 for the standard table), then a signed 16-bit delta per channel, then two signed 16-bit initial samples per channel, then four-bit codes",
+          "decoder_gate": "ffmpeg reports 'Invalid predictor index' and drops the packet when the index is at or above the coefficient count, producing no samples for that block",
+          "generation_strategy": "write one predictor index byte per channel chosen freely in 0 to 6, then six free bytes per channel for the delta and the two initial samples, then free bytes for the remainder of the block; this tag also needs a 50-byte format chunk carrying cbSize 32 and the seven coefficient pairs",
+          "derives_from": [
+            "FORMATCHUNK.wBlockAlign",
+            "FORMATCHUNK.wChannels"
+          ],
+          "content_is_free": true
+        },
+        {
+          "format_tag": 6,
+          "tag_name": "WAVE_FORMAT_ALAW and WAVE_FORMAT_MULAW (tags 6 and 7)",
+          "codec": "none -- companded eight-bit samples",
+          "must_produce": "nothing structural; every byte value is a legal A-law or mu-law code and maps through a fixed 256-entry table",
+          "decoder_gate": "none; the expansion is a table lookup that cannot fail",
+          "generation_strategy": "emit free bytes with wBitsPerSample 8 and wBlockAlign equal to wChannels",
+          "derives_from": [],
+          "content_is_free": true
+        },
+        {
+          "format_tag": 85,
+          "tag_name": "WAVE_FORMAT_MPEGLAYER3",
+          "codec": "MPEG-1/2 Audio Layer III elementary stream",
+          "must_produce": "a sequence of MPEG audio frames, each opening with an eleven-bit sync word (byte 0xFF then a byte whose top three bits are set), a version and layer field that are not the reserved encodings, a bitrate index that is neither 0 nor 15, and a sampling frequency index that is not 3",
+          "decoder_gate": "a reader scanning for the sync word finds none in random bytes and reports that no MPEG frame header could be located, so the Huffman decode, the synthesis filterbank and the output stage are all skipped",
+          "generation_strategy": "emit repeated valid frame headers -- for example 0xFF 0xFB 0x90 0x00 for MPEG-1 Layer III at 128 kbit/s and 44.1 kHz -- each followed by free bytes filling out that header's declared frame length; the frame payload after the header is not validated by a reader that only demuxes, so it stays free. This tag also needs a 30-byte format chunk with cbSize 12.",
+          "derives_from": [],
+          "content_is_free": true
+        }
+      ],
+      "size_identity": "sizeof(waveformData) == DATACHUNK.chunkSize exactly, as declared at line 81; for the block codecs the block count is DATACHUNK.chunkSize / FORMATCHUNK.wBlockAlign and a remainder means a partial final block",
+      "notes": "The honest summary for this format: WAV's default configuration has NO payload well-formedness requirement at all, and the temptation to invent one -- to make the samples look like a sine wave, or to restrict their values to an audio-plausible band -- would buy nothing and cost every bit of sample diversity. The requirement appears only when wFormatTag selects a block codec, and even then the constraint is a few header bytes per block while the nibble run stays completely random. In both cases the payload is computed from the format fields; wChannels, wBitsPerSample, wBlockAlign and the audio length are inputs to it and are never adjusted to suit it.",
+      "cross_check": {
+        "line": 78,
+        "snippet": "|| format.wBlockAlign == 0 || (chunkSize % (int)format.wBlockAlign != 0) )"
+      }
+    },
+    "DATACHUNK.samples": {
+      "tier": "C",
+      "tier_rationale": "These are raw PCM sample values on the template's three fast paths; no reader validates a sample value, there is no invalid amplitude, and constraining them -- to an audio-plausible band, to a waveform, to silence -- would make every generated file's audio identical while reaching exactly the same lines.",
+      "type": "unconstrained",
+      "description": "The decoded sample array on the single-channel fast paths: unsigned bytes at 8 bits, signed shorts at 16 and signed ints at 32.",
+      "field_type": "uchar[chunkSize] / short[chunkSize/2] / int[chunkSize/4]",
+      "source": "template",
+      "evidence": {
+        "line": 86,
+        "snippet": "uchar samples[ chunkSize ];"
+      },
+      "confidence": "high",
+      "size_identity": "the element count is chunkSize at 8 bits (line 86), chunkSize/2 at 16 bits (line 91) and chunkSize/4 at 32 bits (line 96); the same field name is declared three times with three different element types, one per branch",
+      "notes": "These three branches are reached only when wChannels is 1 and the bit depth is 8, 16 or 32; any other combination goes to the SAMPLES struct or to waveformData. Full-scale, zero and alternating extreme values are all worth emitting because a reader that normalises or converts sample formats takes clamping and saturation branches on the extremes that mid-range values never reach.",
+      "cross_check": {
+        "line": 91,
+        "snippet": "short samples[ chunkSize/2 ];"
+      }
+    },
+    "SAMPLES.channels": {
+      "tier": "C",
+      "tier_rationale": "This is one interleaved sample frame's worth of values in the general multi-channel case; sample values are never validated and pinning them would delete all audio variation without changing which lines run.",
+      "type": "unconstrained",
+      "description": "The per-channel samples of one frame, sized by wChannels and typed by wBitsPerSample.",
+      "field_type": "uchar[format.wChannels] / short[format.wChannels] / int[format.wChannels]",
+      "source": "template",
+      "evidence": {
+        "line": 103,
+        "snippet": "uchar channels[ format.wChannels ];"
+      },
+      "confidence": "high",
+      "size_identity": "the SAMPLES struct repeats chunkSize / wBlockAlign times (line 108) and each instance holds wChannels elements of the width wBitsPerSample selects at lines 102-107",
+      "notes": "This branch is the only one reached when wChannels is greater than 1, which is why the channel count must stay free: pinning it to 1 would make the entire SAMPLES struct at lines 101-108 dead code in the generated parser. Note that the struct declares no member at all when wBitsPerSample is not 8, 16 or 32, but that combination cannot reach here because line 77 has already diverted it to waveformData.",
+      "cross_check": {
+        "line": 108,
+        "snippet": "} samples[ chunkSize / (int)format.wBlockAlign ];"
+      }
+    },
+    "DATACHUNK.padding": {
+      "tier": "C",
+      "tier_rationale": "RIFF requires the pad byte after an odd-sized chunk but specifies no value for it and no reader inspects it, so its content is free.",
+      "type": "unconstrained",
+      "description": "A single pad byte present when the data chunk's size is odd and the file has not ended.",
+      "field_type": "uchar",
+      "source": "both",
+      "evidence": {
+        "line": 113,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "The VALUE is free; the PRESENCE is structural and is recorded in the structure and dependencies sections. The guard at line 112 additionally suppresses the byte at end of file, so a file whose final chunk is an odd-sized data chunk legitimately has no trailing pad -- a real and worthwhile case, since readers differ on whether they expect one."
+    },
+    "FACTCHUNK.chunkID": {
+      "tier": "A",
+      "tier_rationale": "This tag is what the dispatch switch at line 548 matches; with any other value the chunk becomes an UNKNOWNCHUNK whose body is skipped as opaque bytes and the uncompressed length is never read, which for the compressed format tags costs the reader its duration and seek-table calculation.",
+      "type": "fixed_value",
+      "description": "The four-character tag identifying the fact chunk, which carries the decoded length of a compressed stream.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 119,
+        "snippet": "char           chunkID[4];"
+      },
+      "confidence": "high",
+      "required_value": "fact",
+      "required_value_hex": "0x66 0x61 0x63 0x74",
+      "required_value_ascii": "fact",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fmt ",
+          "data"
+        ]
+      },
+      "cross_check": {
+        "line": 548,
+        "snippet": "case \"fact\":"
+      }
+    },
+    "FACTCHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "The template reads exactly four bytes of body and declares neither a skip for surplus bytes nor a pad byte, so any size other than four leaves the parse at the wrong offset and every subsequent chunk tag is garbage; the spec likewise defines the minimal fact chunk as a single four-byte field.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the fact chunk's body, which for the layout the template models is exactly the four bytes of uncompressedSize.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 120,
+        "snippet": "long           chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the fact chunk body; fixed at 4 for the single-field layout",
+      "covers": "the four bytes of FACTCHUNK.uncompressedSize and nothing else",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "FACTCHUNK.uncompressedSize"
+      ],
+      "size_identity": "chunkSize == 4 == sizeof(uncompressedSize)",
+      "template_parse_requirement": "The spec permits a fact chunk longer than four bytes, with format-specific fields after uncompressedSize, and real readers skip the surplus using chunkSize. This template does NOT: FACTCHUNK at lines 117-122 has no unknown-bytes array and no padding field, unlike every other chunk type here. A fact chunk of any size but 4 therefore desynchronises this particular parser even though it is legal WAV. The generator must emit 4.",
+      "notes": "Being an even size, the fact chunk never needs a pad byte, which is why the template omits one here without inconsistency."
+    },
+    "FACTCHUNK.uncompressedSize": {
+      "tier": "C",
+      "tier_rationale": "This is a sample count that readers use for duration and seeking; a wrong value still yields a file that parses and decodes, and it is precisely the sort of count a careful reader is tempted to derive and pin, which would delete the disagreement branches that only a mismatched value reaches.",
+      "type": "unconstrained",
+      "description": "Number of sample frames the data chunk decodes to, used by readers to report duration for compressed formats.",
+      "field_type": "unsigned long",
+      "source": "both",
+      "evidence": {
+        "line": 121,
+        "snippet": "unsigned long  uncompressedSize;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "For a conforming file this equals DATACHUNK.chunkSize / wBlockAlign * wSamplesPerBlock for the block codecs, or the plain frame count for PCM; that derivation is recorded as a dependency rather than pinned here, because a value that disagrees with the actual audio length is accepted by every reader and drives its duration-mismatch and end-of-stream handling. Zero is meaningful and is not excluded."
+    },
+    "CUEPOINT.dwIdentifier": {
+      "tier": "C",
+      "tier_rationale": "A cue point's identifier is an arbitrary label that other chunks reference; no reader validates it and pinning it would make every cue point in the corpus identical.",
+      "type": "unconstrained",
+      "description": "Unique identifier for this cue point, referenced by labl, note and ltxt subchunks and by sampler loops.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 126,
+        "snippet": "long    dwIdentifier;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "The spec expects identifiers to be unique within the cue chunk, but nothing enforces it and duplicates reach a reader's collision handling; collisions are therefore worth generating rather than avoiding."
+    },
+    "CUEPOINT.dwPosition": {
+      "tier": "C",
+      "tier_rationale": "A sample-frame offset into the play order that readers use for seeking; an out-of-range position is accepted by the parser and is the only way to reach a reader's bounds check, so constraining it costs both variation and that branch.",
+      "type": "unconstrained",
+      "description": "Position of this cue point in the play order, in sample frames.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 127,
+        "snippet": "long    dwPosition;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "CUEPOINT.fccChunk": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised chunk reference makes a reader ignore the cue point rather than refuse the file, so it is not a front gate; but the spec defines a two-value set naming which chunk the offsets below are relative to, and the two values mean structurally different things.",
+      "type": "enumerated_values",
+      "description": "The four-character tag of the chunk this cue point refers into, which decides how dwChunkStart and dwBlockStart are interpreted.",
+      "field_type": "char[4]",
+      "source": "spec",
+      "evidence": {
+        "note": "The RIFF WAVE cue chunk definition specifies fccChunk as the identifier of the chunk containing the cue point, which is 'data' for a cue into the data chunk and 'slnt' for a cue into a silence chunk inside a wavl list."
+      },
+      "confidence": "high",
+      "valid_values": [
+        "data",
+        "slnt"
+      ],
+      "value_names": [
+        "cue refers into the data chunk",
+        "cue refers into a slnt silence chunk"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        "data",
+        "slnt"
+      ],
+      "notes": "Both are preferred: 'data' is the ordinary case and the only one where dwChunkStart and dwBlockStart are both zero, while 'slnt' is the wavl-list case that makes those two fields meaningful and reaches a reader's list-walking code. Values outside the pair are representable and reach the ignore path, which is also worth generating occasionally."
+    },
+    "CUEPOINT.dwChunkStart": {
+      "tier": "C",
+      "tier_rationale": "A byte offset that is zero for the ordinary single-data-chunk case and meaningful only inside a wavl list; nothing validates it and pinning it to zero would delete the wavl branch entirely.",
+      "type": "unconstrained",
+      "description": "Byte offset of the start of the containing data or slnt chunk within a wavl list, counted from the start of the list's data.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 129,
+        "snippet": "long    dwChunkStart;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "CUEPOINT.dwBlockStart": {
+      "tier": "C",
+      "tier_rationale": "A byte offset to the start of the containing compressed block, unvalidated by any reader; pinning it removes the block-relative seeking variation that the compressed format tags depend on.",
+      "type": "unconstrained",
+      "description": "Byte offset of the start of the block containing this cue point, from which a decoder can begin decompressing.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 130,
+        "snippet": "long    dwBlockStart;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "CUEPOINT.dwSampleOffset": {
+      "tier": "C",
+      "tier_rationale": "A sample-frame offset within the containing block; no reader refuses a file over it, and an offset past the end of the audio is exactly what reaches a reader's clamping code.",
+      "type": "unconstrained",
+      "description": "Offset of this cue point in sample frames from the start of its containing block.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 131,
+        "snippet": "long    dwSampleOffset;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "CUECHUNK.chunkID": {
+      "tier": "A",
+      "tier_rationale": "This tag is what the dispatch switch at line 552 matches; with any other value the chunk becomes an UNKNOWNCHUNK and the cue point array is never parsed, so none of a reader's marker-handling code runs.",
+      "type": "fixed_value",
+      "description": "The four-character tag identifying the cue chunk; note the trailing space.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 135,
+        "snippet": "char      chunkID[4];"
+      },
+      "confidence": "high",
+      "required_value": "cue ",
+      "required_value_hex": "0x63 0x75 0x65 0x20",
+      "required_value_ascii": "cue\\x20",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fmt ",
+          "data"
+        ]
+      },
+      "notes": "The trailing 0x20 is mandatory, as with 'fmt '.",
+      "cross_check": {
+        "line": 552,
+        "snippet": "case \"cue \":"
+      }
+    },
+    "CUECHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "The cue chunk's size is the stride to the next chunk and the template uses it at line 142 to size the trailing unknown array; when it disagrees with the declared cue point count the parse lands mid-record and every subsequent tag is garbage.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the cue chunk's body: the four-byte count plus twenty-four bytes per cue point.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 136,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "4 + 24 * dwCuePoints, plus any surplus bytes the template absorbs into unknown",
+      "covers": "from dwCuePoints through the end of the points array and any trailing unknown bytes; in template terms the span from the local pos taken at line 137",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "CUECHUNK.dwCuePoints",
+        "CUECHUNK.unknown"
+      ],
+      "size_identity": "chunkSize == 4 + 24 * dwCuePoints + sizeof(unknown); a CUEPOINT is six longs, so exactly 24 bytes",
+      "notes": "Because the chunk is always an even number of bytes, it never needs a pad byte, which is why the template declares none here."
+    },
+    "CUECHUNK.dwCuePoints": {
+      "tier": "A",
+      "tier_rationale": "This is the array bound for points[] at line 139; a value larger than the records actually written makes the parser read past the chunk into whatever follows, and a smaller one leaves records unconsumed so that the next chunk tag is read from inside the cue data.",
+      "type": "calculated_value",
+      "description": "The number of CUEPOINT records that immediately follow.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 138,
+        "snippet": "long      dwCuePoints;"
+      },
+      "confidence": "high",
+      "algorithm": "count of the CUEPOINT records written into points[]",
+      "covers": "nothing in the byte stream; it is the element count of the array declared at line 139",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "CUECHUNK.chunkSize"
+      ],
+      "size_identity": "sizeof(points) == 24 * dwCuePoints, and CUECHUNK.chunkSize == 4 + 24 * dwCuePoints",
+      "notes": "Tier A as an identity, not as a pinned number: HOW MANY cue points to write is entirely the generator's choice and is a real diversity axis, since zero, one and many cue points take different paths through a reader's marker list. This field simply records the choice that was made. The points array itself carries no separate entry because its per-record constraints live on the CUEPOINT fields."
+    },
+    "CUECHUNK.unknown": {
+      "tier": "C",
+      "tier_rationale": "Surplus bytes the declared chunk size leaves over after the cue point array, which nothing inspects; constraining them would remove the only variation in the chunk's tail.",
+      "type": "unconstrained",
+      "description": "Trailing bytes present when the cue chunk's declared size exceeds the count and records consumed.",
+      "field_type": "uchar[chunkSize - (FTell() - pos)]",
+      "source": "template",
+      "evidence": {
+        "line": 143,
+        "snippet": "uchar unknown[ chunkSize - (FTell() - pos) ];"
+      },
+      "confidence": "high",
+      "size_identity": "sizeof(unknown) == CUECHUNK.chunkSize - (FTell() - pos), with pos taken at line 137; the array exists only when that difference is positive",
+      "notes": "Emitting a non-empty tail here is worthwhile because it is the one place in the cue chunk where the declared size and the record count can legitimately disagree, and readers differ on whether they trust the count or the size."
+    },
+    "LISTSUBCHUNK.chunkID": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised subchunk tag makes a reader skip that subchunk and carry on with the list, so it is not a front gate; but the INFO and adtl tag sets are registered enumerations and each recognised tag routes the payload into a different metadata field.",
+      "type": "enumerated_values",
+      "description": "The four-character tag of one subchunk inside a LIST, naming which metadata item or annotation it carries.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 148,
+        "snippet": "char      chunkID[4];"
+      },
+      "confidence": "high",
+      "valid_values": [
+        "IARL",
+        "IART",
+        "ICMS",
+        "ICMT",
+        "ICOP",
+        "ICRD",
+        "ICRP",
+        "IDIM",
+        "IDPI",
+        "IENG",
+        "IGNR",
+        "IKEY",
+        "ILGT",
+        "IMED",
+        "INAM",
+        "IPLT",
+        "IPRD",
+        "ISBJ",
+        "ISFT",
+        "ISHP",
+        "ISMP",
+        "ISRC",
+        "ISRF",
+        "ITCH",
+        "ITRK",
+        "IDIT",
+        "labl",
+        "note",
+        "ltxt",
+        "file"
+      ],
+      "value_names": [
+        "archival location",
+        "artist",
+        "commissioned",
+        "comments",
+        "copyright",
+        "creation date",
+        "cropped",
+        "dimensions",
+        "dots per inch",
+        "engineer",
+        "genre",
+        "keywords",
+        "lightness",
+        "medium",
+        "name/title",
+        "palette setting",
+        "product/album",
+        "subject",
+        "software",
+        "sharpness",
+        "SMPTE time code",
+        "source",
+        "source form",
+        "technician",
+        "track number",
+        "digitisation time",
+        "adtl: cue point label",
+        "adtl: cue point note",
+        "adtl: labelled text region",
+        "adtl: embedded file"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "The tag is four free bytes and the RIFF INFO registry has been extended informally many times, so no list is closed. The twenty-six INFO tags above are the registered set plus IDIT, and the four adtl tags are the complete adtl set. Unregistered tags remain legal and must also be generated, because an unknown subchunk is the only route into a reader's skip-and-continue path.",
+      "preferred_value": [
+        "INAM",
+        "IART",
+        "ICMT",
+        "ISFT",
+        "ICRD",
+        "IGNR",
+        "labl",
+        "ltxt"
+      ],
+      "notes": "The INFO tags belong inside a LIST whose chunkType is 'INFO' and the labl, note, ltxt and file tags inside one whose chunkType is 'adtl'; that pairing is recorded as a dependency. The adtl tags are not decoration -- labl and note begin with a four-byte cue point identifier and ltxt with a full eight-field header, so they reach structured parsing that the free-text INFO tags do not."
+    },
+    "LISTSUBCHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "This size is the stride to the next subchunk inside the list and the template reads it by lookahead at line 166 to decide whether the subchunk still fits; when it is wrong the list walk lands mid-record and the remainder of the list, and then the remainder of the file, is misparsed.",
+      "type": "calculated_value",
+      "description": "Size in bytes of this subchunk's data, excluding the eight bytes of tag and size and excluding any pad byte.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 149,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of LISTSUBCHUNK.listData",
+      "covers": "exactly the bytes of listData declared at line 150; not the pad byte at line 154",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "LISTSUBCHUNK.listData"
+      ],
+      "size_identity": "sizeof(listData) == chunkSize, as declared at line 150",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 166,
+        "values": [],
+        "preferred": []
+      },
+      "notes": "The lookahead at line 166 reads this field four bytes ahead of the current position, before the tag has been consumed, and the guard at line 167 then compares FTell() - pos + size against the list's own chunkSize. Note that the guard does not add the eight bytes of the subchunk's own header, so a subchunk that fits only by those eight bytes still takes the unknown-bytes branch at line 170 -- a genuine off-by-eight in the template that is worth reaching deliberately by sizing a subchunk to land right at the boundary."
+    },
+    "LISTSUBCHUNK.listData": {
+      "tier": "C",
+      "tier_rationale": "For the INFO tags this is free text that no reader validates beyond looking for a terminating NUL; constraining its content or length would make every metadata item identical and would not change which lines run.",
+      "type": "unconstrained",
+      "description": "The subchunk's payload: a NUL-terminated string for the INFO tags, or a cue identifier followed by text for the adtl tags.",
+      "field_type": "char[chunkSize]",
+      "source": "template",
+      "evidence": {
+        "line": 150,
+        "snippet": "char      listData[chunkSize];"
+      },
+      "confidence": "high",
+      "size_identity": "sizeof(listData) == LISTSUBCHUNK.chunkSize; the generator chooses the content freely and then writes the size to match, never the reverse",
+      "notes": "The RIFF INFO convention is a NUL-terminated ASCII string, but nothing enforces it: unterminated strings, embedded NULs, non-ASCII bytes and zero-length payloads are all accepted and each reaches different string-handling code in a reader. The labl and note subchunks instead begin with a four-byte cue point identifier and ltxt with an eight-field header, which is recorded as a dependency on the subchunk tag."
+    },
+    "LISTSUBCHUNK.padding": {
+      "tier": "C",
+      "tier_rationale": "RIFF requires the pad byte after an odd-sized subchunk but specifies no value for it and no reader inspects it, so its content is free.",
+      "type": "unconstrained",
+      "description": "A single pad byte present when this subchunk's size is odd and the file has not ended.",
+      "field_type": "uchar",
+      "source": "both",
+      "evidence": {
+        "line": 154,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "The VALUE is free; the PRESENCE is structural. Odd-sized INFO strings are extremely common in real files, so this byte is emitted often and its interaction with the enclosing list's own size accounting is worth exercising."
+    },
+    "LISTCHUNK.chunkID": {
+      "tier": "A",
+      "tier_rationale": "This tag is what the dispatch switch at line 560 matches; with any other value the whole list becomes an UNKNOWNCHUNK whose body is skipped as opaque bytes, so the subchunk walk at lines 165-171 and all of a reader's metadata parsing never run.",
+      "type": "fixed_value",
+      "description": "The four-character tag identifying a LIST chunk, which nests a set of subchunks under a list type.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 158,
+        "snippet": "char      chunkID[4];"
+      },
+      "confidence": "high",
+      "required_value": "LIST",
+      "required_value_hex": "0x4C 0x49 0x53 0x54",
+      "required_value_ascii": "LIST",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fmt ",
+          "data"
+        ]
+      },
+      "notes": "The tag is upper case; the lower-case 'list' variant used by some writers would fall to the default branch at line 564.",
+      "cross_check": {
+        "line": 560,
+        "snippet": "case \"LIST\":"
+      }
+    },
+    "LISTCHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "This size bounds the subchunk walk at line 165 and is the stride to the next top-level chunk; when it is wrong the loop either stops early leaving subchunks unconsumed or runs past the list into the following chunk, and in both cases the rest of the file is misparsed.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the LIST chunk's body: the four chunkType bytes plus every subchunk including its header and pad byte.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 159,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "4 for chunkType, plus the sum over subchunks of 8 + that subchunk's chunkSize + its pad byte when its size is odd",
+      "covers": "from chunkType through the last subchunk's pad byte; in template terms the span measured from the local pos taken at line 160",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "LISTCHUNK.chunkType",
+        "LISTSUBCHUNK.chunkSize",
+        "LISTCHUNK.unknown"
+      ],
+      "size_identity": "chunkSize == 4 + sum over subchunks of (8 + subchunk.chunkSize + (subchunk.chunkSize & 1)), plus any trailing unknown bytes",
+      "notes": "The generator must accumulate the subchunks first and then write this size, because the loop at line 165 terminates on it exactly."
+    },
+    "LISTCHUNK.chunkType": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised list type makes a reader skip the list rather than refuse the file, so it is not a front gate; but the RIFF WAVE list types are a small closed set and each one changes what its subchunks mean and how they are parsed.",
+      "type": "enumerated_values",
+      "description": "The four-character list type naming what kind of subchunks this LIST contains.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 161,
+        "snippet": "char      chunkType[4];"
+      },
+      "confidence": "high",
+      "valid_values": [
+        "INFO",
+        "adtl",
+        "wavl"
+      ],
+      "value_names": [
+        "INFO metadata list",
+        "associated data list (cue labels, notes and text regions)",
+        "wave list of alternating slnt and data chunks"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        "INFO",
+        "adtl",
+        "wavl"
+      ],
+      "notes": "All three are preferred and all three should be generated. INFO is the common case and holds free-text subchunks; adtl holds the structured labl, note and ltxt records that reference cue point identifiers, so it is the only list type that interacts with the cue chunk; and wavl is the rare form in which the audio itself is split into alternating silence and data chunks inside the list, which is the only route into a reader's fragmented-audio handling. Unregistered list types are legal and reach the skip path."
+    },
+    "LISTCHUNK.unknown": {
+      "tier": "C",
+      "tier_rationale": "These are the bytes left when the next subchunk would not fit inside the list's declared size; nothing inspects them, and constraining them would remove the only variation in the list's tail.",
+      "type": "unconstrained",
+      "description": "Trailing bytes of a LIST chunk consumed when the lookahead size at line 166 shows the next subchunk overruns the list.",
+      "field_type": "uchar[chunkSize - (FTell() - pos)]",
+      "source": "template",
+      "evidence": {
+        "line": 170,
+        "snippet": "uchar unknown[ chunkSize - (FTell() - pos) ];"
+      },
+      "confidence": "high",
+      "size_identity": "sizeof(unknown) == LISTCHUNK.chunkSize - (FTell() - pos), with pos taken at line 160",
+      "notes": "This branch is reached only when a subchunk claims more bytes than the list has left, so deliberately sizing the last subchunk to overrun by a few bytes is the way to exercise it -- and because of the missing eight-byte header allowance in the guard at line 167, a subchunk that exactly fills the list reaches it too."
+    },
+    "LISTCHUNK.padding": {
+      "tier": "C",
+      "tier_rationale": "RIFF requires the pad byte after an odd-sized chunk but specifies no value and no reader inspects it, so its content is free.",
+      "type": "unconstrained",
+      "description": "A single pad byte present when the LIST chunk's size is odd and the file has not ended.",
+      "field_type": "uchar",
+      "source": "both",
+      "evidence": {
+        "line": 175,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "The VALUE is free; the PRESENCE is structural."
+    },
+    "UNKNOWNCHUNK.chunkID": {
+      "tier": "B",
+      "tier_rationale": "This branch is the default arm of the dispatch switch at line 564, reached by any tag the template does not name; a reader likewise skips an unrecognised chunk rather than refusing the file, and the whole point of the tag here is that it is NOT one of the six known values.",
+      "type": "pattern_constraint",
+      "description": "The four-character tag of a chunk the template does not model, which is skipped using its declared size.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 180,
+        "snippet": "char      chunkID[4];"
+      },
+      "confidence": "high",
+      "pattern": "any four bytes other than the six the switch at lines 538-571 claims: 'fmt ', 'data', 'fact', 'cue ', 'smpl' and 'LIST'. RIFF convention is four printable ASCII characters in 0x20 to 0x7E, but nothing enforces it and non-printable tags are accepted and skipped identically.",
+      "notes": "Real RIFF WAVE files carry many chunks this template does not model, and emitting them by name is far more valuable than emitting random tags, because a real reader HAS handlers for them even though the template does not: 'bext' (Broadcast Wave extension), 'iXML', 'id3 ' and 'ID3 ' (embedded ID3 metadata), 'inst' (instrument), 'plst' (play list), 'labl', 'ltxt' and 'note' when they appear at top level rather than inside an adtl list, 'slnt' (silence), 'wavl', 'cset', 'JUNK' and 'PAD ' (alignment filler), 'axml', 'acid', 'CDif', 'DISP', 'afsp', 'minf', 'elm1', 'regn', 'umid', 'SyLp', 'strc', '_PMX' and 'FLLR'. A generator should mix these named tags with wholly arbitrary four-byte tags, since the first group reaches real handlers and the second reaches the generic skip.",
+      "cross_check": {
+        "line": 564,
+        "snippet": "default:"
+      }
+    },
+    "UNKNOWNCHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "For a chunk nobody understands, this size is the only thing that lets the reader step over it; get it wrong and the parser resumes in the middle of the chunk's body, so every chunk after it -- including the format and data chunks if they come later -- is lost.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the unknown chunk's body, excluding the eight bytes of tag and size and excluding any pad byte.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 181,
+        "snippet": "long      chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of UNKNOWNCHUNK.unknownData",
+      "covers": "exactly the bytes of unknownData declared at line 182; not the pad byte at line 186",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "UNKNOWNCHUNK.unknownData"
+      ],
+      "size_identity": "sizeof(unknownData) == chunkSize, as declared at line 182",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 566,
+        "values": [],
+        "preferred": []
+      },
+      "notes": "The main loop reads this same field by lookahead at line 566 purely to print a diagnostic; the value is not compared against anything, so the lookahead contributes no literal value set, only a call site. Skipping an unknown chunk correctly is the single most valuable thing an unknown chunk does, so this field must be exact."
+    },
+    "UNKNOWNCHUNK.unknownData": {
+      "tier": "C",
+      "tier_rationale": "By construction nothing in the template or in a generic reader inspects these bytes; they are the definition of free-form payload and constraining them would remove variation without touching a single branch.",
+      "type": "unconstrained",
+      "description": "The body of a chunk the template does not model, skipped wholesale.",
+      "field_type": "uchar[chunkSize]",
+      "source": "template",
+      "evidence": {
+        "line": 182,
+        "snippet": "uchar     unknownData[chunkSize];"
+      },
+      "confidence": "high",
+      "size_identity": "sizeof(unknownData) == UNKNOWNCHUNK.chunkSize",
+      "notes": "An entry exists for this otherwise-free array only because the chunk tags listed under UNKNOWNCHUNK.chunkID name real chunks whose bodies a real reader DOES parse -- a 'bext' body has a 602-byte fixed layout, an 'id3 ' body is an ID3v2 tag with its own header and syncsafe sizes, an 'inst' body is seven bytes. Emitting a plausible body for a named tag reaches that reader's handler; emitting random bytes reaches its rejection path. Both are wanted, and neither narrows anything."
+    },
+    "UNKNOWNCHUNK.padding": {
+      "tier": "C",
+      "tier_rationale": "RIFF requires the pad byte after an odd-sized chunk but specifies no value and no reader inspects it, so its content is free.",
+      "type": "unconstrained",
+      "description": "A single pad byte present when the unknown chunk's size is odd and the file has not ended.",
+      "field_type": "uchar",
+      "source": "both",
+      "evidence": {
+        "line": 186,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "The VALUE is free; the PRESENCE is structural."
+    },
+    "SMPLLOOPS.Cue_Point": {
+      "tier": "C",
+      "tier_rationale": "This references a cue point identifier and nothing validates that the referenced point exists; a dangling reference is accepted and is the only way to reach a reader's lookup-failure branch, so pinning it would cost both variation and that branch.",
+      "type": "unconstrained",
+      "description": "The identifier of the cue point that marks the start of this sampler loop.",
+      "field_type": "SMPLLOOPS_Cue_ID (long)",
+      "source": "both",
+      "evidence": {
+        "line": 482,
+        "snippet": "SMPLLOOPS_Cue_ID     Cue_Point;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Matching an identifier in the cue chunk reaches a reader's cross-chunk resolution code; not matching one reaches the failure path. Generate both, and do not derive this field from the cue chunk."
+    },
+    "SMPLLOOPS.Type": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised loop type makes a reader fall back on forward playback rather than refuse the file, so it is not a front gate; but the template's own switch at lines 454-474 enumerates four values and each one selects a different playback traversal.",
+      "type": "enumerated_values",
+      "description": "How this sampler loop is traversed during playback.",
+      "field_type": "SMPLLOOPS_Type (long)",
+      "source": "both",
+      "evidence": {
+        "line": 483,
+        "snippet": "SMPLLOOPS_Type       Type;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "Loop: Forward",
+        "Loop: Ping Pong (alternating)",
+        "Loop: Reverse",
+        "reserved for future standard types"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "notes": "Taken verbatim from the switch at lines 454-474, including case 3 which the template labels 'reserved for future standard types'. Value 3 is NOT dropped: it is a defined case in the template and reaches a reader's reserved-type handling. The switch also has a default arm printing 'Loop: <unknown>', so values above 3 are representable, legal to write and reach that arm -- worth generating occasionally alongside the four named values.",
+      "cross_check": {
+        "line": 454,
+        "snippet": "switch( loop )"
+      }
+    },
+    "SMPLLOOPS.Start": {
+      "tier": "C",
+      "tier_rationale": "A byte offset into the audio at which the loop begins; nothing validates it against the data chunk's length, and an out-of-range start is exactly what reaches a reader's bounds check.",
+      "type": "unconstrained",
+      "description": "Offset of the loop's first sample, counted in bytes from the start of the audio.",
+      "field_type": "SMPLLOOPS_Start (long)",
+      "source": "both",
+      "evidence": {
+        "line": 484,
+        "snippet": "SMPLLOOPS_Start      Start;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A start greater than the end, and either beyond the end of the audio, are both accepted by every parser and drive the loop-validation branches; neither is excluded."
+    },
+    "SMPLLOOPS.End": {
+      "tier": "C",
+      "tier_rationale": "A byte offset at which the loop ends; unvalidated, and an inverted or out-of-range pair is the only way into a reader's loop sanity checking.",
+      "type": "unconstrained",
+      "description": "Offset of the loop's last sample, counted in bytes from the start of the audio.",
+      "field_type": "SMPLLOOPS_End (long)",
+      "source": "both",
+      "evidence": {
+        "line": 485,
+        "snippet": "SMPLLOOPS_End        End;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "SMPLLOOPS.Fraction": {
+      "tier": "C",
+      "tier_rationale": "A fractional sample adjustment stored as a 32-bit fixed-point value that no reader validates; pinning it would make every loop identical and reach nothing new.",
+      "type": "unconstrained",
+      "description": "Fractional adjustment to the loop end point, expressed as a fraction of one sample.",
+      "field_type": "SMPLLOOPS_Fraction (long)",
+      "source": "both",
+      "evidence": {
+        "line": 486,
+        "snippet": "SMPLLOOPS_Fraction   Fraction;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "SMPLLOOPS.Play_Count": {
+      "tier": "C",
+      "tier_rationale": "A repeat count in which zero has the special meaning of an infinite loop, as the template's own display function states at line 213; no value makes a reader refuse the file, and constraining it would delete either the infinite case or the finite one.",
+      "type": "unconstrained",
+      "description": "How many times this loop plays; zero means loop indefinitely.",
+      "field_type": "SMPLLOOPS_Play_Count (long)",
+      "source": "both",
+      "evidence": {
+        "line": 487,
+        "snippet": "SMPLLOOPS_Play_Count Play_Count;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Zero is a meaningful special case and must stay reachable; it is deliberately not excluded. The template's WAV_SMPLLOOPS_Play_Count function at lines 209-223 branches on exactly that distinction.",
+      "cross_check": {
+        "line": 213,
+        "snippet": "if (pc==0)"
+      }
+    },
+    "SMPLCHUNK.chunkID": {
+      "tier": "A",
+      "tier_rationale": "This tag is what the dispatch switch at line 556 matches; with any other value the chunk becomes an UNKNOWNCHUNK and the sampler fields and loop array are never parsed, so none of a reader's instrument handling runs.",
+      "type": "fixed_value",
+      "description": "The four-character tag identifying the sampler chunk.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 494,
+        "snippet": "char                     chunkID[4];"
+      },
+      "confidence": "high",
+      "required_value": "smpl",
+      "required_value_hex": "0x73 0x6D 0x70 0x6C",
+      "required_value_ascii": "smpl",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 535,
+        "values": [
+          "fmt ",
+          "data",
+          "fact",
+          "cue ",
+          "smpl",
+          "LIST"
+        ],
+        "preferred": [
+          "fmt ",
+          "data"
+        ]
+      },
+      "cross_check": {
+        "line": 556,
+        "snippet": "case \"smpl\":"
+      }
+    },
+    "SMPLCHUNK.chunkSize": {
+      "tier": "A",
+      "tier_rationale": "The sampler chunk's size is the stride to the next chunk; because the template reads a fixed thirty-six bytes plus the loop array and provides no skip for anything else, a size that disagrees leaves the parse at the wrong offset and every later chunk tag is garbage.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the sampler chunk's body, excluding the eight bytes of tag and size and excluding any pad byte.",
+      "field_type": "long",
+      "source": "both",
+      "evidence": {
+        "line": 495,
+        "snippet": "long                     chunkSize;"
+      },
+      "confidence": "high",
+      "algorithm": "36 for the nine fixed fields, plus 24 per sample loop, plus the Sampler_Data byte count",
+      "covers": "from Manufacturer through the end of the loops array and any sampler-specific data; not the pad byte at line 509",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "SMPLCHUNK.Num_Sample_Loops",
+        "SMPLCHUNK.Sampler_Data"
+      ],
+      "size_identity": "chunkSize == 36 + 24 * Num_Sample_Loops + Sampler_Data; the thirty-six is nine four-byte fields (Manufacturer, Product, Sample_Period, MIDI_Unity_Note, MIDI_Pitch_Fraction, SMPTE, SMPTE_Offset, Num_Sample_Loops, Sampler_Data) and a SMPLLOOPS record is six longs, so exactly 24 bytes",
+      "notes": "Every term in the identity is even, so unless Sampler_Data is odd the chunk never needs a pad byte -- which is why the guard at line 508 rarely fires."
+    },
+    "SMPLCHUNK.Manufacturer": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised manufacturer identifier displays as 'Unknown' and is never refused, so it is not a front gate; but the template's switch at lines 381-439 compares it against fifty-five literals, which are exactly the good known values a compile-time miner would extract from this file.",
+      "type": "enumerated_values",
+      "description": "The MIDI manufacturer identifier of the sampler that created this file; zero means no specific sampler.",
+      "field_type": "SMPL_Manufacturer (long)",
+      "source": "both",
+      "evidence": {
+        "line": 496,
+        "snippet": "SMPL_Manufacturer        Manufacturer;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        27,
+        32,
+        33,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        47,
+        54,
+        62,
+        64,
+        65,
+        66,
+        67,
+        68,
+        70,
+        71,
+        72,
+        75,
+        76,
+        78,
+        80,
+        81,
+        82,
+        84,
+        85,
+        86,
+        87
+      ],
+      "value_names": [
+        "Unknown",
+        "Sequential Circuits",
+        "Big Briar",
+        "Octave / Plateau",
+        "Moog",
+        "Passport Designs",
+        "Lexicon",
+        "Kurzweil",
+        "Fender",
+        "Gulbransen",
+        "Delta Labs",
+        "Sound Comp.",
+        "General Electro",
+        "Techmar",
+        "Matthews Research",
+        "Oberheim",
+        "PAIA",
+        "Simmons",
+        "DigiDesign",
+        "Fairlight",
+        "JL Cooper",
+        "Lowery",
+        "Lin",
+        "Emu",
+        "Peavey",
+        "Bon Tempi",
+        "S.I.E.L.",
+        "SyntheAxe",
+        "Hohner",
+        "Crumar",
+        "Solton",
+        "Jellinghaus Ms",
+        "CTS",
+        "PPG",
+        "Elka",
+        "Cheetah",
+        "Waldorf",
+        "Kawai",
+        "Roland",
+        "Korg",
+        "Yamaha",
+        "Casio",
+        "Kamiya Studio",
+        "Akai",
+        "Victor",
+        "Fujitsu",
+        "Sony",
+        "Teac",
+        "Matsushita",
+        "Fostex",
+        "Zoom",
+        "Matsushita",
+        "Suzuki",
+        "Fuji Sound",
+        "Acoustic Technical Laboratory"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "The field is a full 32-bit value and the MIDI manufacturer registry is far larger than the set the template names; these fifty-five are exactly the literals the switch at lines 381-439 compares against, which is the set that matters for this template. Every other value is legal, reaches the switch's default arm at line 438 and must also be generated.",
+      "preferred_value": [
+        0,
+        1,
+        4,
+        65,
+        66,
+        67,
+        71
+      ],
+      "notes": "Value 0 is the conventional 'no particular sampler' marker and is the most common in real files. The list reproduces the template's own spellings, including the duplicate 'Matsushita' at cases 80 and 84 and the missing cases (15, 25, 26, 28-31, 34, and so on) which fall through to the default arm. Do not treat the fifty-five as the legal set -- they are the recognised set.",
+      "cross_check": {
+        "line": 381,
+        "snippet": "switch( manufacture )"
+      }
+    },
+    "SMPLCHUNK.Product": {
+      "tier": "C",
+      "tier_rationale": "A manufacturer-defined model identifier that no reader validates or branches on; pinning it would make every sampler chunk identical and reach nothing new.",
+      "type": "unconstrained",
+      "description": "The MIDI model identifier of the sampler, defined by the manufacturer.",
+      "field_type": "SMPL_Product (long)",
+      "source": "both",
+      "evidence": {
+        "line": 497,
+        "snippet": "SMPL_Product             Product; // Product code (Manufacture)"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "SMPLCHUNK.Sample_Period": {
+      "tier": "C",
+      "tier_rationale": "The duration of one sample in nanoseconds, which the format expects to equal one thousand million divided by the sample rate but which no reader checks; a value that disagrees still parses, and pinning it would remove the disagreement branch and all variation.",
+      "type": "unconstrained",
+      "description": "Duration of one sample in nanoseconds, conventionally 1000000000 divided by dwSamplesPerSec.",
+      "field_type": "SMPL_Sample_Period (long)",
+      "source": "both",
+      "evidence": {
+        "line": 498,
+        "snippet": "SMPL_Sample_Period       Sample_Period;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "The template states the convention in the comment at line 342; it is recorded as a dependency rather than pinned here, because the derivation is advisory and a mismatch is accepted. Zero is not excluded, since it is the value that makes a reader's rate arithmetic divide by zero."
+    },
+    "SMPLCHUNK.MIDI_Unity_Note": {
+      "tier": "C",
+      "tier_rationale": "The MIDI note number at which the sample plays back at its recorded pitch; the MIDI range is 0 to 127 but nothing enforces it, and out-of-range values are accepted and reach a reader's clamping code.",
+      "type": "unconstrained",
+      "description": "MIDI note number at which the sample plays at its original pitch.",
+      "field_type": "SMPL_MIDI_Unity_Note (long)",
+      "source": "both",
+      "evidence": {
+        "line": 499,
+        "snippet": "SMPL_MIDI_Unity_Note     MIDI_Unity_Note;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "The 0 to 127 MIDI range is mentioned here as prose only and is deliberately NOT recorded as a bound: values above 127 are representable in this 32-bit field, are accepted by every parser, and are the only way to reach a sampler's note-clamping branch."
+    },
+    "SMPLCHUNK.MIDI_Pitch_Fraction": {
+      "tier": "C",
+      "tier_rationale": "A fractional pitch offset stored as a 32-bit fixed-point value that no reader validates; constraining it removes variation and reaches nothing.",
+      "type": "unconstrained",
+      "description": "Fraction of a semitone by which the sample's pitch is offset from the unity note.",
+      "field_type": "SMPL_MIDI_Pitch_Fraction (long)",
+      "source": "both",
+      "evidence": {
+        "line": 500,
+        "snippet": "SMPL_MIDI_Pitch_Fraction MIDI_Pitch_Fraction;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "SMPLCHUNK.SMPTE": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised SMPTE format displays as 'unknown' and is never refused, so it is not a front gate; but the template's switch at lines 357-365 enumerates the five defined frame rates and each one changes how SMPTE_Offset is interpreted.",
+      "type": "enumerated_values",
+      "description": "The SMPTE frame rate against which SMPTE_Offset is expressed.",
+      "field_type": "SMPL_SMPTE (long)",
+      "source": "both",
+      "evidence": {
+        "line": 501,
+        "snippet": "SMPL_SMPTE               SMPTE;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        24,
+        25,
+        29,
+        30
+      ],
+      "value_names": [
+        "No SMPTE offset",
+        "24 frames per second",
+        "25 frames per second",
+        "30 frames per second with frame dropping (30 drop)",
+        "30 frames per second"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        24,
+        25,
+        29,
+        30
+      ],
+      "notes": "Taken verbatim from the switch at lines 357-365; these five are the complete set the format defines. All five are preferred: 0 disables the offset entirely while 29 is the drop-frame case whose time arithmetic differs from every other value. The switch has a default arm at line 364 printing 'unknown (%u)', so undefined values are representable, legal to write and reach that arm; generate them occasionally alongside the five defined ones.",
+      "cross_check": {
+        "line": 357,
+        "snippet": "switch( smptef )"
+      }
+    },
+    "SMPLCHUNK.SMPTE_Offset": {
+      "tier": "C",
+      "tier_rationale": "A packed hours/minutes/seconds/frames timestamp that no reader validates; the prompt lists timestamps as Tier C outright, and pinning it would make every sampler chunk carry the same time.",
+      "type": "unconstrained",
+      "description": "SMPTE time offset of the sample's start, packed as one byte each of hours, minutes, seconds and frames.",
+      "field_type": "SMPL_SMPTE_Offset (long)",
+      "source": "both",
+      "evidence": {
+        "line": 502,
+        "snippet": "SMPL_SMPTE_Offset        SMPTE_Offset;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Out-of-range components -- sixty-one seconds, thirty-five frames at 24 fps -- are all representable and accepted, and are the only way to reach a reader's timecode validation."
+    },
+    "SMPLCHUNK.Num_Sample_Loops": {
+      "tier": "A",
+      "tier_rationale": "This is the array bound for loops[] at line 505; a value larger than the records actually written makes the parser read past the chunk into whatever follows, and a smaller one leaves records unconsumed so the next chunk tag is read from inside the loop data.",
+      "type": "calculated_value",
+      "description": "The number of SMPLLOOPS records that immediately follow the fixed sampler fields.",
+      "field_type": "SMPL_SL (long)",
+      "source": "both",
+      "evidence": {
+        "line": 503,
+        "snippet": "SMPL_SL                  Num_Sample_Loops;"
+      },
+      "confidence": "high",
+      "algorithm": "count of the SMPLLOOPS records written into loops[]",
+      "covers": "nothing in the byte stream; it is the element count of the array declared at line 505",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "SMPLCHUNK.chunkSize"
+      ],
+      "size_identity": "sizeof(loops) == 24 * Num_Sample_Loops, and SMPLCHUNK.chunkSize == 36 + 24 * Num_Sample_Loops + Sampler_Data",
+      "notes": "Tier A as an identity, not as a pinned number: HOW MANY loops to write is entirely the generator's choice and is a real diversity axis, since zero, one and many loops take different paths through a sampler's loop list. This field records the choice. The loops array itself carries no separate entry because its per-record constraints live on the SMPLLOOPS fields."
+    },
+    "SMPLCHUNK.Sampler_Data": {
+      "tier": "A",
+      "tier_rationale": "This declares how many bytes of sampler-specific data follow the loop array, and the template declares no array to hold them -- it goes straight to the padding at line 508 -- so any non-zero value leaves that many bytes unconsumed and the next chunk tag is read from the wrong offset, losing every chunk after it.",
+      "type": "calculated_value",
+      "description": "Size in bytes of the manufacturer-specific sampler data following the loop array.",
+      "field_type": "SMPL_SD (long)",
+      "source": "both",
+      "evidence": {
+        "line": 504,
+        "snippet": "SMPL_SD                  Sampler_Data;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the sampler-specific data that follows loops[]; zero when no such data is written",
+      "covers": "the bytes between the end of loops[] and the end of the chunk body",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "SMPLCHUNK.chunkSize",
+        "SMPLCHUNK.Num_Sample_Loops"
+      ],
+      "size_identity": "SMPLCHUNK.chunkSize == 36 + 24 * Num_Sample_Loops + Sampler_Data",
+      "template_parse_requirement": "The spec permits any value here, with that many bytes of vendor data following the loops, and real readers skip them using the count. This template models no such array: SMPLCHUNK at lines 493-511 goes from loops[] directly to the pad byte. A non-zero Sampler_Data therefore desynchronises this particular parser even though it is legal WAV. The generator must emit 0 unless it also emits the trailing bytes and enlarges chunkSize to match, in which case a real reader still parses correctly while the template's own parse is off.",
+      "notes": "This is the second of the two template-parse constraints in this file, the other being FACTCHUNK.chunkSize. Both are recorded as Tier A because a wrong value breaks the parse, but the source of the rule is the template's incompleteness rather than the format."
+    },
+    "SMPLCHUNK.padding": {
+      "tier": "C",
+      "tier_rationale": "RIFF requires the pad byte after an odd-sized chunk but specifies no value and no reader inspects it, so its content is free.",
+      "type": "unconstrained",
+      "description": "A single pad byte present when the sampler chunk's size is odd and the file has not ended.",
+      "field_type": "uchar",
+      "source": "both",
+      "evidence": {
+        "line": 509,
+        "snippet": "uchar padding;"
+      },
+      "confidence": "high",
+      "notes": "The VALUE is free; the PRESENCE is structural. Because 36 + 24n is always even, this byte appears only when Sampler_Data is odd, which the template-parse requirement on that field makes rare."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "FORMATCHUNK.wcbsize",
+        "tier": "A",
+        "type": "fixed_value",
+        "valid_values": [
+          2
+        ],
+        "rule": "wcbsize and wSamplesPerBlock exist only for tag 17, wcbsize must be 2, and FORMATCHUNK.chunkSize must therefore be 20"
+      },
+      "description": "The template declares the two extension fields inside if (wFormatTag == 17) at lines 45-49, so they are present for DVI/IMA ADPCM and absent for every other tag.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          4
+        ]
+      },
+      "description": "IMA/DVI ADPCM encodes each sample as one four-bit nibble, so the declared bit depth is 4; this also forces the data chunk into the template's waveformData branch at line 81, which is where the ADPCM payload belongs.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "FORMATCHUNK.wSamplesPerBlock",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "wSamplesPerBlock == ((wBlockAlign - 4 * wChannels) * 8) / (wBitsPerSample * wChannels) + 1, and wBlockAlign must be at least 4 * wChannels"
+      },
+      "description": "The block size and the samples it decodes to are two views of the same quantity; choose the block size freely and compute the sample count from it, never the reverse.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 17
+      },
+      "then": {
+        "field": "DATACHUNK.waveformData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "rule": "the data must be a whole number of wBlockAlign-byte blocks, each opening with four header bytes per channel: a 16-bit predictor, a step index in 0 to 88 and one reserved byte"
+      },
+      "description": "This is the format's only real payload well-formedness requirement, and it is derived from wBlockAlign and wChannels rather than those fields being bent to suit a fixed block.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "in": [
+          1,
+          3
+        ]
+      },
+      "then": {
+        "field": "DATACHUNK.waveformData",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "there is no payload structure at all: every byte sequence of the declared length is valid PCM or IEEE float audio"
+      },
+      "description": "For the uncompressed tags the data chunk has no framing, no header and no checksum, so nothing about its contents is constrained; this is the case the structure_note calls out explicitly.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "in": [
+          1,
+          3,
+          6,
+          7
+        ]
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBlockAlign",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "wBlockAlign == wChannels * wBitsPerSample / 8"
+      },
+      "description": "For the uncompressed and companded tags a block is exactly one sample frame, so the alignment follows from the channel count and the sample width.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "in": [
+          1,
+          3,
+          6,
+          7
+        ]
+      },
+      "then": {
+        "field": "FORMATCHUNK.dwAvgBytesPerSec",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "dwAvgBytesPerSec == dwSamplesPerSec * wBlockAlign"
+      },
+      "description": "For fixed-frame formats the byte rate is the frame rate times the frame size.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "in": [
+          2,
+          17
+        ]
+      },
+      "then": {
+        "field": "FORMATCHUNK.dwAvgBytesPerSec",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "dwAvgBytesPerSec == (dwSamplesPerSec / wSamplesPerBlock) * wBlockAlign"
+      },
+      "description": "For the block codecs the byte rate is the block rate times the block size, which is NOT the same formula as the uncompressed case and is a common source of malformed files.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "in": [
+          6,
+          7
+        ]
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          8
+        ]
+      },
+      "description": "A-law and mu-law are eight-bit companded formats, so the declared bit depth is 8 and the block align equals the channel count.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 3
+      },
+      "then": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          32,
+          64
+        ]
+      },
+      "description": "WAVE_FORMAT_IEEE_FLOAT carries single or double precision samples only.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 2
+      },
+      "then": {
+        "field": "FORMATCHUNK.chunkSize",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "the format chunk must be 50 bytes: the 16 base bytes, a cbSize of 32, then wSamplesPerBlock, wNumCoef and seven pairs of 16-bit coefficients"
+      },
+      "description": "Microsoft ADPCM carries its predictor coefficient table in the format chunk, which the template does not model and which lands in FORMATCHUNK.unknown.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 85
+      },
+      "then": {
+        "field": "FORMATCHUNK.chunkSize",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "the format chunk must be 30 bytes: the 16 base bytes, a cbSize of 12, then the MPEGLAYER3WAVEFORMAT fields wID, fdwFlags, nBlockSize, nFramesPerBlock and nCodecDelay"
+      },
+      "description": "MP3-in-WAV needs the MPEGLAYER3 extension for a reader to locate frame boundaries; the extension lands in FORMATCHUNK.unknown since the template does not declare it.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "equals": 65534
+      },
+      "then": {
+        "field": "FORMATCHUNK.chunkSize",
+        "tier": "A",
+        "type": "calculated_value",
+        "rule": "the format chunk must be 40 bytes: the 16 base bytes, a cbSize of 22, then wValidBitsPerSample, dwChannelMask and a 16-byte SubFormat GUID whose first four bytes are the real format tag"
+      },
+      "description": "WAVE_FORMAT_EXTENSIBLE moves the actual codec identity into a GUID, so a reader that meets tag 65534 with a short format chunk rejects the stream.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wFormatTag",
+        "min": 2
+      },
+      "then": {
+        "section": "FACTCHUNK",
+        "required": true
+      },
+      "description": "The spec requires a fact chunk for every format other than uncompressed PCM, so a reader can report duration without decoding; most readers tolerate its absence, which is itself a distinct path.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "section": "FACTCHUNK",
+        "present": true
+      },
+      "then": {
+        "field": "FACTCHUNK.uncompressedSize",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "for a conforming file this equals the total decoded sample frames -- DATACHUNK.chunkSize / wBlockAlign * wSamplesPerBlock for the block codecs, or DATACHUNK.chunkSize / wBlockAlign for the uncompressed ones -- but nothing enforces it and a disagreeing value reaches a reader's duration-mismatch handling"
+      },
+      "description": "The derivation is real but advisory; both the agreeing and the disagreeing case are worth generating, so the field is not pinned.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wBitsPerSample",
+        "in": [
+          8,
+          16,
+          32
+        ]
+      },
+      "then": {
+        "field": "DATACHUNK.samples",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "with wChannels of 1 the data chunk takes one of the three dedicated sample-array branches at lines 86, 91 and 96; with wChannels above 1 it takes the general SAMPLES struct at lines 101-108 instead"
+      },
+      "description": "The channel count alone decides between the fast paths and the general case, which is why a corpus of mono files leaves the SAMPLES struct entirely unexecuted.",
+      "source": "template",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "FORMATCHUNK.wBlockAlign",
+        "equals": 0
+      },
+      "then": {
+        "field": "DATACHUNK.waveformData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "rule": "the template's guard at line 78 diverts to the opaque waveformData branch, avoiding the division by zero that the modulo would otherwise cause"
+      },
+      "description": "A zero block align is excluded from the field itself, but the guard exists and a reader meeting a zero block align reports an invalid format; the guard is why the template survives it.",
+      "source": "template",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "DATACHUNK.chunkSize",
+        "present": true
+      },
+      "then": {
+        "field": "DATACHUNK.padding",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "a single pad byte is present if and only if chunkSize is odd AND the file has not already ended; the same rule governs the padding in LISTSUBCHUNK, LISTCHUNK, UNKNOWNCHUNK and SMPLCHUNK, while FORMATCHUNK.padding at line 59 omits the end-of-file half of the test"
+      },
+      "description": "RIFF word alignment: the pad byte's presence is mandatory and its value is free, and the template's five padding sites are not all guarded identically.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "section": "FORMATCHUNK",
+        "absent": true
+      },
+      "then": {
+        "section": "DATACHUNK",
+        "forbidden": true
+      },
+      "description": "The template sets haveValidFormat only inside the format chunk at line 52 and the data chunk warns 'File contains no valid WAVE format chunk.' and returns -1 without it at lines 70-74; a real reader likewise cannot interpret audio it has no format for.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "LISTCHUNK.chunkType",
+        "equals": "INFO"
+      },
+      "then": {
+        "field": "LISTSUBCHUNK.chunkID",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          "IARL",
+          "IART",
+          "ICMS",
+          "ICMT",
+          "ICOP",
+          "ICRD",
+          "ICRP",
+          "IDIM",
+          "IDPI",
+          "IENG",
+          "IGNR",
+          "IKEY",
+          "ILGT",
+          "IMED",
+          "INAM",
+          "IPLT",
+          "IPRD",
+          "ISBJ",
+          "ISFT",
+          "ISHP",
+          "ISMP",
+          "ISRC",
+          "ISRF",
+          "ITCH",
+          "ITRK",
+          "IDIT"
+        ]
+      },
+      "description": "An INFO list holds the registered metadata tags, each carrying a NUL-terminated string.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "LISTCHUNK.chunkType",
+        "equals": "adtl"
+      },
+      "then": {
+        "field": "LISTSUBCHUNK.chunkID",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          "labl",
+          "note",
+          "ltxt",
+          "file"
+        ]
+      },
+      "description": "An adtl list holds associated-data records, each beginning with a four-byte cue point identifier rather than plain text, so its payload is structured where an INFO payload is not.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "LISTCHUNK.chunkType",
+        "equals": "wavl"
+      },
+      "then": {
+        "field": "LISTSUBCHUNK.chunkID",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          "data",
+          "slnt"
+        ]
+      },
+      "description": "A wavl list carries the audio itself as alternating silence and data subchunks, which is the only configuration in which CUEPOINT.dwChunkStart and dwBlockStart are meaningful.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "CUEPOINT.fccChunk",
+        "equals": "slnt"
+      },
+      "then": {
+        "section": "LISTCHUNK",
+        "required": true
+      },
+      "description": "A cue point referring into a slnt chunk only makes sense inside a wavl list; without one the reference dangles and a reader takes its lookup-failure path, which is legal and worth generating.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "SMPLCHUNK.SMPTE",
+        "equals": 0
+      },
+      "then": {
+        "field": "SMPLCHUNK.SMPTE_Offset",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "with no SMPTE format declared the offset is meaningless and is ignored entirely; every value still parses"
+      },
+      "description": "The template's own display function at line 359 labels format 0 as 'No SMPTE offset'.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "section": "FORMATCHUNK",
+        "present": true
+      },
+      "then": {
+        "field": "SMPLCHUNK.Sample_Period",
+        "tier": "C",
+        "type": "unconstrained",
+        "rule": "the format expects Sample_Period to equal 1000000000 divided by dwSamplesPerSec, as the template's comment at line 342 states, but nothing checks it and a disagreeing value parses and plays"
+      },
+      "description": "An advisory derivation recorded so the generator can satisfy it when it wants a conforming file, without it becoming a pin.",
+      "source": "both",
+      "confidence": "high"
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "WAVRIFFHEADER",
+      "detail": "the file begins with the twelve bytes 'RIFF', a 32-bit little-endian size, and 'WAVE'; nothing may precede them",
+      "description": "The header is read first at line 520 and both its tags are checked immediately afterwards at line 523.",
+      "source": "both",
+      "generation_note": "emit as a fixed 12-byte head, writing hsize last once the total file length is known"
+    },
+    {
+      "rule": "required",
+      "subject": "chunk tag \"fmt \"",
+      "detail": "exactly one format chunk must be present",
+      "description": "Without it the template's data chunk aborts at line 73 and every reader reports that the file has no format description.",
+      "source": "both",
+      "generation_note": "emit as a fixed element immediately after the RIFF header, which is where every real writer puts it"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk tags \"fmt \" and \"data\"",
+      "detail": "the format chunk MUST appear before the data chunk",
+      "description": "haveValidFormat is set only inside FORMATCHUNK at line 52 and tested at the top of DATACHUNK at line 70, so a data chunk that comes first stops the template with a warning and a return of -1; readers behave the same way because they cannot size a sample frame without the format.",
+      "source": "both",
+      "generation_note": "always place the format chunk earlier in the chunk sequence than the data chunk, with any number of other chunks between them"
+    },
+    {
+      "rule": "required",
+      "subject": "chunk tag \"data\"",
+      "detail": "at least one data chunk carrying the audio",
+      "description": "A WAVE form without a data chunk parses but yields no audio; readers report an empty stream, which is a legal and distinctly exercised case worth generating occasionally.",
+      "source": "both",
+      "output_budget": "786432 bytes (768 KiB) of audio summed across the file's data chunks, counted as body bytes. The generator keeps a running total and stops adding audio once it is reached. The audio LENGTH is the free choice this budget spends; wChannels, dwSamplesPerSec, wBitsPerSample and wBlockAlign are never reduced to save space.",
+      "generation_note": "emit the format chunk first, then build the payload from the format fields -- raw free bytes for the PCM tags, whole ADPCM blocks for tag 17 -- and write DATACHUNK.chunkSize from the bytes actually produced"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "the top-level chunk sequence",
+      "detail": "chunks repeat until end of file, each one an eight-byte header followed by chunkSize body bytes and a pad byte when that size is odd",
+      "description": "The main loop at line 532 reads chunks until FEof(), so the chunk count and the mix of tags are the file's principal repeating dimensions.",
+      "source": "both",
+      "output_budget": "1048576 bytes (1 MiB) for the whole file, tracked as a running total the generator checks before starting each new chunk; when the total is reached the generator stops opening chunks and writes hsize. The sub-allocations below (768 KiB of audio, 65536 bytes of LIST metadata, 65536 bytes of unmodelled chunks) are parts of this figure and are tracked the same way. A megabyte holds several seconds of multichannel audio plus a full metadata set while keeping generation and decoding fast across a large corpus. NO FIELD IS NARROWED TO ACHIEVE THIS -- the budget is spent by ending the chunk sequence, never by shrinking a channel count, a sample rate or a bit depth.",
+      "generation_note": "emit as a fixed head (RIFF header, then the format chunk), then a repeated array of chunks drawn from the legal tags and bounded by the running output_budget; there is no trailer element, because the loop simply ends at end of file"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "every chunk",
+      "detail": "a chunk is its four-byte tag, its four-byte size, exactly chunkSize body bytes and then one pad byte if and only if chunkSize is odd; nothing may be interleaved and no gap may be left",
+      "description": "RIFF is a positional format with no markers inside a chunk, so a single wrong size desynchronises everything that follows.",
+      "source": "both",
+      "output_budget": "covered by the 1 MiB running total; each chunk costs 8 + chunkSize + (chunkSize & 1) bytes, which the total should count",
+      "generation_note": "write the body first, then go back and fill in the size, then append the pad byte when the size came out odd"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk tags \"fact\", \"cue \" and \"smpl\"",
+      "detail": "each may appear at most once",
+      "description": "The spec defines a single fact, cue and sampler chunk per file; duplicates are tolerated by readers, which keep either the first or the last, and that overwrite is itself a branch worth reaching occasionally.",
+      "source": "spec",
+      "output_budget": "8192 bytes total across the three; the cue and sampler chunks are the variable members and their record counts stay free within that running total",
+      "generation_note": "emit as optional single elements anywhere after the format chunk"
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk tag \"fact\"",
+      "detail": "conventionally placed after the format chunk and before the data chunk",
+      "condition": "required by the spec whenever wFormatTag is anything other than 1",
+      "description": "A reader wanting the decoded length before it starts decoding expects the fact chunk early; placed after the data chunk it is still parsed but too late to help, which is a separate path.",
+      "source": "spec",
+      "output_budget": "12 bytes per occurrence, counted within the 1 MiB total",
+      "generation_note": "emit between the format and data chunks when the format tag is not PCM; also generate it in other positions and absent entirely"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "LISTCHUNK subchunks",
+      "detail": "a LIST chunk's body is its four-byte chunkType followed immediately by subchunks, each one an eight-byte header plus its body plus its own pad byte, packed with no gaps until the list's declared size is consumed",
+      "description": "The walk at lines 165-171 measures its position against the list's chunkSize, so a gap or overrun sends it into the unknown-bytes branch at line 170.",
+      "source": "both",
+      "output_budget": "65536 bytes (64 KiB) total across every LIST chunk in the file, tracked as a running total of list bytes written. The number of lists, the number of subchunks in each and the length of each subchunk's payload all stay free within that total.",
+      "generation_note": "accumulate subchunks until the list budget is reached, then write the list's chunkSize from what was accumulated; deliberately size one subchunk to land exactly on the boundary sometimes, because the guard at line 167 omits the eight-byte header allowance and that case reaches the unknown branch"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "chunk tags \"LIST\" and unmodelled tags",
+      "detail": "each may appear any number of times, anywhere after the RIFF header",
+      "description": "RIFF places no count or ordering limit on metadata and application chunks; they may be interleaved freely with the audio chunks.",
+      "source": "spec",
+      "output_budget": "65536 bytes (64 KiB) total across every chunk whose tag the template does not model, tracked as a running total; the LIST chunks have their own 64 KiB budget above. The number of such chunks and each one's size stay free within the total.",
+      "generation_note": "emit as a repeated array interleaved among the known chunks, stopping when the running total is reached; scatter them before and after the data chunk rather than clustering them, since a reader's post-audio chunk handling differs from its pre-audio handling"
+    },
+    {
+      "rule": "requires",
+      "subject": "chunk tag \"cue \"",
+      "detail": "a sampler loop's Cue_Point identifier refers to an identifier in the cue chunk, so a smpl chunk with loops is most meaningful alongside a cue chunk",
+      "description": "The reference is not enforced and a dangling identifier is accepted, but emitting the two together reaches a reader's cross-chunk resolution code that neither chunk alone can.",
+      "source": "spec",
+      "output_budget": "covered by the 8192-byte budget on the fact, cue and sampler group",
+      "generation_note": "when emitting a sampler chunk with loops, sometimes emit a cue chunk whose identifiers match and sometimes one whose identifiers do not"
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any data before the RIFF header",
+      "detail": "the twelve-byte RIFF header must be at offset 0",
+      "description": "A reader probing the file tests the first four bytes; anything else and the file is not recognised as RIFF at all.",
+      "source": "both"
+    },
+    {
+      "rule": "last_element",
+      "subject": "the final chunk",
+      "detail": "WAV has no explicit trailer; the chunk sequence simply ends at end of file, and the RIFF header's hsize must account for every byte written",
+      "description": "The template's loop runs while !FEof() at line 532 with no terminator to look for, which is why hsize carries the whole burden of delimiting the container.",
+      "source": "both",
+      "generation_note": "after the last chunk, go back and write hsize as FileSize() - 8; note that a final odd-sized chunk legitimately has no pad byte, because the guards at lines 112, 153, 174, 185 and 508 suppress it at end of file"
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "FORMATCHUNK.wChannels",
+      "tier": "C",
+      "why": "The channel count is the field a size-conscious author pins at 1 or 2, and doing so would make the template's entire general-case SAMPLES struct at lines 101-108 dead code, because that branch is reached only when the count is above 1. It also sets the per-channel ADPCM block header count, so the payload is derived from it.",
+      "decoder_paths": "1 channel with 8, 16 or 32 bits takes the three dedicated fast paths at lines 83-97; any count above 1 takes the general interleaved path; counts above 2 reach a reader's channel-mask and downmix code; the count also multiplies into wBlockAlign and therefore into every stride calculation.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATACHUNK.waveformData",
+        "FORMATCHUNK.wBlockAlign"
+      ]
+    },
+    {
+      "field": "FORMATCHUNK.dwSamplesPerSec",
+      "tier": "C",
+      "why": "Sample rate is named outright in the Tier C list. Pinning it to 44100 would make every generated file the same duration for a given size and would delete the rate-conversion and divide-by-zero branches that only a varied rate reaches.",
+      "decoder_paths": "zero reaches the guards in every duration and byte-rate calculation; rates that are not the common few reach a resampler's arbitrary-ratio path rather than its fast integer path; the rate feeds dwAvgBytesPerSec, so it changes that derived field across its whole span too.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "FORMATCHUNK.dwAvgBytesPerSec"
+      ]
+    },
+    {
+      "field": "FORMATCHUNK.wBitsPerSample",
+      "tier": "B",
+      "why": "It selects which of the template's four data-chunk branches runs and which unpacking path a reader takes; for a Tier B axis staying unconstrained means emitting the whole set including 4 and 24, not settling on 16.",
+      "decoder_paths": "8, 16 and 32 each get a dedicated sample array in the template; 4 is required for ADPCM and forces the waveformData branch; 24 is the interesting one, falling into the template's unsupported-storage branch at line 81 while a real reader decodes it through its 24-bit unpacking path; depths outside the implemented set reach a reader's unsupported-width rejection.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATACHUNK.waveformData",
+        "FORMATCHUNK.wBlockAlign"
+      ]
+    },
+    {
+      "field": "FORMATCHUNK.wFormatTag",
+      "tier": "B",
+      "why": "It decides which codec runs, how large the format chunk must be, and whether the data chunk has any internal structure at all; emitting only tag 1 would leave every compressed path, the extension-field handling and the fact-chunk requirement entirely unexercised.",
+      "decoder_paths": "tag 1 reaches the raw PCM path; tag 3 the float path and its NaN clamping; tags 6 and 7 the companding tables; tags 2 and 17 the ADPCM block decoders and their predictor state machines; tag 85 the MPEG frame scanner; tag 65534 the GUID and channel-mask parsing; unregistered tags the unsupported-codec rejection.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATACHUNK.waveformData",
+        "FORMATCHUNK.chunkSize",
+        "FORMATCHUNK.wcbsize"
+      ]
+    },
+    {
+      "field": "FORMATCHUNK.wBlockAlign",
+      "tier": "A",
+      "why": "Listed with the narrower meaning the tier extension describes: the VALUE is pinned by its identity with wChannels and wBitsPerSample and must be derived, but because both of those inputs are free the derived value varies across its whole span, and for the block codecs the block size itself is a free choice bounded only by being at least 4 * wChannels. It must not be pinned to a constant such as 1024.",
+      "decoder_paths": "the block size sets how often an ADPCM decoder resets its predictor state, so small blocks hammer the reinitialisation path while large ones exercise long adaptation runs; it also decides whether DATACHUNK.chunkSize divides evenly, which selects between the template's clean sample-array branches and its opaque fallback at line 81.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATACHUNK.waveformData",
+        "FORMATCHUNK.wSamplesPerBlock"
+      ]
+    },
+    {
+      "field": "DATACHUNK.chunkSize",
+      "tier": "A",
+      "why": "Listed with the same narrower meaning: the VALUE must equal the bytes actually written, but HOW MANY bytes of audio to write is the generator's free choice and is where the corpus's duration diversity comes from. Pinning it to a constant would make every file the same length.",
+      "decoder_paths": "a size that is not a multiple of wBlockAlign diverts the template to its opaque branch at line 81 and a reader to its partial-final-block handling; a size of zero reaches the empty-stream path; very large sizes exercise a reader's buffered streaming rather than its single-read path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATACHUNK.waveformData",
+        "FACTCHUNK.uncompressedSize"
+      ]
+    },
+    {
+      "field": "DATACHUNK.samples",
+      "tier": "C",
+      "why": "Sample values drive no branches in a demuxer, so there is no reason to constrain them, but there is a real temptation to make them look like audio; a corpus of sine waves and a corpus of random bytes reach identical lines, and the random one additionally reaches the clamping and saturation code on the extremes.",
+      "decoder_paths": "full-scale and minimum values reach the saturation branches in any sample-format conversion; zero reaches silence detection in readers that have it; mid-range values reach nothing the extremes do not.",
+      "must_remain_unconstrained": true,
+      "interacts_with": []
+    },
+    {
+      "field": "FACTCHUNK.uncompressedSize",
+      "tier": "C",
+      "why": "A sample count that a careful reader is tempted to derive and pin to the true value; doing so would delete every duration-mismatch branch, which is the only interesting thing this chunk can do.",
+      "decoder_paths": "a value matching the audio reaches the straightforward duration report; a value larger reaches the premature-end-of-stream handling; a value smaller reaches the surplus-data handling; zero reaches the unknown-duration fallback.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATACHUNK.chunkSize"
+      ]
+    },
+    {
+      "field": "CUECHUNK.dwCuePoints",
+      "tier": "A",
+      "why": "Listed with the narrower meaning: the VALUE must equal the number of records written, but HOW MANY cue points to write is entirely free and is the chunk's only diversity. Pinning it to 1 would make the marker-list growth and multi-marker sorting code unreachable.",
+      "decoder_paths": "zero cue points reaches the empty-list path; one reaches the single-marker fast path; many reach the list growth, the sort and the cross-reference resolution against adtl subchunks and sampler loops.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "CUECHUNK.chunkSize",
+        "SMPLLOOPS.Cue_Point"
+      ]
+    },
+    {
+      "field": "SMPLCHUNK.Num_Sample_Loops",
+      "tier": "A",
+      "why": "Same narrower meaning: the value records a free choice. The number of sampler loops decides whether a reader's loop list is empty, singular or multiple, and pinning it would leave two of those three states unreached.",
+      "decoder_paths": "zero loops reaches the one-shot playback path; one reaches the simple sustain loop; several reach the nested and release-loop handling that only a multi-loop instrument exercises.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "SMPLCHUNK.chunkSize",
+        "SMPLLOOPS.Type"
+      ]
+    },
+    {
+      "field": "LISTCHUNK.chunkType",
+      "tier": "B",
+      "why": "Three list types that mean three structurally different things; emitting only INFO would leave the structured adtl records and the fragmented-audio wavl form completely unexercised.",
+      "decoder_paths": "INFO reaches the free-text metadata store; adtl reaches the cue-reference resolution and the labelled-text-region parsing; wavl reaches a reader's fragmented-audio assembly, where the samples come from inside a list rather than from a top-level data chunk.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LISTSUBCHUNK.chunkID"
+      ]
+    },
+    {
+      "field": "LISTSUBCHUNK.chunkID",
+      "tier": "B",
+      "why": "Each recognised tag routes the payload into a different metadata field, and each unrecognised one reaches the skip path; for a Tier B axis staying unconstrained means emitting the registered tags AND arbitrary ones, not a handful of favourites.",
+      "decoder_paths": "the INFO tags each land in a different metadata slot, several of which readers parse further (ISMP as a timecode, ICRD as a date); the adtl tags begin with a cue identifier and reach cross-chunk resolution; unregistered tags reach the generic subchunk skip.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LISTSUBCHUNK.listData"
+      ]
+    },
+    {
+      "field": "LISTSUBCHUNK.listData",
+      "tier": "C",
+      "why": "Metadata text whose length and content are free; varying it drives the string handling, and an unterminated or zero-length payload reaches branches a well-formed string never does.",
+      "decoder_paths": "a NUL-terminated string takes the ordinary copy; an unterminated one reaches the bounded-read fallback; an empty payload reaches the zero-length guard; embedded NULs and non-ASCII bytes reach the encoding-detection code in readers that have it.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LISTSUBCHUNK.chunkSize"
+      ]
+    },
+    {
+      "field": "UNKNOWNCHUNK.chunkID",
+      "tier": "B",
+      "why": "The tag the template does not model is, for a real reader, often a tag it DOES model -- bext, id3, inst, plst and the rest -- so this field is the route into a large body of reader code that the template is blind to; staying unconstrained means mixing those named tags with wholly arbitrary ones.",
+      "decoder_paths": "a tag the reader knows reaches its dedicated handler and that handler's own body parsing; a tag it does not know reaches the generic seek-past-chunkSize skip; a tag with a non-printable byte reaches the malformed-tag reporting in strict readers.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "UNKNOWNCHUNK.unknownData"
+      ]
+    },
+    {
+      "field": "SMPLLOOPS.Type",
+      "tier": "B",
+      "why": "Four defined traversal modes plus an undefined range, all of which the template's own switch distinguishes; emitting only forward loops leaves the ping-pong and reverse playback code unreached.",
+      "decoder_paths": "forward is the simple wrap; ping pong reverses direction at each boundary and needs a direction state; reverse walks the buffer backwards; the reserved value 3 and anything above it reach the fallback that treats the loop as forward.",
+      "must_remain_unconstrained": true,
+      "interacts_with": []
+    },
+    {
+      "field": "SMPLCHUNK.SMPTE",
+      "tier": "B",
+      "why": "Five defined frame rates, one of which -- 29, the drop-frame case -- has arithmetic unlike any of the others; emitting only 0 would leave all the timecode conversion unexercised.",
+      "decoder_paths": "0 disables the offset entirely; 24, 25 and 30 take the straightforward frames-to-time conversion with different divisors; 29 takes the drop-frame correction with its skipped frame numbers; undefined values reach the switch's default arm at line 364.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "SMPLCHUNK.SMPTE_Offset"
+      ]
+    },
+    {
+      "field": "CUEPOINT.dwPosition",
+      "tier": "C",
+      "why": "A sample offset that a careful reader is tempted to keep inside the audio; out-of-range positions are accepted by every parser and are the only way to reach a reader's marker-bounds checking.",
+      "decoder_paths": "a position inside the audio reaches the ordinary seek-target calculation; one past the end reaches the clamp or the reject; zero reaches the start-of-file special case that several readers have.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "DATACHUNK.chunkSize"
+      ]
+    }
+  ]
+}

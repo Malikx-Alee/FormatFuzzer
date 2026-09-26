@@ -1,0 +1,1185 @@
+//------------------------------------------------
+//--- 010 Editor v8.0 Binary Template
+//
+//      File: MP4.bt
+//   Authors: Alexey Lyashko, Andrew Molyneux, Marian Denes, SweetScape, Marko Musa
+//   Version: 3.3
+//   Purpose: Defines a template for parsing MP4 and MOV video files.
+//  Category: Video
+// File Mask: *.mp4,*.mov,*.m4v
+//  ID Bytes: [+4] 66 74 79 70, [+4] 6D 6F 6F 76, [+4] 6D 64 61 74
+//   History:
+//   3.3   2019-08-08 M. Musa: Modified box logic to respect box size in header.
+//   3.2   2019-02-03 A. Lyashko: Added support for fragmented MP4 files.
+//   3.1   2018-06-17 A. Lyashko: Added support for sample table atoms.
+//   3.0   2017-10-03 A Molyneux: Total rewrite, more complete and robust.
+//   2.2   2016-01-29 SweetScape: Updated header for repository submission.
+//   2.1   2015-06-04 M Denes: Public release.
+//------------------------------------------------
+
+BigEndian();
+
+// Per-call-site lookahead sets must win over ffcompile's mined globals: every
+// box header in this file is planted, and constraints.fourcc.value carries
+// three DISJOINT sets (box type, brand, handler type - meta.context_value_sets),
+// so the set belongs at the call site and not on the shared fourcc leaf.
+const local uint   ReadUIntInitValues[0];
+const local string ReadBytesInitValues[0];
+const local UBYTE  ReadUByteInitValues[0];
+const local ushort ReadUShortInitValues[0];
+const local uint64 ReadUQuadInitValues[0];
+
+struct fp16;
+struct fp32;
+struct fp32uvw;
+struct matrix;
+struct fourcc;
+struct boxheader;
+struct compatible_brand;
+struct mp4box;
+struct mp4time;
+struct mp4lang;
+struct qtopcolor;
+struct elst_entry;
+struct tkhd_flags;
+struct vmhd_flags;
+
+// QuickTime language codes from https://developer.apple.com/library/content/documentation/QuickTime/QTFF/QTFFChap4/qtff4.html#//apple_ref/doc/uid/TP40000939-CH206-34353
+enum qtlang
+{
+    qtlEnglish            = 0, qtlFrench             = 1, qtlGerman             = 2, qtlItalian            = 3,
+    qtlDutch              = 4, qtlSwedish            = 5, qtlSpanish            = 6, qtlDanish             = 7,
+    qtlPortuguese         = 8, qtlNorwegian          = 9, qtlHebrew             = 10, qtlJapanese           = 11,
+    qtlArabic             = 12, qtlFinnish            = 13, qtlGreek              = 14, qtlIcelandic          = 15,
+    qtlMaltese            = 16, qtlTurkish            = 17, qtlCroatian           = 18, qtlChineseTraditional = 19,
+    qtlUrdu               = 20, qtlHindi              = 21, qtlThai               = 22, qtlKorean             = 23,
+    qtlLithuanian         = 24, qtlPolish             = 25, qtlHungarian          = 26, qtlEstonian           = 27,
+    qtlLettish            = 28, qtlLatvian            = 28, qtlSaami              = 29, qtlSami               = 29,
+    qtlFaroese            = 30, qtlFarsi              = 31, qtlRussian            = 32, qtlChineseSimplified  = 33,
+    qtlFlemish            = 34, qtlIrish              = 35, qtlAlbanian           = 36, qtlRomanian           = 37,
+    qtlCzech              = 38, qtlSlovak             = 39, qtlSlovenian          = 40, qtlYiddish            = 41,
+    qtlSerbian            = 42, qtlMacedonian         = 43, qtlBulgarian          = 44, qtlUkrainian          = 45,
+    qtlBelarusian         = 46, qtlUzbek              = 47, qtlKazakh             = 48, qtlAzerbaijani        = 49,
+    qtlAzerbaijanAr       = 50, qtlArmenian           = 51, qtlGeorgian           = 52, qtlMoldavian          = 53,
+    qtlKirghiz            = 54, qtlTajiki             = 55, qtlTurkmen            = 56, qtlMongolian          = 57,
+    qtlMongolianCyr       = 58, qtlPashto             = 59, qtlKurdish            = 60, qtlKashmiri           = 61,
+    qtlSindhi             = 62, qtlTibetan            = 63, qtlNepali             = 64, qtlSanskrit           = 65,
+    qtlMarathi            = 66, qtlBengali            = 67, qtlAssamese           = 68, qtlGujarati           = 69,
+    qtlPunjabi            = 70, qtlOriya              = 71, qtlMalayalam          = 72, qtlKannada            = 73,
+    qtlTamil              = 74, qtlTelugu             = 75, qtlSinhala            = 76, qtlBurmese            = 77,
+    qtlKhmer              = 78, qtlLao                = 79, qtlVietnamese         = 80, qtlIndonesian         = 81,
+    qtlTagalog            = 82, qtlMalayRoman         = 83, qtlMalayArabic        = 84, qtlAmharic            = 85,
+    qtlGalla              = 87, qtlOromo              = 87, qtlSomali             = 88, qtlSwahili            = 89,
+    qtlKinyarwanda        = 90, qtlRundi              = 91, qtlNyanja             = 92, qtlMalagasy           = 93,
+    qtlEsperanto          = 94, qtlWelsh              = 128, qtlBasque             = 129, qtlCatalan            = 130,
+    qtlLatin              = 131, qtlQuechua            = 132, qtlGuarani            = 133, qtlAymara             = 134,
+    qtlTatar              = 135, qtlUighur             = 136, qtlDzongkha           = 137, qtlJavaneseRom        = 138,
+    qtlUnspecified        = 32767
+};
+
+// QuickTime graphics modes from https://developer.apple.com/library/content/documentation/QuickTime/QTFF/QTFFChap4/qtff4.html#//apple_ref/doc/uid/TP40000939-CH206-18741
+enum <uint16> qtgfxmode
+{
+    qtgCopy               = 0x000,
+    qtgDitherCopy         = 0x040,
+    qtgBlend              = 0x020,
+    qtgTransparent        = 0x024,
+    qtgStraightAlpha      = 0x100,
+    qtgPremulWhiteAlpha   = 0x101,
+    qtgPremulBlackAlpha   = 0x102,
+    qtgStraightAlphaBlend = 0x104,
+    qtgComposition        = 0x103
+};
+
+// Generation plan: MP4 is a length-prefixed tree, so constraints.boxheader.size is
+// known before the header it measures. output_budget, scaled to MAX_FILE_SIZE:
+local int64 B_FILE  = 32000;  // structure[6] whole file     structure[4] all mdat:
+local int64 B_MEDIA = 16000;  // structure[8] every moof subtree, structure[7] free space:
+local int64 B_MOOF  = 3000;   local int64 B_FREE  = 1200;   local int64 Q[] = { 1, 1, 1, 1 };
+local int64 S[] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+local int64 G_ntrk = 1;      local int64 G_trk = 0;       local int64 G_moovFirst = 1;
+local int64 G_nbrand = 2;    local int64 G_hdlrRest = 4;  local int64 G_mvex = 0;
+local int64 G_nfrag = 0;     local int64 G_seedLen = 48;  local int64 G_seedKind = 0;
+local int64 G_mdatBody = 0;  local int64 G_media = 0;     local int64 G_big = 0;
+local int64 G_moovLen = 0;   local int64 G_fsn = 1;       local int64 G_fsz = 16;
+local int64 G_tfhdF = 0;     local int64 G_trunF = 0;     local int64 G_fragSeq = 0;
+local int64 G_tfhd0 = 0;     local int64 G_moofPos = 0;   local int64 G_free = 0;
+local int64 G_extra = 0;     local int64 G_udta = 0;
+// Per-track plan. T_kind 0-6 are the uncompressed sample entries, whose payload is
+// exactly the number of bytes their declared geometry implies: 'raw ' at depth
+local int64 T_kind[] = { 0, 0, 0, 0 };   local int64 T_sub[]  = { 0, 0, 0, 0 };
+local int64 T_w[]    = { 1, 1, 1, 1 };   local int64 T_h[]    = { 1, 1, 1, 1 };
+local int64 T_bpp[]  = { 3, 3, 3, 3 };   local int64 T_dep[]  = { 24, 24, 24, 24 };
+local int64 T_ns[]   = { 0, 0, 0, 0 };   local int64 T_spc[]  = { 1, 1, 1, 1 };
+local int64 T_nch[]  = { 0, 0, 0, 0 };   local int64 T_base[] = { 1, 1, 1, 1 };
+local int64 T_span[] = { 1, 1, 1, 1 };   local int64 T_seed[] = { 0, 0, 0, 0 };
+local int64 T_mts[]  = { 1000, 1000, 1000, 1000 };
+local int64 T_co64[] = { 0, 0, 0, 0 };   local int64 T_kf[]   = { 0, 0, 0, 0 };
+local int64 T_ed[]   = { 0, 0, 0, 0 };   local int64 T_nsd[]  = { 1, 1, 1, 1 };
+local int64 T_runs[] = { 1, 1, 1, 1 };   local int64 T_nsc[]  = { 1, 1, 1, 1 };
+local int64 T_cst[]  = { 0, 0, 0, 0 };   local int64 T_ord[]  = { 0, 0, 0, 0 };
+local int64 T_off[]  = { 0, 0, 0, 0 };   local int64 T_enc[]  = { 0, 0, 0, 0 };
+local int64 T_ver[]  = { 0, 0, 0, 0 };   local int64 T_ch[]   = { 1, 1, 1, 1 };
+local int64 T_cfg[]  = { 1, 1, 1, 1 };   local int64 T_ss[]   = { 0, 0, 0, 0 };
+local int64 T_sdi[]  = { 1, 1, 1, 1 };
+local int64 T_aux[]  = { 0, 0, 0, 0 };   local int64 T_tid[]  = { 1, 1, 1, 1 };
+local int64 G_sidxN = 1;  local int64 G_psshV = 1;  local int64 G_psshK = 1;  local int64 G_psshD = 4;
+// constraints.mp4box.entries: the codec configuration records. Only the framing
+// is fixed; the profile, compatibility and level bytes around them stay free,
+local UBYTE SPSB[] = { 103,66,192,10,220,71,176,17,0,0,3,0,1,0,0,3,0,10,15,18,39,128 };
+local UBYTE PPSB[] = { 104,206,15,44,128 };
+local UBYTE ESDV[] = { 3,50,0,1,0,4,42,32,17,0,0,0,0,0,0,0,0,0,0,0,5,27,0,0,1,176,1,0,0,1,181,137,19,0,0,1,0,0,0,1,32,0,196,141,136,0,205,50,4,6,1,2 };
+local UBYTE ESDA[] = { 3,25,0,1,0,4,17,64,21,0,0,0,0,0,0,0,0,0,0,0,5,2,18,16,6,1,2 };
+local UBYTE HVCC[] = { 1,1,0,0,0,0,144,0,0,0,0,0,90,240,0,252,253,248,248,0,15,3,0 };
+// constraints.fourcc.value, handler_type context (Tier B): all 21 values.
+local string HDLR[] = { "vide","soun","hint","meta","text","subt","sbtl","clcp","tmcd","odsm",
+    "sdsm","m7sm","ocsm","ipsm","mjsm","fdsm","crsm","mdir","pict","alis","url " };
+// constraints.mp4box.major_brand and constraints.compatible_brand.brand (Tier B).
+local string BRANDP[] = { "isom","mp42","qt  ","dash","M4A ","3gp4" };
+local string BRANDS[] = { "isom","iso2","iso4","iso5","iso6","iso8","mp41","mp42","avc1","M4V ",
+    "M4A ","M4P ","M4B ","qt  ","dash","msdh","msix","mmp4","3gp4","3gp5","3gp6","3g2a","MSNV",
+    "NDAS","f4v ","hvc1","av01","cmfc","piff" };
+// constraints.mp4box.type (Tier B): ISO writes four zero bytes, QuickTime a code.
+local string HTYPE[] = { "\0\0\0\0","mhlr","dhlr" };
+// Free-space and unregistered top-level types - structure[7].
+local string FREEP[] = { "free","skip" };
+local string FREES[] = { "free","skip","wide","pnot","zzzz","junk","hoov","qwer" };
+// constraints.mp4box.systemID (Tier B): Widevine, PlayReady, Clear Key, FairPlay,
+// Marlin and Nagra, sixteen raw bytes each in big-endian UUID order.
+local UBYTE SYSID[] = { 237,239,139,169,121,214,74,206,163,200,39,220,213,29,33,237,
+    154,4,240,121,152,64,66,134,171,146,230,91,224,136,95,149,
+    16,119,239,236,192,178,77,2,172,227,60,30,82,226,251,75,
+    148,206,134,251,7,255,79,67,173,184,147,210,250,150,140,162,
+    94,98,154,245,56,218,64,99,137,119,151,255,189,153,2,212,
+    173,180,28,36,45,191,74,109,149,139,68,87,192,210,123,149 };
+local uint   PSZ[] = { 8 };     local string PTY[] = { "free" };   local char PBUF[4];
+local UBYTE  V8[]  = { 0 };     local ushort V16[] = { 0 };
+local uint   V32[] = { 0 };     local uint64 V64[] = { 0 };
+// Planting helpers. Every one is wrapped in SetEvilBit(false): a Tier A size or
+// a Tier A framing byte that drew an evil value loses every box after it.
+int PutU8 ( int64 p, int64 v ) { local int e8  = SetEvilBit(false); V8[0]  = v; ReadUByte (p, V8);  SetEvilBit(e8);  return 0; }
+int PutU16( int64 p, int64 v ) { local int e16 = SetEvilBit(false); V16[0] = v; ReadUShort(p, V16); SetEvilBit(e16); return 0; }
+int PutU32( int64 p, int64 v ) { local int e32 = SetEvilBit(false); V32[0] = v; ReadUInt  (p, V32); SetEvilBit(e32); return 0; }
+int PutU64( int64 p, int64 v ) { local int e64 = SetEvilBit(false); V64[0] = v; ReadUQuad (p, V64); SetEvilBit(e64); return 0; }
+// constraints.boxheader.size (Tier A, calculated): total byte count of the box,
+// counting the header. Planted at the header's own position so the bare
+int PlantBox( string ty, int64 body ) {
+    local int evil_bx = SetEvilBit(false);  PSZ[0] = body + 8;  ReadUInt(FTell(), PSZ);
+    PTY[0] = ty;        ReadBytes(PBUF, FTell() + 4, 4, PTY);  SetEvilBit(evil_bx);  return 0; }
+// dependencies[0]: size == 1 is the escape into constraints.boxheader.size64.
+// Legal on a small box and the only route into the extended-header path, so it
+int PlantBox64( string ty, int64 body ) {
+    local int evil_b6 = SetEvilBit(false);  PSZ[0] = 1;   ReadUInt(FTell(), PSZ);
+    PTY[0] = ty;  ReadBytes(PBUF, FTell() + 4, 4, PTY);  PutU64(FTell() + 8, body + 16);  SetEvilBit(evil_b6);  return 0; }
+// diversity_axes[4]: each sample's length is free and deliberately uneven.
+int64 SampSize( int64 t, int64 i ) {
+    if( T_span[t] <= 1 ) return T_base[t];  return T_base[t] + ((i * 37 + T_seed[t]) % T_span[t]); }
+int64 SampOff( int64 t, int64 i ) {
+    local int64 s = 0;  local int64 j = 0;  for( j = 0; j < i && j < T_ns[t]; j++ ) s += SampSize(t, j);  return s; }
+// constraints.mp4box.chunk_offset (Tier A): the absolute file offset of a chunk.
+int64 ChunkOff( int64 t, int64 c ) { return G_mdatBody + T_off[t] + SampOff(t, c * T_spc[t]); }  string CodecName( int64 t ) {
+    local int64 k = T_kind[t];  if( k <= 3 )  return "raw ";  if( k == 4 )  return "2vuy";
+    if( k == 5 )  return "b16g";  if( k == 6 )  return "BGRA";  if( k == 7 )  return "avc1";
+    if( k == 8 )  return "mp4v";  if( k == 9 )  return "hvc1";  if( k == 10 ) return "jpeg";
+    if( k == 11 ) return "encv";  if( k == 12 ) { if( T_ch[t] > 1 ) return "sowt"; return "twos"; }
+    if( k == 13 ) return "mp4a";  if( T_sub[t] == 8 ) return "tmcd";  if( T_sub[t] >= 4 && T_sub[t] <= 6 ) return "tx3g";  return "mp4s"; }
+// The codec configuration box nested inside a sample entry, 0 where the codec
+// has none. MEASURED: a configuration box that falls outside the entry's
+int64 CfgSize( int64 t ) {
+    if( T_kind[t] == 11 ) return 80 + 9 * T_aux[t];  // sinf > frma, schm, schi > tenc
+    if( T_kind[t] == 7 )  return 46;   // avcC:  8 + 11 + 22 SPS + 5 PPS
+    if( T_kind[t] == 8 )  return 64;  if( T_kind[t] == 9 )  return 31;   // esds:  8 +  4 + 52 (MPEG-4 Visual) hvcC:  8 + 23
+    if( T_kind[t] == 13 ) return 39;  return 0; }   // esds:  8 +  4 + 27 (MPEG-4 Audio)
+int64 EntrySize( int64 t ) {
+    if( T_kind[t] >= 12 && T_kind[t] <= 13 ) return 36 + CfgSize(t);   // AudioSampleEntry
+    if( T_kind[t] == 14 ) return 24;  return 86 + CfgSize(t); }   // generic SampleEntry VisualSampleEntry
+// structure[2] and structure[13]: the sample table, in the conventional order,
+// with the stsz/stco pair occasionally swapped because out-of-order tables are
+int64 StblN( int64 t ) {
+    local int64 n = 5;  if( T_kf[t] > 0 ) n = 6;  if( T_enc[t] ) n += 3;  return n; }
+int64 StblSlot( int64 t, int64 i ) {
+    local int64 j = i;  if( T_kf[t] == 0 && j >= 2 ) j++;  if( T_ord[t] && j == 4 ) return 5;  if( T_ord[t] && j == 5 ) return 4;  return j; }
+string StblChild( int64 t, int64 i ) {
+    local int64 j = StblSlot(t, i);  if( j == 0 ) return "stsd";  if( j == 1 ) return "stts";
+    if( j == 2 ) return "stss";  if( j == 3 ) return "stsc";  if( j == 4 ) return "stsz";
+    if( j == 5 ) { if( T_co64[t] ) return "co64"; return "stco"; }   // structure[9]
+    if( j == 6 ) return "saiz";  if( j == 7 ) return "saio";  return "senc"; }
+int64 StblChildSize( int64 t, int64 i ) {
+    local int64 j = StblSlot(t, i);
+    if( j == 0 )
+    {   // the second entry of an audio stsd is the original's 'enca' arm, whose
+        // 28-byte body is a different length from a conforming AudioSampleEntry
+        if( T_nsd[t] > 1 && T_kind[t] >= 12 ) return 8 + EntrySize(t) + 36;  return 8 + T_nsd[t] * EntrySize(t); }
+    if( j == 1 ) return 8 + 8 * T_runs[t];  if( j == 2 ) return 8 + 4 * T_kf[t];
+    if( j == 3 ) return 8 + 12 * T_nsc[t];  if( j == 4 ) { if( T_cst[t] ) return 12; return 12 + 4 * T_ns[t]; }
+    if( j == 5 ) { if( T_co64[t] ) return 8 + 8 * T_nch[t]; return 8 + 4 * T_nch[t]; }  if( j == 6 ) return 9 + 8 * T_aux[t] + T_ns[t];
+    if( j == 7 ) { if( T_ver[t] ) return 16 + 8 * T_aux[t]; return 12 + 8 * T_aux[t]; }
+    if( T_ss[t] ) return 8 + 16 * T_ns[t];  return 8 + 8 * T_ns[t]; }
+int64 StblSize( int64 t ) {
+    local int64 s = 0;  local int64 i = 0;  for( i = 0; i < StblN(t); i++ ) s += 8 + StblChildSize(t, i);  return s; }
+// dependencies[10] and [11]: the handler type decides the media header box.
+int64 MhdSize( int64 t ) {
+    if( T_sub[t] == 0 ) return 12;  if( T_sub[t] == 1 ) return 8;  return 4; }   // vmhd smhd nmhd
+int64 MinfSize( int64 t ) { return 8 + MhdSize(t) + 36 + 8 + StblSize(t); }
+int64 MdiaSize( int64 t ) { return 32 + 28 + G_hdlrRest + 8 + MinfSize(t); }  int64 TrakSize( int64 t ) {
+    local int64 s = 92 + 8 + MdiaSize(t);  if( T_ed[t] > 0 ) s += 24 + 12 * T_ed[t];  return s; }   // edts > elst
+int64 MvexSize() {
+    local int64 s = 16;  local int64 t = 0;  for( t = 0; t < G_ntrk; t++ ) s += 32;  return s; }   // mehd, version 0 trex
+int64 MoovSize() {
+    local int64 s = 108;  local int64 t = 0;  for( t = 0; t < G_ntrk; t++ ) s += 8 + TrakSize(t);   // structure[10]: mvhd first structure[11]
+    if( G_mvex ) s += 8 + MvexSize();  return s; }   // dependencies[17]
+// diversity_axes[10]: which optional fields a fragment carries is free, and the
+// flag words must agree with what is physically written - constraints.mp4box.flag.
+int64 Bits( int64 v, int64 m ) { if( v & m ) return 1; return 0; }  int64 TfhdSize() {
+    return 8 + 8 * Bits(G_tfhdF, 1) + 4 * Bits(G_tfhdF, 2)
+             + 4 * Bits(G_tfhdF, 8) + 4 * Bits(G_tfhdF, 16) + 4 * Bits(G_tfhdF, 32); }
+int64 TrunSize() {
+    local int64 per = 4 * (Bits(G_trunF, 256) + Bits(G_trunF, 512)
+                         + Bits(G_trunF, 1024) + Bits(G_trunF, 2048));
+    return 8 + 4 * Bits(G_trunF, 1) + 4 * Bits(G_trunF, 4) + G_fsn * per; }
+int64 TrafSize() { return 8 + TfhdSize() + 8 + TrunSize(); }  int64 MoofSize() { return 16 + 8 + TrafSize(); }
+// The plan itself. Every quantity below is a free draw or a function of one;
+// the only thing the budget touches is how many samples the sequence ends at.
+int64 PlanFile( int64 seedBase ) {
+    local int64 i = 0;  local int64 t = 0;  local int64 b = 0;
+    local int64 room = B_MEDIA;  local int64 acc = 0;  local int64 k = 0;  local int64 p = 0;
+    for( i = 0; i < 80; i++ ) S[i] = ReadUByte(seedBase + i);
+    // diversity_axes[14]: samples_per_chunk is a whole free uint32 draw, not a
+    // byte, so the field keeps the engine's own full-width distribution.
+    for( t = 0; t < 4; t++ ) Q[t] = ReadUInt(seedBase + 80 + 4 * t);  G_ntrk      = 1 + (S[0] % 4);   // structure[11]
+    G_moovFirst = S[1] % 2;  G_big       = ((S[1] / 2) % 5) == 0;   // structure[5]: both orders dependencies[0]: the 64-bit header
+    G_mvex      = (S[2] % 3) == 0;  G_nfrag     = S[2] % 3;   // dependencies[17] structure[8]
+    if( G_nfrag > 0 ) G_mvex = 1;  G_nbrand    = 1 + (S[3] % 6);   // dependencies[17]: MEASURED, a moof the brand count is free
+    G_hdlrRest  = 5 + (S[4] % 20);          // ffmpeg reads 24 bytes of hdlr body
+    G_seedKind  = S[5] % 2;  G_seedLen   = 96 + ((S[5] / 2) % 24);  G_extra     = S[6] % 5;   // structure[7]
+    G_udta      = (S[6] / 5) % 3 == 0;  G_fsn       = 1 + (S[7] % 4);
+    G_tfhdF     = S[8] % 64;   G_tfhd0 = (S[8] / 64) % 4;  G_trunF     = 1 + 256 * (S[9] % 16);  G_sidxN     = 1 + (S[10] % 3);   G_psshV = S[11] % 2;
+    G_psshK     = S[12] % 3;         G_psshD = S[13] % 24;  for( t = 0; t < G_ntrk; t++ ) {
+        b = 16 + 10 * t;  T_sub[t] = S[b] % 21;  if( t == 0 && (S[56] % 8) < 5 ) T_sub[0] = 0;   // Tier B: all 21 handlers most files carry a
+        else if( t == 0 && (S[56] % 8) < 7 ) T_sub[0] = 1;  if( T_sub[t] == 0 ) {   // decodable track, so the corpus gets past the gate
+            T_kind[t] = S[b + 7] % 12;  if( t == 0 && (S[57] % 4) != 0 ) T_kind[0] = S[57] % 7; }
+        else if( T_sub[t] == 1 ) T_kind[t] = 12 + (S[b + 7] % 2);
+        else                     T_kind[t] = 14;  k = T_kind[t];
+        T_w[t]   = S[b + 1];  T_h[t] = S[b + 2];  T_ch[t]  = 1 + (S[b + 9] % 2);   // diversity_axes[0] and [1]
+        T_mts[t] = S[b + 6];  if( (S[b + 3] % 3) == 0 ) T_mts[t] = S[b + 6] * 1000;   // diversity_axes[11]
+        T_spc[t] = Q[t];  T_co64[t] = (S[b + 4] / 8) % 2;  T_enc[t]  = (S[76 + t] % 4) == 0;   // diversity_axes[14]
+        T_ss[t]   = T_enc[t] && (S[b + 4] % 2);  T_aux[t]  = S[72 + t] % 2;   // dependencies[7]; and the aux-info-type flag bit
+        T_ver[t]  = S[b + 6] % 2;                                // Tier B: both versions
+        T_ord[t]  = (S[b + 2] % 4) == 0;  T_kf[t]   = S[b + 8] % 4;  T_ed[t]   = 0;   // diversity_axes[15]
+        if( (S[64 + t] % 5) == 0 ) T_ed[t] = 1 + (S[b + 8] % 2);  T_nsd[t]  = 1 + ((S[b + 8] / 12) % 2);
+        T_runs[t] = 1 + ((S[b + 8] / 24) % 3);  T_cfg[t]  = (S[b + 1] % 4) != 0;
+        // dependencies[15]: a sample-to-chunk record names a sample description by
+        // index, and MEASURED at mov.c:4363 a reference that does not resolve makes
+        T_sdi[t]  = 1 + ((S[68 + t] % 7) % T_nsd[t]);  if( (S[68 + t] % 12) == 0 ) T_sdi[t] = 0;
+        T_dep[t] = 24;  T_bpp[t] = 0;  T_span[t] = 1;  T_seed[t] = S[b + 5];  if( k == 0 )      { T_dep[t] = 24;  T_bpp[t] = 3; }   // rgb24
+        else if( k == 1 ) { T_dep[t] = 32;  T_bpp[t] = 4; }      // argb
+        else if( k == 2 ) { T_dep[t] = 16;  T_bpp[t] = 2; }      // rgb555be
+        else if( k == 3 ) { T_dep[t] = 8;   T_bpp[t] = 1; }      // pal8
+        else if( k == 4 ) { T_dep[t] = 24;  T_bpp[t] = 2; }      // uyvy422
+        else if( k == 5 ) { T_dep[t] = 16;  T_bpp[t] = 2; }      // gray16be
+        else if( k == 6 ) { T_dep[t] = 32;  T_bpp[t] = 4; }      // bgra
+        // payload_wellformedness: an uncompressed sample is exactly the number
+        // of bytes its declared geometry implies, so the size DERIVES from the
+        if( k == 4 ) T_base[t] = ((T_w[t] + 1) / 2) * 2 * T_h[t] * 2;   // a 4:2:2 row is
+        else if( T_bpp[t] > 0 ) T_base[t] = T_w[t] * T_h[t] * T_bpp[t]; // an even number
+        else if( k == 12 ) T_base[t] = T_ch[t] * 2 * (1 + (S[b + 9] / 2) % 32);
+        else { T_base[t] = 8 + (S[b + 9] % 120);  T_span[t] = 1 + (S[b + 3] % 97); }
+        T_ns[t] = S[b + 3];  acc = 0;  p = 0;   // diversity_axes[3] p: media plus table cost
+        for( i = 0; i < T_ns[t] && p + SampSize(t, i) + 40 <= room; i++ )
+        { acc += SampSize(t, i);  p += SampSize(t, i) + 40; }  T_ns[t] = i;  room -= p;   // structure[4] output_budget
+        T_off[t] = G_media;  G_media += acc;  T_nch[t] = 0;  T_nsc[t] = 0;  if( T_ns[t] > 0 ) {
+            if( T_spc[t] > T_ns[t] ) T_spc[t] = T_ns[t];  T_nch[t] = 1;  T_nsc[t] = 1;   // the free draw is the run length, capped at the
+            if( T_spc[t] > 0 )                                   // samples that exist; zero
+            {                                                    // stays legal and reaches
+                T_nch[t] = (T_ns[t] + T_spc[t] - 1) / T_spc[t];  if( T_ns[t] % T_spc[t] && T_nch[t] > 1 ) T_nsc[t] = 2; } }   // the index loop guard
+        else { T_runs[t] = 0;  T_kf[t] = 0; }  if( T_runs[t] > T_ns[t] ) T_runs[t] = T_ns[t];
+        if( T_kf[t] > T_ns[t] ) T_kf[t] = T_ns[t];  T_cst[t] = 0;   // dependencies[8]
+        if( T_span[t] <= 1 && T_base[t] > 0 && (S[b + 5] % 3) == 0 ) T_cst[t] = T_base[t]; }
+    G_fsz = T_base[0];  if( G_fsz < 1 ) G_fsz = 16;   // a fragment sample is the same shape as the track's own samples
+    if( G_nfrag * (MoofSize() + 8 + G_fsn * G_fsz) > B_MOOF ) G_nfrag = 0;  G_moovLen = MoovSize();
+    p = seedBase + G_seedLen;  if( G_moovFirst ) p += 8 + G_moovLen;  G_mdatBody = p + 8;
+    if( G_big ) G_mdatBody = p + 16;  return 0; }   // the extended header is 16 bytes
+// constraints.mp4box.entries (Tier A, payload_wellformedness). The framing that
+// MEASURED as the difference between a stream and no stream at all: six zero
+int PlanEntry( int64 t, int64 i ) {
+    local int64 p = FTell();  local int64 k = T_kind[t];  if( i > 0 && k >= 12 && k <= 13 ) { PlantBox("enca", 28); return 0; }
+    PlantBox(CodecName(t), EntrySize(t) - 8);  PutU8(p + 8, 0);   PutU8(p + 9, 0);   PutU8(p + 10, 0);
+    PutU8(p + 11, 0);  PutU8(p + 12, 0);  PutU8(p + 13, 0);  PutU16(p + 14, 1);  if( k == 14 ) return 0;  if( k >= 12 ) {
+        PutU16(p + 24, T_ch[t]);  PutU16(p + 26, 16);  PutU32(p + 32, (T_mts[t] % 65536) * 65536);  return 0; }
+    PutU16(p + 32, T_w[t]);  PutU16(p + 34, T_h[t]);  PutU16(p + 48, 1);   // derives_from width/height frame_count
+    PutU16(p + 82, T_dep[t]);  return 0; }   // depth picks the pixel format
+int PlanCfg( int64 t ) {
+    local int64 p = FTell();  local int64 i = 0;  local int64 k = T_kind[t];
+    if( k == 11 ) { PlantBox("sinf", 72 + 9 * T_aux[t]);  return 0; }  if( k == 7 ) {
+        PlantBox("avcC", 38);  PutU8(p + 8, 1);   // configurationVersion, ISO 14496-15
+        PutU8(p + 12, 255);  PutU8(p + 13, 225);   // lengthSizeMinusOne = 3 one sequence parameter set
+        PutU16(p + 14, 22);  PutU8(p + 38, 1);  PutU16(p + 39, 5);  if( T_cfg[t] ) {
+            for( i = 0; i < 22; i++ ) PutU8(p + 16 + i, SPSB[i]);  for( i = 0; i < 5; i++ )  PutU8(p + 41 + i, PPSB[i]); }
+        return 0; }
+    if( k == 8 ) {
+        PlantBox("esds", 56);  if( T_cfg[t] ) { for( i = 0; i < 52; i++ ) PutU8(p + 12 + i, ESDV[i]); }  return 0; }
+    if( k == 9 ) {
+        PlantBox("hvcC", 23);  if( T_cfg[t] ) { for( i = 0; i < 23; i++ ) PutU8(p + 8 + i, HVCC[i]); }  return 0; }
+    PlantBox("esds", 31);  if( T_cfg[t] ) { for( i = 0; i < 27; i++ ) PutU8(p + 12 + i, ESDA[i]); }  return 0; }
+// meta.unnamed_payloads: mdat has no field in this template, so its framing is
+// written here. For an AVC track that is a run of (4-byte big-endian length,
+int WriteMedia() {
+    local int64 t = 0;  local int64 i = 0;  local int64 p = 0;  local int64 sz = 0;  for( t = 0; t < G_ntrk; t++ ) {
+        if( T_kind[t] == 7 )
+            for( i = 0; i < T_ns[t]; i++ ) {
+                p = G_mdatBody + T_off[t] + SampOff(t, i);  sz = SampSize(t, i);
+                if( sz >= 6 ) { PutU32(p, sz - 4);  PutU8(p + 4, S[(i + t) % 48] % 32); } } }
+    return 0; }
+int PlantStr( int64 p, string v ) {
+    local int evil_st = SetEvilBit(false);  PTY[0] = v;  ReadBytes(PBUF, p, 4, PTY);  SetEvilBit(evil_st);  return 0; }
+// Every container's children, planted one at a time so each child's own size is
+// known before its header is written. structure[10] puts mvhd first, structure[2]
+int PlanChild( string ct, int64 i ) {
+    local int64 t = G_trk;  local int64 p = FTell();  local int64 j = 0;  local int64 c = 0;
+    local int64 n = 0;  local string cb = "free";  if( ct == "moov" ) {
+        if( i == 0 ) { PlantBox("mvhd", 100);  PutU8(p + 8, 0);  return 0; }
+        if( i <= G_ntrk ) { G_trk = i - 1;  PlantBox("trak", TrakSize(i - 1));  return 0; }  PlantBox("mvex", MvexSize());  return 0; }
+    if( ct == "trak" ) {
+        if( i == 0 ) {
+            PlantBox("tkhd", 84);  PutU8(p + 8, 0);  T_tid[t] = ReadUInt(p + 20);   // a free draw that also tells the fragment
+            return 0; }  // headers which track_id to reference
+        if( i == 1 && T_ed[t] > 0 ) { PlantBox("edts", 16 + 12 * T_ed[t]);  return 0; }  PlantBox("mdia", MdiaSize(t));  return 0; }
+    if( ct == "edts" ) {
+        PlantBox("elst", 8 + 12 * T_ed[t]);  PutU8(p + 8, T_ver[t]);  PutU32(p + 12, T_ed[t]);  return 0; }   // num_entries, Tier A
+    if( ct == "mdia" ) {
+        if( i == 0 ) { PlantBox("mdhd", 24);  PutU8(p + 8, 0);  return 0; }  if( i == 1 ) {
+            PlantBox("hdlr", 20 + G_hdlrRest);  PutU8(p + 8, T_ver[t]);  ReadBytes(PBUF, p + 12, 4, HTYPE);   // constraints.mp4box.type
+            PlantStr(p + 16, HDLR[T_sub[t]]);  return 0; }   // constraints.mp4box.subtype
+        PlantBox("minf", MinfSize(t));  return 0; }
+    if( ct == "minf" ) {
+        if( i == 0 ) {
+            if( T_sub[t] == 0 ) PlantBox("vmhd", 12);            // dependencies[10]
+            else if( T_sub[t] == 1 ) PlantBox("smhd", 8);        // dependencies[11]
+            else PlantBox("nmhd", 4);  PutU8(p + 8, T_ver[t]);  if( T_sub[t] != 0 ) PutU8(p + 11, 1);   // vmhd's flags byte is a bitfield and
+            return 0; }  // cannot carry a lookahead
+        if( i == 1 ) { PlantBox("dinf", 28);  return 0; }  PlantBox("stbl", StblSize(t));  return 0; }   // structure[12]
+    if( ct == "stbl" ) {
+        cb = StblChild(t, i);  PlantBox(cb, StblChildSize(t, i));  PutU8(p + 8, T_ver[t]);   // Tier B: both versions
+        if( cb == "stsd" ) { PutU32(p + 12, T_nsd[t]);  return 0; }  if( cb == "stts" ) { PutU32(p + 12, T_runs[t]);  return 0; }
+        if( cb == "stss" ) { PutU32(p + 12, T_kf[t]);  return 0; }  if( cb == "stsc" ) {
+            PutU32(p + 12, T_nsc[t]);
+            if( T_nsc[t] > 0 )                                // str_stsc.first_chunk is 1,
+            {                                                 // then strictly increasing
+                PutU32(p + 16, 1);  PutU32(p + 20, T_spc[t]);  if( T_sdi[t] ) PutU32(p + 24, T_sdi[t]); }   // dependencies[15]
+            if( T_nsc[t] > 1 ) {
+                PutU32(p + 28, T_nch[t]);  PutU32(p + 32, T_ns[t] - T_spc[t] * (T_nch[t] - 1));
+                if( T_sdi[t] ) PutU32(p + 36, T_sdi[t]); }  // dependencies[15]
+            return 0; }
+        if( cb == "stsz" ) {
+            PutU32(p + 12, T_cst[t]);  PutU32(p + 16, T_ns[t]);        // dependencies[8]
+            if( T_cst[t] == 0 )
+                for( j = 0; j < T_ns[t]; j++ ) PutU32(p + 20 + 4 * j, SampSize(t, j));
+            return 0; }
+        if( cb == "stco" ) {
+            PutU32(p + 12, T_nch[t]);  for( c = 0; c < T_nch[t]; c++ ) PutU32(p + 16 + 4 * c, ChunkOff(t, c));  return 0; }   // dependencies[19]
+        if( cb == "co64" ) {
+            PutU32(p + 12, T_nch[t]);  for( c = 0; c < T_nch[t]; c++ ) PutU64(p + 16 + 8 * c, ChunkOff(t, c));  return 0; }
+        if( cb == "saiz" ) {
+            PutU8(p + 11, T_aux[t]);  PutU8(p + 12 + 8 * T_aux[t], 0);  PutU32(p + 13 + 8 * T_aux[t], T_ns[t]);  return 0; }
+        if( cb == "saio" ) {
+            PutU8(p + 11, T_aux[t]);  PutU32(p + 12 + 8 * T_aux[t], 1);  // one chunk only:
+            if( T_ver[t] ) PutU64(p + 16 + 8 * T_aux[t], ChunkOff(t, 0)); // mov.c refuses
+            else PutU32(p + 16 + 8 * T_aux[t], ChunkOff(t, 0));  return 0; }   // more than one
+        PutU8(p + 11, 2 * T_ss[t]);  PutU32(p + 12, T_ns[t]);          // senc, dependencies[7]
+        if( T_ss[t] ) for( j = 0; j < T_ns[t]; j++ ) PutU16(p + 24 + 16 * j, 1);  return 0; }
+    if( ct == "udta" ) { PlantBox("free", 8);  return 0; }
+    if( ct == "dinf" ) { PlantBox("dref", 20);  PutU8(p + 8, 0);  PutU32(p + 12, 1);  return 0; }
+    if( ct == "dref" ) { PlantBox("url ", 4);  PutU8(p + 8, 0);  PutU8(p + 11, 1);  return 0; }  if( ct == "mvex" ) {
+        if( i == 0 ) { PlantBox("mehd", 8);  PutU8(p + 8, 0);  return 0; }  PlantBox("trex", 24);  PutU8(p + 8, 0);
+        if( i <= G_ntrk ) PutU32(p + 12, T_tid[i - 1]);    // dependencies[16]: each trex
+        else PutU32(p + 12, T_tid[0]);  PutU32(p + 16, 1);   // names a real track dependencies[15] again: the
+        PutU32(p + 24, G_fsz);  return 0; }   // fragment defaults must resolve
+    if( ct == "moof" ) {
+        if( i == 0 ) { PlantBox("mfhd", 8);  PutU8(p + 8, 0);  PutU32(p + 12, G_fragSeq);  return 0; }  PlantBox("traf", TrafSize());  return 0; }
+    if( ct == "traf" ) {
+        if( i == 0 ) {
+            PlantBox("tfhd", TfhdSize());                        // constraints.mp4box.flag
+            PutU8(p + 8, 0);  PutU8(p + 9, G_tfhd0);  PutU8(p + 10, 0);  PutU8(p + 11, G_tfhdF);
+            PutU32(p + 12, T_tid[0]);  if( G_tfhdF & 1 ) PutU64(p + 16, G_moofPos);   // dependencies[16]: matching the run's samples are
+            j = p + 16 + 8 * Bits(G_tfhdF, 1);  if( G_tfhdF & 2 ) { PutU32(j, 1);  j += 4; }  if( G_tfhdF & 8 ) j += 4;   // addressed from the moof
+            if( G_tfhdF & 16 ) PutU32(j, G_fsz);  return 0; }   // a zero-length fragment sample aborts the parse
+        PlantBox("trun", TrunSize());  PutU8(p + 8, T_ver[0]);
+        PutU8(p + 9, G_trunF / 65536);  PutU8(p + 10, (G_trunF / 256) % 256);  PutU8(p + 11, G_trunF % 256);
+        PutU32(p + 12, G_fsn);                                   // sample_count, Tier A
+        if( G_trunF & 1 ) PutU32(p + 16, MoofSize() + 16);  if( G_trunF & 512 ) {   // data_offset sample-size-present
+            c = p + 16 + 4 * Bits(G_trunF, 1) + 4 * Bits(G_trunF, 4) + 4 * Bits(G_trunF, 256);
+            j = 4 * (Bits(G_trunF, 256) + Bits(G_trunF, 512)
+                   + Bits(G_trunF, 1024) + Bits(G_trunF, 2048));
+            for( n = 0; n < G_fsn; n++ ) PutU32(c + j * n, G_fsz); }
+        return 0; }
+    if( ct == "sinf" ) {
+        if( i == 0 ) { PlantBox("frma", 4);  return 0; }  if( i == 1 ) { PlantBox("schm", 12);  PutU8(p + 8, 0);  return 0; }
+        PlantBox("schi", 32 + 9 * T_aux[t]);  return 0; }
+    if( ct == "schi" ) {
+        PlantBox("tenc", 24 + 9 * T_aux[t]);  PutU8(p + 8, T_ver[t]);   // dependencies[5] and [6]
+        if( T_aux[t] ) PutU8(p + 15, 0);                         // per-sample IV size 0 brings
+        else PutU8(p + 15, 8 + 8 * T_ss[t]);  if( T_aux[t] ) PutU8(p + 32, 8);  return 0; }   // the constant IV into being
+    PlantBox("free", 0);  return 0; }   // never leave a child header to chance
+// structure[6]: the top-level box sequence. ftyp heads the file (structure[0]),
+// the plan's seed box follows, then moov and mdat in either order (structure[5]),
+int PlanTop( int64 i ) {
+    local int64 p = FTell();  local int64 j = 0;  local int64 n = 0;  local int evil_tp = 0;  if( i == 0 ) {
+        G_nbrand = 1 + (ReadUByte(p + 12) % 6);      // a free draw inside minor_version,
+        PlantBox("ftyp", 8 + 4 * G_nbrand);          // which is Tier C and stays free
+        ReadBytes(PBUF, p + 8, 4, BRANDP, BRANDS);       // constraints.mp4box.major_brand
+        for( j = 0; j < G_nbrand; j++ )                  // constraints.compatible_brand.brand
+            ReadBytes(PBUF, p + 16 + 4 * j, 4, BRANDP, BRANDS);
+        return 0; }
+    if( i == 1 ) {
+        if( G_seedKind ) PlantBox("skip", G_seedLen);    // structure[7]
+        else PlantBox("free", G_seedLen);  return 0; }
+    if( i == 2 || i == 3 ) {
+        if( (i == 2) == (G_moovFirst != 0) ) { G_trk = 0;  PlantBox("moov", G_moovLen); }
+        else if( G_big ) PlantBox64("mdat", G_media);
+        else PlantBox("mdat", G_media);  return 0; }
+    n = i - 4;  if( n < 2 * G_nfrag ) {   // structure[8]
+        if( (n % 2) == 0 ) { G_fragSeq++;  G_moofPos = p;  PlantBox("moof", MoofSize()); }
+        else PlantBox("mdat", G_fsn * G_fsz);  return 0; }
+    n -= 2 * G_nfrag;  if( n == 0 && G_extra >= 3 ) {
+        PlantBox("sidx", 24 + 8 * T_ver[0] + 12 * G_sidxN);  PutU8(p + 8, T_ver[0]);  PutU16(p + 30 + 8 * T_ver[0], G_sidxN);  return 0; }
+    if( n == 1 && G_extra >= 2 ) {
+        j = 24 + G_psshD;  if( G_psshV ) j += 4 + 16 * G_psshK;  PlantBox("pssh", j);  PutU8(p + 8, G_psshV);   // dependencies[4]
+        if( (S[14] % 7) < 6 )   // Tier B: all six registered systems, plus the unregistered case
+            for( j = 0; j < 16; j++ ) PutU8(p + 12 + j, SYSID[16 * (S[14] % 6) + j]);
+        if( G_psshV ) PutU32(p + 28, G_psshK);  j = 28;  if( G_psshV ) j += 4 + 16 * G_psshK;
+        PutU32(p + j, G_psshD);  return 0; }   // constraints.mp4box.DataSize
+    if( n == 2 && G_udta ) { PlantBox("udta", 16);  return 0; }
+    evil_tp = SetEvilBit(false);   j = S[(n * 7) % 80] % 24;   // structure[7]: registered
+    if( p + 8 + j > B_FILE || G_free + 8 + j > B_FREE ) j = 0;  // and invented codes, mixed,
+    G_free += 8 + j;   PSZ[0] = 8 + j;   ReadUInt(p, PSZ);      // inside structure[6]'s cap
+    ReadBytes(PBUF, p + 4, 4, FREEP, FREES);  SetEvilBit(evil_tp);  return 0; }
+uint64 ContentSize(boxheader& bh)
+{
+    return (exists(bh.size64) ? bh.size64 : bh.size) - sizeof(bh);
+}
+
+uint64 BoxSize(boxheader& bh)
+{
+    return (exists(bh.size64) ? bh.size64 : bh.size);
+}
+
+string ReadFP16(fp16& f)
+{
+    local string buf;
+    SPrintf(buf, "%lf", (double)f.value / (double)0x100);
+    return buf;
+}
+
+string ReadFP32(fp32& f)
+{
+    local string buf;
+    SPrintf(buf, "%lf", (double)f.value / (double)0x10000);
+    return buf;
+}
+
+string ReadFP32uvw(fp32uvw& f)
+{
+    local string buf;
+    SPrintf(buf, "%lf", (double)f.value / (double)0x40000000);
+    return buf;
+}
+
+wstring ReadBox(mp4box& box)
+{
+    return box.hdr.type.value;
+}
+
+string BoxComment(mp4box& box)
+{
+    switch (box.hdr.type.value)
+    {
+        case "dinf": return "Data Information Box";  case "dref": return "Data Reference Box";
+        case "edts": return "Edit Box";  case "elst": return "Edit List Box";
+        case "free": return "Free Space Box";  case "ftyp": return "File Type Box";
+        case "hdlr": return "Handler Reference Box";  case "mdat": return "Media Data Box";
+        case "mdhd": return "Media Header Box";  case "mdia": return "Media Box";
+        case "minf": return "Media Information Box";  case "moov": return "Movie Box";
+        case "mvhd": return "Movie Header Box";  case "stbl": return "Sample Table Box";
+        case "tkhd": return "Track Header Box";  case "trak": return "Track Box";
+        case "udta": return "User Data Box";  case "vmhd": return "Video Media Information Header Box";
+        // Added mvex
+        case "mvex": return "Movie Extends Box";  case "mehd": return "Movie Extends Header Box";
+        case "trex": return "Track Extends Box";  case "sidx": return "Segment Index Box";
+        case "moof": return "Movie Fragment Box";  case "mfhd": return "Movie Fragment Header Box";
+        case "traf": return "Track Fragment Box";  case "trun": return "Track Fragment Run Box";
+        case "saiz": return "Sample auxiliary information sizes";  case "saio": return "Sample auxiliary information offsets";
+        case "senc": return "Sample encryption";  case "pssh": return "Protection System Specific Header Box";
+        // Added the following to support stbl child atoms
+        case "stss": return "Sync Sample Box";  case "stsz": return "Sample Size Box";
+        case "stco": return "Chunk Offset Box";  case "co64": return "Chunk Large Offset Box";
+        case "stsc": return "Sample To Chunk Box";  case "stts": return "Time To Sample Box";
+        case "stsd": return "Sample Description Box";
+        default: return "Unknown box type";
+    }
+}
+
+wstring ReadFourCC(fourcc& f)
+{
+    return f.value;
+}
+
+wstring ReadBoxHeader(boxheader& bh)
+{
+    local string s;
+    SPrintf(s, "[size=%Lu]", ContentSize(bh));
+    return bh.type.value + " " + s;
+}
+
+string ReadCompatibleBrand(compatible_brand& b)
+{
+    return b.brand.value;
+}
+
+string ReadTime(mp4time& t)
+{
+    // Magic number 2082844800 is the difference in seconds between the
+    // classic Mac OS epoch (midnight on January 1st 1904) and the POSIX
+    // epoch (midnight on January 1st 1970).
+    local quad value = (quad)t.value - 2082844800;
+    return TimeTToString(value, "yyyy-MM-dd hh:mm:ss");
+}
+
+string ReadLang(mp4lang& lang)
+{
+    if (lang.value < 0x0400 || lang.value == qtlUnspecified)
+    {
+        local qtlang v = lang.value;
+        return EnumToString(v);
+    }
+    local char iso[4];
+    iso[0] = ((lang.value & 0x7c00) >> 10) + 0x60;
+    iso[1] = ((lang.value & 0x03e0) >> 5) + 0x60;
+    iso[2] = (lang.value & 0x001f) + 0x60;
+    iso[3] = '\0';
+    return iso;
+}
+
+string ReadOpcolor(qtopcolor& c)
+{
+    local string result;
+    SPrintf(result, "r=%d, g=%d, b=%d", c.red, c.green, c.blue);
+    return result;
+}
+
+string PipeConcat(string s1, string s2)
+{
+    if (Strlen(s1) > 0)
+    {
+        return s1 + " | " + s2;
+    }
+    return s2;
+}
+
+string ReadTkhdFlags(tkhd_flags& f)
+{
+    local string result;
+    if (f.track_enabled)
+    {
+        result = "Track enabled";
+    }
+    if (f.track_in_movie)
+    {
+        result = PipeConcat(result, "Track in movie");
+    }
+    if (f.track_in_preview)
+    {
+        result = PipeConcat(result, "Track in preview");
+    }
+    if (f.track_in_poster)
+    {
+        result = PipeConcat(result, "Track in poster");
+    }
+    return result;
+}
+
+string ReadVmhdFlags(vmhd_flags& f)
+{
+    local string result;
+    if (f.no_lean_ahead)
+    {
+        result = "No lean ahead";
+    }
+    return result;
+}
+
+typedef struct
+{
+    int16 value;
+} fp16 <read=ReadFP16, open=suppress>;
+
+typedef struct
+{
+    int32 value;
+} fp32 <read=ReadFP32, open=suppress>;
+
+typedef struct
+{
+    int32 value;
+} fp32uvw <read=ReadFP32uvw, open=suppress>;
+
+typedef struct
+{
+    fp32 a <name="a">;
+    fp32 b <name="b">;
+    fp32uvw u <name="u">;
+    fp32 c <name="c">;
+    fp32 d <name="d">;
+    fp32uvw v <name="v">;
+    fp32 x <name="x">;
+    fp32 y <name="y">;
+    fp32uvw w <name="w">;
+} matrix <open=suppress>;
+
+typedef struct
+{
+    char value[4] <open=suppress>;
+} fourcc <read=ReadFourCC, open=suppress>;
+
+typedef struct
+{
+    uint32 size;                        // constraints.boxheader.size, Tier A calculated:
+    fourcc type;                        // planted by PlantBox before this declaration
+    local uint32 sz = size;             // a local copy: comparing the field itself makes
+    if (sz == 1)                        // ffcompile mine {1} and pin every box size to it
+    {
+        uint64 size64;                  // dependencies[0]
+    }
+} boxheader <read=ReadBoxHeader, open=suppress>;
+
+typedef struct
+{
+    fourcc brand;
+} compatible_brand <read=ReadCompatibleBrand, open=suppress>;
+
+typedef struct
+{
+    uint32 value;
+} mp4time <read=ReadTime, open=suppress>;
+
+typedef struct
+{   // constraints.mp4lang.value (Tier B): every QuickTime code, the packed ISO half and
+    uint16 value = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
+        44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85,
+        87, 88, 89, 90, 91, 92, 93, 94, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 32767, 21956, 22017, 21861, 15956, 22018, 0, 0, 21956, 21956, 22017, 22017,
+        32767, 32767 };   // qtlUnspecified; the preferred four are repeated to weight them
+} mp4lang <read=ReadLang, open=suppress>;
+
+typedef struct
+{
+    uint16 red;
+    uint16 green;
+    uint16 blue;
+} qtopcolor <read=ReadOpcolor, open=suppress>;
+
+typedef struct
+{
+    uint32 duration <name="Duration", comment="Duration of this edit segment in movie time scale units (specified in mvhd box)">;
+    uint32 media_time <name="Media Time", comment="Start time of this edit segment in media time scale units (specified in mdhd box)">;
+    fp32 media_rate <name="Media Rate", comment="Relative rate at which to play this edit segment">;
+} elst_entry;
+
+typedef struct
+{
+    byte dummy[2] <open=suppress>;
+    byte dummy2 : 4;
+    byte track_in_poster : 1 <name="Track in poster">;
+    byte track_in_preview : 1 <name="Track in preview">;
+    byte track_in_movie : 1 <name="Track in movie">;
+    byte track_enabled : 1 <name="Track enabled">;
+} tkhd_flags <read=ReadTkhdFlags, open=suppress>;
+
+typedef struct
+{
+    byte dummy[2];
+    byte dummy2 : 7;
+    byte no_lean_ahead : 1;
+} vmhd_flags <read=ReadVmhdFlags, open=suppress>;
+
+// The following three structs are used with sample table atoms
+typedef struct
+{
+    uint32 first_chunk;
+    uint32 samples_per_chunk;
+    uint32 sample_description_index;
+}str_stsc;
+
+typedef struct
+{
+    uint32 sample_count;
+    uint32 sample_delta;
+}str_stts;
+
+typedef struct
+{
+    uint32 contentSize;
+    byte   content[contentSize - 4];
+    /*local quad so = FTell();
+    while(FTell() < so + contentSize - 4)
+    {
+        mp4box box <name="Box">;
+    }*/
+}str_stsd;
+
+typedef struct
+{
+    uint32 reference_size31_type1;
+    uint32 subsegment_duration;
+    uint32 SAP_delta_time28_type3_starts_with1;
+}str_sidx;
+
+
+typedef struct
+{
+    // Seperated box start/end logic as box sizes being larger than content of the box caused issues
+    // For example 120 bit sized mvhd; it's wrong as it should be a fixed size, but it happens. 
+    local uint64 startOffset = FTell();
+
+    boxheader hdr;
+    
+    local uint64 endOffset = startOffset + BoxSize(hdr);
+    local uint64 contentsize = ContentSize(hdr);
+    
+    switch (hdr.type.value)
+    {
+        // These box types are all just containers for other boxes
+        case "dinf":
+        case "edts":
+        case "mdia":
+        case "minf":
+        case "moov":
+        case "moof":
+        case "stbl":
+        case "trak":
+        case "udta":
+        case "traf":
+        case "mvex":
+        case "sinf":
+        case "schi":
+
+            local int64 ci = 0;
+            while (FTell() < endOffset)
+            {
+                PlanChild(hdr.type.value, ci);   // every child's size is known before its
+                mp4box box <name="Box">;         // header, so no box is ever backpatched
+
+                // Warn about fixed sizes boxes having content size in header set to larger value.
+                if(FTell() != box.endOffset) {
+                    Printf("%s at %d larger then expected. Expected end: %d, Actual: %d\n",
+                                box.hdr.type.value,box.startOffset, FTell(), box.endOffset );
+                }
+                FSeek(box.endOffset);
+                if (FTell() <= box.startOffset) FSeek(box.startOffset + 8);
+                ci++;
+            }
+            break;
+        // Added mehd, trex, sidx, traf, tfhd, trun, saiz, saio, senc, pssh
+        // constraints.mp4box.entries (Tier A, payload_wellformedness): the six zero
+        // reserved bytes, a data_reference_index of 1 and the entry's own size covering
+        // the nested configuration box are the MEASURED gate. Geometry, compressorname,
+        // depth, profile and level all stay free.
+        case "avc1": case "mp4v": case "hvc1": case "jpeg": case "raw ":
+        case "2vuy": case "b16g": case "BGRA": case "encv":
+            byte reserved6[6] <open=suppress, name="Reserved">;
+            uint16 data_reference_index <name="Data Reference Index">;
+            byte pre_defined1[16] <open=suppress>;
+            uint16 entry_width <name="Width">;   uint16 entry_height <name="Height">;
+            byte visual_tail[50] <open=suppress>;
+            while (FTell() + 8 <= endOffset) { PlanCfg(G_trk); mp4box box <name="Box">; FSeek(box.endOffset); }
+            break;
+        // dependencies[13]: an AudioSampleEntry is fifty bytes shorter and puts
+        // different fields in the same positions.
+        case "mp4a": case "sowt": case "twos":
+            byte reserved6[6] <open=suppress, name="Reserved">;
+            uint16 data_reference_index <name="Data Reference Index">;
+            byte audio_head[8] <open=suppress>;
+            uint16 channelcount <name="Channel Count">;  uint16 samplesize <name="Sample Size">;
+            uint16 pre_defined4 <open=suppress>;  uint16 reserved8 <open=suppress>;
+            uint32 samplerate <name="Sample Rate">;
+            while (FTell() + 8 <= endOffset) { PlanCfg(G_trk); mp4box box <name="Box">; FSeek(box.endOffset); }
+            break;
+        case "tx3g": case "tmcd": case "mp4s":
+            byte reserved6[6] <open=suppress, name="Reserved">;
+            uint16 data_reference_index <name="Data Reference Index">;
+            byte entry_body[contentsize - 8] <open=suppress>;
+            break;
+        // ISO/IEC 14496-15 AVCDecoderConfigurationRecord. The version byte, the
+        // length-size byte and the parameter-set counts are framing; the profile,
+        // compatibility and level bytes are free and must vary.
+        case "avcC":
+            byte configurationVersion;  byte AVCProfileIndication;
+            byte profile_compatibility;  byte AVCLevelIndication;
+            byte lengthSizeMinusOne;  byte numOfSequenceParameterSets;
+            uint16 sequenceParameterSetLength;
+            byte sequenceParameterSetNALUnit[sequenceParameterSetLength];
+            byte numOfPictureParameterSets;  uint16 pictureParameterSetLength;
+            byte pictureParameterSetNALUnit[pictureParameterSetLength];
+            break;
+        case "esds": case "hvcC":
+            byte codec_config[contentsize] <open=suppress>;
+            break;
+        // structure[12]: dinf > dref with one self-contained 'url ' entry.
+        case "dref":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            local int64 di = 0;
+            while (FTell() + 8 <= endOffset) { PlanChild("dref", di); mp4box box <name="Box">; FSeek(box.endOffset); di++; }
+            break;
+        case "url ": case "urn ":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            if (FTell() < endOffset) byte rest[endOffset - FTell()] <open=suppress>;
+            break;
+        // meta.unnamed_payloads: mdat carries the media. Its bytes are free, so the
+        // body is the default skip; only the AVC length framing is planted.
+        case "mdat":
+            if (FTell() == G_mdatBody) WriteMedia();
+            FSkip(contentsize);
+            break;
+        case "frma":
+            uint32 codingName = { 1635148593, 1752589105, 1836069985, 1836069998, 1836086114, 1937011556, 1836069492 };  // Tier B
+            break;
+        case "tenc":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">; 
+            byte reserved1;
+            if(version == 0) byte reserved2;
+            else byte default_crypt_skip_byte_block;
+            byte default_is_protected = { 0, 1 };                  // Tier B
+            byte default_per_sample_IV_size;
+            byte default_KID[16];
+            if(0 == default_per_sample_IV_size)
+            {
+                byte default_constant_IV_size;
+                byte default_constant_IV[default_constant_IV_size];
+            }
+            break;
+        case "schm":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">; 
+            uint32 scheme_type = { 1667591779, 1667392371, 1667591779, 1667392371, 1667392305, 1667591795, 1885430153 };  // Tier B
+            uint32 scheme_version;
+
+            break;
+        case "pssh":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">; 
+            byte systemID[16];
+            if(version > 0)
+            {
+                uint32 KID_count;
+                struct
+                {
+                    byte entry[16];
+                }KID[KID_count];
+            }
+            uint32 DataSize;
+            byte Data[DataSize];
+            break;
+        case "senc":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 sample_count;
+            struct
+            {
+                byte per_sample_IV[8];
+                if(flag[2] == 2)
+                {
+                    uint16 subsample_count;
+                    struct
+                    {   
+                        uint16 bytes_of_clear_data;
+                        uint32 bytes_of_protected_data;
+                    }subsample_data[subsample_count];
+                }
+            }entry[sample_count];
+            break;
+        case "saio":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            if((flag[2] & 1) != 0)
+            {
+                uint32 aux_info_type = { 1667591779, 1667392371, 1667392305, 1667591795 };  // Tier B
+                uint32 aud_info_type_parameter;
+            }
+            uint32 entry_count;
+            if(version == 0)
+                uint32 offset[entry_count];
+            else
+                uint64 offset[entry_count];
+            break;
+        case "saiz":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            if((flag[2] & 1) != 0)
+            {
+                uint32 aux_info_type = { 1667591779, 1667392371, 1667392305, 1667591795 };  // Tier B
+                uint32 aux_info_type_parameter;
+            }
+            byte   default_sample_info_size;
+            uint32 sample_count;
+            if(default_sample_info_size == 0)
+            {
+                byte entry[sample_count];
+            }
+            break;
+        case "trun":
+            local int i;
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 sample_count;
+            if((flag[2] & 1) != 0)          uint32 data_offset;
+            if((flag[2] & 4) != 0)          uint32 first_sample_flags;
+            for(i = 0; i < sample_count; i++)
+            {
+                struct
+                {
+                    if((flag[1] & 1) != 0)  uint32 sample_duration;
+                    if((flag[1] & 2) != 0)  uint32 sample_size;
+                    if((flag[1] & 4) != 0)  uint32 sample_flags;
+                    if((flag[1] & 8) != 0)
+                    {
+                        if(version == 0)
+                            uint32 sample_composition_time_offset;
+                        else
+                            int32  sample_composition_time_offset;
+                    }
+                }run_entry;   // renamed from `entry`: ffcompile keys anonymous struct
+                              // classes by field name and merged this with senc's
+            }
+            break;
+        case "tfhd":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 trackID;
+            if(0 != (flag[2] & 1))  uint64 base_data_offset;
+            if(0 != (flag[2] & 2))  uint32 sample_description_index;
+            if(0 != (flag[2] & 8))  uint32 default_sample_duration;
+            if(0 != (flag[2] & 0x10))   uint32 default_sample_size;
+            if(0 != (flag[2] & 0x20))   uint32 default_sample_flags;
+            break;
+        case "mfhd":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 sequence_number;
+            break;
+        case "sidx":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 referenceID <name="Reference ID">;
+            uint32 timescale <name="Timescale">;
+            if(version == 0)
+            {
+                uint32 earliest_presentation_time;
+                uint32 first_offset;
+            }
+            else
+            {
+                uint64 earliest_presentation_time;
+                uint64 first_offset;
+            }
+            uint16 reserved;
+            uint16 reference_count;
+            str_sidx references[reference_count] <open=suppress>;
+            break;
+        case "trex":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 trackID;
+            uint32 default_sample_description_index;
+            uint32 default_sample_duration;
+            uint32 default_sample_size;
+            uint32 default_sample_flags;
+            break;
+        case "mehd":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            if(version == 0)
+                uint32 fragment_duration <name="Fragment duration">;
+            else
+                uint64 fragment_duration <name="Fragment duration">;
+            break;
+        // Added stsd, stts, stsc, stco, co64, stsz and stss
+        case "stsd":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;                  // Tier A - dependencies[14]: the count and
+            //str_stsd description[entry_count]; // the entries present must agree exactly
+            local int64 ei = 0;                  // structure[3]
+            while (ei < entry_count && FTell() + 8 <= endOffset)
+            {
+                PlanEntry(G_trk, ei);             // the original's entries[] array becomes a
+                mp4box box <name="Sample Entry">; // loop: each entry has to be planted, and
+                FSeek(box.endOffset);             // only `box` carries .endOffset here
+                if (FTell() <= box.startOffset) FSeek(box.startOffset + 8);
+                ei++;
+            }
+            break;
+        case "enca":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            byte data[0x14];
+            break;
+        case "stts":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            str_stts entry[entry_count];
+            break;
+        case "stsc":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            str_stsc entry[entry_count];
+            break;
+        case "stco":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            uint32 chunk_offset[entry_count];
+            break;
+        case "co64":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            uint64 chunk_offset[entry_count];
+            break;
+        case "stsz":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 sample_size;
+            uint32 sample_count;
+            local int64 ssz = sample_size;   // a local copy: comparing the field itself
+            if(ssz == 0)                     // makes ffcompile mine {0} and pin it, and
+            {                                // the class is shared with trun's size
+                uint32 entry_size[sample_count];
+            }
+            break;
+        case "stss":
+            byte version = { 0, 1 } <name="Version">;
+            byte flag[3] <open=suppress, name="Flags">;
+            uint32 entry_count;
+            uint32 sample_number[entry_count];
+            break;
+        case "elst":
+            byte version = { 0, 1 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            uint32 num_entries <name="Number of Entries">;
+            elst_entry entries[num_entries] <open=suppress, name="Edit List Table">;
+            break;
+        case "ftyp":
+            fourcc major_brand <name="Major Brand">;
+            uint32 minor_version <format=hex, name="Minor Version">;
+            while (FTell() < startof(major_brand) + contentsize)
+            {
+                compatible_brand brand <name="Compatible Brand">;
+            }
+            break;
+        case "hdlr":
+            byte version = { 0, 1 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            fourcc type <name="Component Type">;
+            fourcc subtype <name="Component Subtype">;
+            uint32 mfr <name="Component Manufacturer">;
+            uint32 flags_mask <name="Component Flags Mask">;
+            // TODO: Apparently the rest of this box is a "counted string" giving the component name,
+            // but I haven't yet found good documentation on how it's structured
+            byte rest[contentsize - (FTell() - startof(version))] <open=suppress>;
+            break;
+        case "mdhd":
+            byte version = { 0, 1 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            mp4time create_time <name="Creation Time">;
+            mp4time modify_time <name="Modification Time">;
+            uint32 time_scale <name="Time Scale", comment="Number of media time units per second">;
+            uint32 duration <name="Duration", comment="Duration of the media in media time scale units">;
+            mp4lang language <name="Language">;
+            uint16 quality <name="Quality">;
+            break;
+        case "mvhd":
+            byte version = { 0, 1 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            mp4time create_time <name="Creation Time">;
+            mp4time modify_time <name="Modification Time">;
+            uint32 time_scale <name="Time Scale", comment="Number of movie time units per second">;
+            uint32 duration <name="Duration", comment="Duration of the movie in movie time scale units">;
+            fp32 preferred_rate <name="Preferred Rate">;
+            fp16 preferred_volume <name="Preferred Volume">;
+            byte reserved[10] <name="Reserved">;
+            matrix matrix_structure <name="Matrix Structure">;
+            uint32 preview_time <name="Preview Time", comment="Time value in the movie at which the preview begins">;
+            uint32 preview_duration <name="Preview Duration", comment="Duration of the movie preview in movie time scale units">;
+            uint32 poster_time <name="Poster Time", comment="Time value in the movie of the movie poster">;
+            uint32 selection_time <name="Selection Time", comment="Start time of the current selection">;
+            uint32 selection_duration <name="Selection Duration", comment="Duration of the current selection in movie time scale units">;
+            uint32 current_time <name="Current Time", comment="Time value of current time position within the movie">;
+            uint32 next_track_id <name="Next Track ID", comment="The value to use for the track ID number of the next track added">;
+            break;
+        case "smhd":
+            byte version = { 0, 1 } <name="Version">;
+            byte flags[3] <open=suppress, name="Flags">;
+            fp16 balance <name="Balance">;
+            uint16 reserved <name="Reserved">;
+            break;
+        case "tkhd":
+            byte version = { 0, 1 } <name="Version">;
+            tkhd_flags flags <name="Flags">;
+            mp4time create_time <name="Creation Time">;
+            mp4time modify_time <name="Modification Time">;
+            uint32 track_id <name="Track ID">;
+            uint32 reserved <name="Reserved">;
+            uint32 duration <name="Duration", comment="Duration of the media in movie time scale units (specified in mvhd box)">;
+            uint64 reserved2 <name="Reserved">;
+            uint16 layer <name="Layer">;
+            uint16 alt_group <name="Alternate Group">;
+            fp16 volume <name="Volume">;
+            uint16 reserved3 <name="Reserved">;
+            matrix matrix_structure <name="Matrix Structure">;
+            fp32 width <name="Track Width">;
+            fp32 height <name="Track Height">;
+            break;
+        case "vmhd":
+            byte version = { 0, 1 } <name="Version">;
+            vmhd_flags flags <name="Flags">;
+            qtgfxmode graphics_mode <name="Graphics Mode">;
+            qtopcolor opcolor <name="Opcolor", open=suppress>;
+            break;
+        default:
+            FSkip(contentsize);
+            break;
+    }
+    // constraints.boxheader.size is Tier A in both directions: a body that came
+    // up short is padded out to the size its header declared, so an arithmetic
+    // slip can never desynchronise the boxes that follow it.
+    if (FTell() < endOffset)
+        FSkip(endOffset - FTell());
+} mp4box <read=ReadBox, comment=BoxComment>;
+
+// structure[0]: ftyp heads the file. The plan is drawn from the free body of the
+// box that follows it, and moov and mdat then come in either order (structure[5]).
+// structure[15]: there is no trailer, so the sequence simply runs to end of file.
+PlanTop(0);
+mp4box box <name="Box">;
+FSeek(box.endOffset);
+PlanFile(FTell() + 8);
+local int64 nb = 1;
+while (nb < 4)
+{
+    PlanTop(nb);
+    mp4box box <name="Box">;
+    FSeek(box.endOffset);
+    nb++;
+}
+while (!FEof())
+{
+    PlanTop(nb);
+    mp4box box <name="Box">;
+    FSeek(box.endOffset);
+    nb++;
+}
