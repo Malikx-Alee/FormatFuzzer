@@ -1,0 +1,3247 @@
+{
+  "meta": {
+    "format": "zip",
+    "source_template": "templates_originals/zip-orig.bt",
+    "model": "claude-opus-5",
+    "strategy": "tiered",
+    "spec_reference": "PKWARE APPNOTE.TXT, the .ZIP File Format Specification version 6.3.x, for the record signatures, the local and central header layouts, the data descriptor, Zip64, the extra-field registry, the compression method and general-purpose-flag catalogues and the strong-encryption headers; RFC 1951 (DEFLATE) for the compressed payload and RFC 1950 for the zlib wrapper that ZIP deliberately does NOT use; the WinZip AES Encryption Specification (AE-1/AE-2) for the 0x9901 extra field and the salt, verifier and authentication-code layout. Decoder behaviour was measured against four independent implementations: Info-ZIP UnZip 6.00, libarchive 3.7.4 via bsdtar, 7-Zip, and Python 3's zipfile.",
+    "schema_extensions": [
+      {
+        "name": "measured_gate",
+        "where": "constraints.<field>.measured_gate, dependencies[].measured_gate, structure[].measured_gate",
+        "why": "An object of {decoders, observed, conclusion} recording what real readers did when a field was set wrongly. Four readers were used rather than one because they disagree in ways that decide the tier. libarchive streams the local headers and therefore ignores the entire central directory, the end record and every CRC in listing mode; Info-ZIP reads the local headers and tolerates a central directory that disagrees with them; 7-Zip and Python trust the directory and fail when it disagrees. A field was assigned Tier A when ANY of the four refuses the file, since a generator cannot know which one the coverage harness uses."
+      },
+      {
+        "name": "template_parse_requirement",
+        "where": "constraints.ZIPFILERECORD.frExtraFieldLength, constraints.ZIP64ENDLOCATORRECORD.elr64DirectoryRecordSize, and notes marked TEMPLATE REQUIREMENT, TEMPLATE HAZARD or TEMPLATE MISNAMING",
+        "why": "Separates rules that come from this template's construction from rules that come from the ZIP format. Four matter. The extra-field loops at lines 406-411 and 501-506 subtract efDataSize + 4 from a signed budget and require the records to sum exactly. The data-descriptor branch at line 462 fires only when frCompressedSize is exactly 0 and then locates the descriptor with FindFirst, which makes the format-optional descriptor signature mandatory here. elr64DirectoryRecordSize is treated as a progressive threshold rather than as APPNOTE's fixed 'record size minus 12', so only the value 44 produces a well-formed Zip64 end record. And the top-level loop aborts on any unrecognised tag, so the prefix and trailing data that all four readers accept cannot be expressed."
+      },
+      {
+        "name": "cross_check",
+        "where": "constraints.ZIPFILERECORD.frData.cross_check",
+        "why": "A second evidence line, filled verbatim from the template like the first. frData is declared four times - lines 433, 455, 460 and 471 - as mutually exclusive branches of one if/else chain, so a single evidence line would hide three quarters of the field's declarations."
+      },
+      {
+        "name": "tier on a diversity axis",
+        "where": "diversity_axes[].tier and diversity_axes[].tier_note",
+        "why": "Eleven of the seventeen axes are Tier A or Tier B rather than Tier C. For the Tier A length and count fields - frUncompressedSize, frCompressedSize, frFileNameLength, frExtraFieldLength, efDataSize, elEntriesInDirectory - the VALUE must be exact, but the quantity it records is a completely free choice: how long the content is, how many entries the archive holds, how many extra fields an entry carries. 'must_remain_unconstrained' on such an axis means do not fix that quantity, not that the field may disagree with it. For the Tier B enumerations it means emit the whole legal set. The tier_note says which reading applies."
+      }
+    ],
+    "structure_note": "A ZIP file is three regions in a fixed order with no nesting: a run of local file records, each a 30-byte header plus a filename, extra fields and the compressed data; a central directory repeating every local header's fields and carrying the offset back to it; and an end-of-directory record that readers find by scanning backwards from the end of the file. There are no checksums over the structure at all - only a CRC-32 per entry over its UNCOMPRESSED content - and the format's depth is concentrated in one place: the opaque frData payload, which for the universally supported COMP_DEFLATE must be a RAW deflate stream with no zlib wrapper, and which random bytes fail in three of the four readers measured.",
+    "crc_note": "ZIP's only checksum is the entry CRC-32, and it is written in up to three places for the same entry: ZIPFILERECORD.frCrc, ZIPDIRENTRY.deCrc and, when flag bit 3 is set, ZIPDATADESCR.ddCRC. All three are the same number. The single most important thing about it is that it covers the UNCOMPRESSED content, never the compressed bytes - computing it over the deflate stream is the natural mistake and was measured to fail in Info-ZIP, 7-Zip and Python every time. It is CRC-32/ISO-HDLC, the same polynomial, initial value and final XOR that PNG and gzip use.",
+    "deflate_wrapper_note": "The highest-value single fact in this extraction. ZIP's COMP_DEFLATE payload is a RAW RFC 1951 deflate stream: no two-byte RFC 1950 zlib header, no trailing Adler-32. Measured, a stream produced by an ordinary zlib compress call - which carries the 0x78 0x9C header - fails in exactly the same way as uniformly random bytes, because the header is not a valid deflate block header. This is the opposite of PNG, whose IDAT payload requires the full zlib wrapper, and a rewrite that reuses the PNG construction unchanged will produce archives that no reader can open.",
+    "decoder_disagreement_note": "The four readers measured do not agree on what a valid archive is, and the split is structural rather than incidental. libarchive streams the local file headers and never consults the central directory, the end record or - in listing mode - any CRC, so it accepts archives the other three refuse. Info-ZIP reads the local headers and tolerates a central directory that contradicts them. 7-Zip and Python navigate by the directory and fail when it disagrees with the local records. The only two fields all four enforce are ZIPFILERECORD.frSignature and ZIPDIRENTRY.deHeaderOffset - plus ZIPENDLOCATOR.elDirectoryOffset for three of the four. Where they differ, the stricter answer was taken.",
+    "measurement_note": "Every gate marked measured_gate was established empirically. A parameterised ZIP builder was written, a 120-byte stored archive and its deflate equivalents were verified to decode in all four readers, and roughly 110 single-field mutations were run across all three signatures, the entry CRC, both size fields, the filename length, all nineteen compression methods, eleven flag bits, six extra field types, six version levels, every end-record field, the central-versus-local agreement, data descriptors with and without their signature, and the deflate payload with correct, random, uncompressed and zlib-wrapped contents.",
+    "uncovered_field_names": {
+      "why": "Eleven declarations in the .bt carry no constraints entry. Each falls into a category this extraction deliberately does not key, and they are named here so the coverage audit is complete rather than merely silent.",
+      "unreferenced_typedef": {
+        "names": [
+          "EXTRA64FIELD.efHeaderID [290]",
+          "EXTRA64FIELD.efDataSize [291]",
+          "EXTRA64FIELD.efOriginalSize [297]",
+          "EXTRA64FIELD.efCompressedSize [298]",
+          "EXTRA64FIELD.efVersion [303]",
+          "EXTRA64FIELD.efNameCRC32 [304]",
+          "EXTRA64FIELD.efUnicodeName [306]",
+          "EXTRA64FIELD.efData [310]"
+        ],
+        "reason": "EXTRA64FIELD is declared as a typedef at lines 289-313 and never instantiated: its only reference is inside the commented-out block at lines 542-547 of ZIP64ENDLOCATORRECORD. It is the 4-byte-length variant of EXTRAFIELD, and every constraint that would apply to it is already recorded under EXTRAFIELD.* with the one difference noted there - efDataSize is a uint rather than a ushort. Keying eight dead declarations would add no information."
+      },
+      "struct_instances": {
+        "names": [
+          "ZIPFILERECORD.frVersion [393]",
+          "ZIPDIRENTRY.deVersionMadeBy [483]",
+          "ZIPDIRENTRY.deVersionToExtract [484]",
+          "ZIP64ENDLOCATORRECORD.elr64VersionMadeBy [524]",
+          "ZIP64ENDLOCATORRECORD.elr64VersionToExtract [526]"
+        ],
+        "reason": "Five instances of the two-byte VERECORD struct. Both of its members are keyed under VERECORD.Version and VERECORD.HostOS, so the instances carry no constraint of their own. The distinction between 'made by' and 'to extract' is semantic rather than structural: the first records the writer's version and the second the minimum a reader needs, and only the second was measured to gate anything."
+      },
+      "note": "The top-level instances record, dataDescr, dirEntry, digitalSig, end64Locator and endLocator (lines 627, 637, 642, 647, 652, 657, 662) are instances of the keyed structs; tag (line 613) and the several 'local int len' declarations are locals, which the rules forbid keying. The two loop instances frExtraField (line 409) and deExtraField (line 504) are EXTRAFIELD instances covered at their leaves."
+    },
+    "tier_counts": {
+      "A": 50,
+      "B": 15,
+      "C": 35
+    }
+  },
+  "constraints": {
+    "VERECORD.Version": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The PKZIP version needed to extract, stored as ten times the version number. Measured as a real gate in Info-ZIP at the top of the range - version 6.3 and above are refused with an unsupported exit - but every value up to 4.5 decoded everywhere, so the legal set is the catalogue of defined feature levels, each of which a reader compares against its own capability.",
+      "description": "Minimum PKZIP feature version needed to extract this entry, as the version number times ten.",
+      "field_type": "VERSIONTYPE (byte)",
+      "source": "both",
+      "evidence": {
+        "line": 76,
+        "snippet": "VERSIONTYPE Version;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        10,
+        11,
+        20,
+        21,
+        25,
+        27,
+        45,
+        46,
+        50,
+        51,
+        52,
+        61,
+        62,
+        63
+      ],
+      "value_names": [
+        "v1.0_default",
+        "v1.1_volume_label",
+        "v2.0_deflate_or_folder",
+        "v2.1_deflate64",
+        "v2.5_pkware_dcl_imploded",
+        "v2.7_patch_data",
+        "v4.5_zip64",
+        "v4.6_bzip2",
+        "v5.0_des_3des_rc2",
+        "v5.1_aes",
+        "v5.2_strong_encryption",
+        "v6.1_pkcs7",
+        "v6.2_central_directory_encryption",
+        "v6.3_lzma_ppmd_utf8"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        10,
+        20,
+        45
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Version bytes 0, 10, 20 and 45 all decoded in all four tools. 63 and 255 were refused by Info-ZIP with an unsupported-feature exit, and 255 additionally raised NotImplementedError in Python. libarchive and 7-Zip accepted every value.",
+        "conclusion": "A version a reader does not implement makes it decline the entry, which is the Tier A test failing only at the top of the range - so Tier B with the full defined set. 20 is the universal safe value and 45 is what Zip64 requires."
+      },
+      "notes": "The template's read function at line 71 divides by 10 and prints one decimal, which is how 20 becomes 'Ver 2.0'."
+    },
+    "VERECORD.HostOS": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The filesystem the entry was created on. It decides how a reader interprets the external attributes - as DOS attribute bits or as a Unix mode word - so each value changes the attribute handling path. Measured never fatal, so the whole enum belongs here.",
+      "description": "Identifier of the host filesystem on which the entry was created.",
+      "field_type": "HOSTOSTYPE (byte)",
+      "source": "both",
+      "evidence": {
+        "line": 77,
+        "snippet": "HOSTOSTYPE HostOS;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "value_names": [
+        "OS_FAT",
+        "OS_AMIGA",
+        "OS_VMS",
+        "OS_Unix",
+        "OS_VM_CMS",
+        "OS_Atari",
+        "OS_HPFS",
+        "OS_Mac",
+        "OS_Z_System",
+        "OS_CPM",
+        "OS_TOPS20",
+        "OS_NTFS",
+        "OS_QDOS",
+        "OS_Acorn",
+        "OS_VFAT",
+        "OS_MVS",
+        "OS_BeOS",
+        "OS_Tandem",
+        "OS_OS400",
+        "OS_OSX"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        0,
+        3,
+        11,
+        19
+      ],
+      "notes": "The value matters most in ZIPDIRENTRY.deExternalAttributes: host 0 (FAT) and 11 (NTFS) make the low word DOS attribute bits, while host 3 (Unix) and 19 (OSX) put a Unix st_mode in the high word. The template's FILEATTRIBUTE enum at lines 315-357 encodes both conventions at once, which is why its Unix entries are shifted left by 16."
+    },
+    "EXTRAFIELD.efHeaderID": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The extra-field type tag, and the field the template switches on at line 231 to decide what the record contains. Measured, every ID including an unregistered one decoded in all four tools - an unknown ID is skipped by its length - so this is the full legal set and not a gate. Five of the IDs open completely different record layouts in the template.",
+      "description": "Two-byte identifier saying which extra-field record this is.",
+      "field_type": "HEADERFLAG (ushort)",
+      "source": "both",
+      "evidence": {
+        "line": 227,
+        "snippet": "HEADERFLAG  efHeaderID;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        1,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14,
+        15,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        101,
+        102,
+        18064,
+        1992,
+        9733,
+        9989,
+        10245,
+        13133,
+        17217,
+        17491,
+        18180,
+        18191,
+        19270,
+        19521,
+        19785,
+        20300,
+        21334,
+        21589,
+        21838,
+        22613,
+        25461,
+        25922,
+        28789,
+        30062,
+        30805,
+        30837,
+        41504,
+        64842,
+        39169
+      ],
+      "value_names": [
+        "EH_Zip64",
+        "EH_AVInfo",
+        "EH_ExtLanguage",
+        "EH_OS2",
+        "EH_NTFS",
+        "EH_OpenVMS",
+        "EH_UNIX",
+        "EH_fileStream",
+        "EH_PatchDescriptor",
+        "EH_PKCS7X509",
+        "EH_X509IDSignature",
+        "EH_X509IDCD",
+        "EH_StrongEncryption",
+        "EH_RecordManagement",
+        "EH_PKCS7List",
+        "EH_Attributes",
+        "EH_ReservedAttributes",
+        "EH_POSZIP4690",
+        "EH_Mac",
+        "EH_ZipItMac1",
+        "EH_ZipItMac2",
+        "EH_ZipItMac3",
+        "EH_InfoZIPMac",
+        "EH_Acorn",
+        "EH_WinNTSecurity",
+        "EH_VM_CMS",
+        "EH_MVS",
+        "EH_FWKCS",
+        "EH_OS2AccessList",
+        "EH_InfoZIPOpenVMS",
+        "EH_Xceed",
+        "EH_AOSVS",
+        "EH_extTimestamp",
+        "EH_XceedUnicode",
+        "EH_InfoZIPUNIX",
+        "EH_InfoZIPUnicodeComment",
+        "EH_BeOS",
+        "EH_InfoZIPUnicodePath",
+        "EH_ASiUNIX",
+        "EH_InfoZIPUNIXNew",
+        "EH_InfoZIPUNIXNew3rd",
+        "EH_WinGrowth",
+        "EH_SMSQDOS",
+        "EH_WzAES"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        1,
+        10,
+        21589,
+        28789,
+        30837,
+        39169
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Local extra fields carrying EH_Zip64 (0x0001), EH_extTimestamp (0x5455), EH_InfoZIPUnicodePath (0x7075), an unregistered 0x9999, and two fields concatenated all decoded in all four tools. A central-directory extra field decoded equally.",
+        "conclusion": "Never a gate. Five IDs - EH_Zip64, EH_InfoZIPUnicodePath, EH_NTFS, EH_StrongEncryption and EH_WzAES - are the only ones the template models structurally; every other value reaches the default branch at line 277 and is read as opaque bytes, which is itself a branch worth reaching."
+      },
+      "notes": "The template omits 0x0002 (OS/2 extended attributes) and 0x0021/0x0022 from the registry; the list above is exactly what the enum at lines 152-197 declares."
+    },
+    "EXTRAFIELD.efDataSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of this extra-field record's payload, and the value the enclosing loops subtract from their budget at lines 410 and 505. Measured, a value that disagrees with the bytes present makes Info-ZIP and libarchive fail outright, because the next record - or the file data itself - is then read from the wrong offset.",
+      "description": "Number of bytes of data in this extra-field record, not counting the four-byte ID and size.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 228,
+        "snippet": "ushort  efDataSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the record payload following the 4-byte header",
+      "covers": "every field emitted by the switch at lines 231-281 for this record's efHeaderID",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "EXTRAFIELD.efHeaderID"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "An extTimestamp record declaring 99 bytes while carrying 5 made Info-ZIP report a bad entry and libarchive exit with an error; 7-Zip and Python tolerated it. Correct sizes decoded everywhere.",
+        "conclusion": "Must equal the payload emitted. The total of all records plus their 4-byte headers must also equal frExtraFieldLength, which is a separate dependency."
+      },
+      "notes": "The per-ID required sizes are: EH_Zip64 16 for the two uint64s the template reads, EH_InfoZIPUnicodePath 5 plus the name length, EH_NTFS 4 plus the tag records, EH_StrongEncryption 8 plus any certificate data, EH_WzAES 7. Those are recorded as dependencies."
+    },
+    "EXTRAFIELD.efOriginalSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The Zip64 uncompressed size. When the 32-bit frUncompressedSize is the 0xFFFFFFFF escape this field carries the real value, so a wrong one makes every reader that honours Zip64 allocate and verify against the wrong length.",
+      "description": "64-bit uncompressed size of the entry, used when the 32-bit field cannot hold it.",
+      "field_type": "uint64",
+      "source": "both",
+      "evidence": {
+        "line": 234,
+        "snippet": "uint64 efOriginalSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the entry's uncompressed data",
+      "covers": "the original file content that frData decompresses to",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frUncompressedSize",
+        "ZIPFILERECORD.frData"
+      ],
+      "notes": "APPNOTE requires the Zip64 record to carry only the fields whose 32-bit counterparts are the 0xFFFFFFFF escape, in the fixed order original size, compressed size, header offset, disk number. The template always reads the first two and comments out the rest (lines 236-237), so it can only express a 16-byte Zip64 record."
+    },
+    "EXTRAFIELD.efCompressedSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The Zip64 compressed size, with the same standing as efOriginalSize: it is the real length of frData when the 32-bit field is the escape value.",
+      "description": "64-bit compressed size of the entry's data.",
+      "field_type": "uint64",
+      "source": "both",
+      "evidence": {
+        "line": 235,
+        "snippet": "uint64 efCompressedSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the entry's compressed data",
+      "covers": "the bytes of ZIPFILERECORD.frData",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frCompressedSize",
+        "ZIPFILERECORD.frData"
+      ],
+      "notes": "The top-level loop at lines 628-632 uses this field directly: when a record's first extra field is EH_Zip64 it does FSkip(record.frExtraField.efCompressedSize), so for a Zip64 entry this value is what advances the parser past the file data. A wrong value desynchronises the whole archive."
+    },
+    "EXTRAFIELD.efVersion": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The Info-ZIP Unicode Path record's version byte. The specification defines version 1 and says a reader encountering any other value must ignore the record entirely, so a wrong value silently discards the Unicode name.",
+      "description": "Version of the Info-ZIP Unicode Path extra field; only version 1 is defined.",
+      "field_type": "byte",
+      "source": "both",
+      "evidence": {
+        "line": 240,
+        "snippet": "byte efVersion;"
+      },
+      "confidence": "high",
+      "required_value": 1,
+      "required_value_hex": "0x01",
+      "required_value_ascii": "\\x01",
+      "notes": "APPNOTE's Info-ZIP Unicode Path Extra Field (0x7075) specifies version 1; readers are directed to ignore records with any other version."
+    },
+    "EXTRAFIELD.efNameCRC32": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "A CRC-32 over the entry's ordinary filename, used so a reader can tell whether the Unicode name still corresponds to it. A wrong value makes every conforming reader discard the Unicode name and fall back to the raw one, so the whole record's purpose is lost.",
+      "description": "CRC-32 of the standard filename field, proving the Unicode name matches it.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 241,
+        "snippet": "uint efNameCRC32;"
+      },
+      "confidence": "high",
+      "algorithm": "CRC-32/ISO-HDLC, the same polynomial and initial value as the entry CRC",
+      "covers": "the bytes of ZIPFILERECORD.frFileName, or ZIPDIRENTRY.deFileName in a central-directory record",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frFileName",
+        "ZIPDIRENTRY.deFileName"
+      ]
+    },
+    "EXTRAFIELD.efUnicodeName": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The UTF-8 filename carried by the Unicode Path record. Its length is fully determined by efDataSize and no reader validates its contents beyond treating it as UTF-8, so constraining it would remove the only free text in the record.",
+      "description": "UTF-8 encoded filename, without a null terminator.",
+      "field_type": "char[efDataSize - 5]",
+      "source": "both",
+      "evidence": {
+        "line": 243,
+        "snippet": "char efUnicodeName[efDataSize - 5];"
+      },
+      "confidence": "high",
+      "notes": "The 5 subtracted bytes are the version byte and the four CRC bytes, so efDataSize must be at least 5 for the array length to be non-negative."
+    },
+    "EXTRAFIELD.Reserved": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Four reserved bytes at the head of the NTFS extra field. APPNOTE says they are reserved for future use and no reader inspects them, so pinning them to zero would remove the only unchecked bytes in the record.",
+      "description": "Reserved four bytes opening the NTFS extra field.",
+      "field_type": "int",
+      "source": "both",
+      "evidence": {
+        "line": 246,
+        "snippet": "int Reserved;   //4 bytes    Reserved for future use"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "EXTRAFIELD.Tag": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The NTFS attribute tag. Tag 1 is the only one APPNOTE defines and the only one the template expands into three FILETIMEs; any other tag takes the opaque branch at line 259, which is a real alternative path rather than a failure.",
+      "description": "NTFS attribute tag identifying what this sub-record carries; tag 1 is the file times.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 250,
+        "snippet": "ushort Tag;        //2 bytes    NTFS attribute tag value #1"
+      },
+      "confidence": "high",
+      "valid_values": [
+        1
+      ],
+      "value_names": [
+        "NTFS_file_times"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        1
+      ],
+      "notes": "completeness is exhaustive because APPNOTE defines exactly one tag, 0x0001. Values other than 1 are legal to emit - the format reserves the space and the template handles them at line 259 - and reaching that branch is the only way to exercise the generic attribute path."
+    },
+    "EXTRAFIELD.Size": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of one NTFS attribute sub-record, and the value the loop at line 260 subtracts from its budget. A wrong value makes the loop read the next tag from the wrong offset or run past the end of the extra field.",
+      "description": "Size in bytes of this NTFS attribute sub-record's data.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 251,
+        "snippet": "ushort Size;       //2 bytes    Size of attribute #1, in bytes"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the attribute data following the 4-byte tag and size",
+      "covers": "the three FILETIMEs when Tag is 1, or the Data array otherwise",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "EXTRAFIELD.Tag",
+        "EXTRAFIELD.efDataSize"
+      ],
+      "notes": "Must be exactly 24 when Tag is 1, since three FILETIMEs are eight bytes each. The sub-records must also sum, with their 4-byte headers, to efDataSize - 4; line 247 sets the budget to efDataSize - 4 and line 260 decrements it by Size + 4."
+    },
+    "EXTRAFIELD.Mtime": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A Windows FILETIME timestamp. Timestamps are the archetypal Tier C field: every 64-bit value is a legal instant and no reader refuses one.",
+      "description": "File last modification time as a Windows FILETIME, in 100-nanosecond units since 1601.",
+      "field_type": "FILETIME",
+      "source": "both",
+      "evidence": {
+        "line": 254,
+        "snippet": "FILETIME Mtime;      //8 bytes    File last modification time"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "EXTRAFIELD.Atime": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "As for Mtime: a free timestamp.",
+      "description": "File last access time as a Windows FILETIME.",
+      "field_type": "FILETIME",
+      "source": "both",
+      "evidence": {
+        "line": 255,
+        "snippet": "FILETIME Atime;      //8 bytes    File last access time"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "EXTRAFIELD.Ctime": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "As for Mtime: a free timestamp.",
+      "description": "File creation time as a Windows FILETIME.",
+      "field_type": "FILETIME",
+      "source": "both",
+      "evidence": {
+        "line": 256,
+        "snippet": "FILETIME Ctime;     //8 bytes    File creation time"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "EXTRAFIELD.Data": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The payload of an NTFS attribute sub-record whose tag is not 1; nothing inspects it and its length is fixed by Size.",
+      "description": "Opaque data of an NTFS attribute sub-record other than the file times.",
+      "field_type": "byte[Size]",
+      "source": "both",
+      "evidence": {
+        "line": 259,
+        "snippet": "byte Data[Size]; //(var.)     Size1      Attribute #1 data"
+      },
+      "confidence": "high"
+    },
+    "EXTRAFIELD.Format": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The strong-encryption record's format version. APPNOTE defines format 2 but no reader tested validates it, and the record is only meaningful to an encryption-aware extractor.",
+      "description": "Format definition version for the strong encryption record.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 264,
+        "snippet": "ushort  Format;    //2 bytes  Format definition for this record"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "APPNOTE gives 0x0002 as the current format value."
+    },
+    "EXTRAFIELD.AlgID": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The strong-encryption algorithm identifier. Twelve values are defined and each names a different cipher, so an encryption-aware reader branches on every one of them; the catch-all 0xFFFF is part of the set by design.",
+      "description": "Identifier of the encryption algorithm used for this entry.",
+      "field_type": "ALGFLAG (ushort)",
+      "source": "both",
+      "evidence": {
+        "line": 265,
+        "snippet": "ALGFLAG AlgID;     //2 bytes  Encryption algorithm identifier"
+      },
+      "confidence": "high",
+      "valid_values": [
+        26113,
+        26114,
+        26115,
+        26121,
+        26126,
+        26127,
+        26128,
+        26370,
+        26400,
+        26401,
+        26625,
+        65535
+      ],
+      "value_names": [
+        "AlgID_DES",
+        "AlgID_RC2OLD",
+        "AlgID_3DES168",
+        "AlgID_3DES112",
+        "AlgID_AES128",
+        "AlgID_AES192",
+        "AlgID_AES256",
+        "AlgID_RC2",
+        "AlgID_Blowfish",
+        "AlgID_Twofish",
+        "AlgID_RC4",
+        "AlgID_Unknown"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        26126,
+        26128
+      ]
+    },
+    "EXTRAFIELD.Bitlen": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The encryption key length in bits. It is a size in bits rather than a byte count, nothing in the template or in any reader tested validates it, and it sizes no array.",
+      "description": "Bit length of the encryption key.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 266,
+        "snippet": "ushort  Bitlen;    //2 bytes  Bit length of encryption key"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Conventionally 64, 128, 192 or 256 to match AlgID, but the field is not a length of any emitted bytes."
+    },
+    "EXTRAFIELD.Flags": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The strong-encryption processing flags, a closed three-value enumeration saying whether a password, a certificate, or either will decrypt the entry. Each selects a different key derivation path in an encryption-aware reader.",
+      "description": "Processing flags saying what is required to decrypt this entry.",
+      "field_type": "PRCFLAG (ushort)",
+      "source": "both",
+      "evidence": {
+        "line": 267,
+        "snippet": "PRCFLAG Flags;     //2 bytes  Processing flags"
+      },
+      "confidence": "high",
+      "valid_values": [
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "pfPassword",
+        "pfCertificates",
+        "pfPasswordCertificates"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little"
+    },
+    "EXTRAFIELD.CertData": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Certificate decryption data whose length is fixed by efDataSize and whose contents only a certificate-aware extractor parses.",
+      "description": "Certificate data for the strong encryption record.",
+      "field_type": "byte[efDataSize - 8]",
+      "source": "both",
+      "evidence": {
+        "line": 269,
+        "snippet": "byte    CertData[efDataSize - 8];  //TSize-8  Certificate decryption extra field data"
+      },
+      "confidence": "high",
+      "notes": "The 8 subtracted bytes are Format, AlgID, Bitlen and Flags, so efDataSize must be at least 8."
+    },
+    "EXTRAFIELD.version": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The WinZip AES vendor version. Versions 1 and 2 are defined and differ only in whether the CRC is stored, and no reader tested refused any value, so the field fails the Tier A test.",
+      "description": "WinZip AES extra-field version number; 1 or 2 in practice.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 272,
+        "snippet": "ushort version;         //2 bytes   Integer version number specific to the zip vendor"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Version 2 means the entry's CRC field is zero because AES authentication replaces it; version 1 keeps the CRC. That distinction is a real dependency for a generator emitting AES entries."
+    },
+    "EXTRAFIELD.VendorID": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The two-character WinZip AES vendor identifier. The AES specification fixes it at 'AE' and a reader that does not find it treats the record as unrecognised, so the whole AES configuration - key strength and real compression method - is discarded.",
+      "description": "Two-character vendor identifier for the WinZip AES extra field.",
+      "field_type": "char[2]",
+      "source": "both",
+      "evidence": {
+        "line": 273,
+        "snippet": "char VendorID[2];       //2 bytes \t2-character vendor ID"
+      },
+      "confidence": "high",
+      "required_value": "AE",
+      "required_value_hex": "0x4145",
+      "required_value_ascii": "AE"
+    },
+    "EXTRAFIELD.Strength": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The AES key strength, a closed three-value enumeration that the template switches on at line 440 to compute the salt length - 8, 12 or 16 bytes. Each value therefore changes the layout of the entry's data as well as the cipher.",
+      "description": "AES encryption strength: 1 for 128-bit, 2 for 192-bit, 3 for 256-bit.",
+      "field_type": "AESMODE (byte)",
+      "source": "both",
+      "evidence": {
+        "line": 274,
+        "snippet": "AESMODE Strength;       //1 bytes   Integer mode value indicating AES encryption strength"
+      },
+      "confidence": "high",
+      "valid_values": [
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "AES128",
+        "AES192",
+        "AES256"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        1,
+        3
+      ],
+      "notes": "Salt length is 8, 12 and 16 bytes respectively (lines 442-450), so this value directly sizes ZIPFILERECORD.SaltValue and shifts frData."
+    },
+    "EXTRAFIELD.deCompression": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "For an AES-encrypted entry the real compression method moves here, because frCompression is occupied by COMP_WzAES. So this field, not frCompression, decides what codec the decrypted bytes must form - the same enumeration with the same consequences.",
+      "description": "The actual compression method used before encryption, when frCompression is COMP_WzAES.",
+      "field_type": "COMPTYPE (short)",
+      "source": "both",
+      "evidence": {
+        "line": 275,
+        "snippet": "COMPTYPE deCompression; //2 bytes The actual compression method used to compress the file"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        14,
+        18,
+        19,
+        96,
+        97,
+        98,
+        99
+      ],
+      "value_names": [
+        "COMP_STORED",
+        "COMP_SHRUNK",
+        "COMP_REDUCED1",
+        "COMP_REDUCED2",
+        "COMP_REDUCED3",
+        "COMP_REDUCED4",
+        "COMP_IMPLODED",
+        "COMP_TOKEN",
+        "COMP_DEFLATE",
+        "COMP_DEFLATE64",
+        "COMP_PKImploding",
+        "COMP_BZip2",
+        "COMP_LZMA",
+        "COMP_Terse",
+        "COMP_Lz77",
+        "COMP_Jpeg",
+        "COMP_WavPack",
+        "COMP_PPMd",
+        "COMP_WzAES"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        0,
+        8
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "With a payload matching the method: COMP_STORED (0) and COMP_DEFLATE (8) decode in all four. COMP_BZip2 (12) with a real bzip2 stream decodes in 7-Zip and Python but Info-ZIP reports unsupported. COMP_LZMA (14) needs a 4-byte ZIP-specific LZMA header before the raw properties and decoded in Python that way. Every other method - 1 through 7, 9, 10, 18, 19, 0x60 through 0x63 - is refused by Info-ZIP with 'invalid compression method' or an unsupported-method exit, by 7-Zip, and by Python with NotImplementedError. libarchive accepts all of them in listing mode because it does not decompress to list.",
+        "conclusion": "Two methods are universally supported, two more reach a real decoder in some tools, and the rest reach each tool's unsupported-method path. All nineteen stay in the set: the unsupported ones are exactly the awkward values this tier exists to preserve, and each reaches a distinct rejection branch."
+      },
+      "notes": "A generator emitting an AES entry must set frCompression to 0x63 and put the real method here; the two together are what a reader uses."
+    },
+    "EXTRAFIELD.efData": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The opaque payload of any extra-field record the template does not model structurally. Measured, an unregistered ID with arbitrary contents decoded in all four tools, so nothing here can fail.",
+      "description": "Uninterpreted payload of an extra-field record whose ID is not one of the five the template expands.",
+      "field_type": "char[efDataSize]",
+      "source": "both",
+      "evidence": {
+        "line": 279,
+        "snippet": "char efData[ efDataSize ];"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "An extra field with ID 0x9999 carrying four arbitrary bytes decoded in all four tools.",
+        "conclusion": "Entirely free; only efDataSize must agree with the byte count."
+      }
+    },
+    "ZIPDATADESCR.ddSignature": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "A ZIP record signature. The top-level loop reads a four-byte tag at line 618 and dispatches on it; a value outside the seven it knows makes the template print 'Unknown ZIP tag encountered' and return -1, and every real reader locates its records by these same constants.",
+      "description": "Signature of a data descriptor record, the four bytes 'PK\\x07\\x08'.",
+      "field_type": "SignatureTYPE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 383,
+        "snippet": "SignatureTYPE ddSignature; //0x08074b50"
+      },
+      "confidence": "high",
+      "required_value": 134695760,
+      "required_value_hex": "0x08074B50",
+      "required_value_ascii": "PK\\x07\\x08",
+      "endianness": "little",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 618,
+        "values": [
+          67324752,
+          134695760,
+          33639248,
+          84233040,
+          101075792,
+          117853008,
+          101010256
+        ],
+        "preferred": [
+          67324752,
+          33639248,
+          101010256
+        ],
+        "note": "tag = ReadUInt(FTell()) at line 618 is compared against all seven SignatureTYPE constants in the if/else chain at lines 624-663. These are exactly the good known values a generator must reproduce."
+      },
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "A data descriptor written WITH this signature and one written WITHOUT it both decoded in all four tools, for both STORED and DEFLATE entries.",
+        "conclusion": "APPNOTE makes the signature optional in a data descriptor - it was added later for recoverability - and all four readers accept both forms. This template, however, locates the descriptor by searching for the signature at line 468, so a generator using it must emit the signature or the descriptor is never found."
+      },
+      "notes": "TEMPLATE REQUIREMENT: line 468 calls FindFirst(S_ZIPDATADESCR, ...) to locate the end of the file data, so the signature is mandatory for this template even though the format makes it optional."
+    },
+    "ZIPDATADESCR.ddCRC": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The CRC-32 of the uncompressed data, repeated after the file data because it was unknown when the local header was written. Measured on the equivalent local-header field, a wrong CRC makes Info-ZIP, 7-Zip and Python all refuse the entry.",
+      "description": "CRC-32 of the entry's uncompressed data, carried in the trailing data descriptor.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 384,
+        "snippet": "uint ddCRC <format=hex>;"
+      },
+      "confidence": "high",
+      "algorithm": "CRC-32/ISO-HDLC: polynomial 0xEDB88320 reflected, initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF",
+      "covers": "every byte of the entry's UNCOMPRESSED content, never the compressed bytes",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.frUncompressedSize"
+      ],
+      "notes": "Must equal ZIPFILERECORD.frCrc and ZIPDIRENTRY.deCrc for the same entry; the three are the same number written in three places."
+    },
+    "ZIPDATADESCR.ddCompressedSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The compressed byte count repeated after the data; a reader streaming the archive uses it to find the next record, so a wrong value desynchronises everything after it.",
+      "description": "Compressed size of the entry's data, carried in the trailing data descriptor.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 385,
+        "snippet": "uint ddCompressedSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the compressed data stream",
+      "covers": "every byte of ZIPFILERECORD.frData",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frData"
+      ]
+    },
+    "ZIPDATADESCR.ddUncompressedSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The uncompressed byte count repeated after the data; a reader verifies the decompressed length against it and reports a mismatch as a corrupt entry.",
+      "description": "Uncompressed size of the entry's content, carried in the trailing data descriptor.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 386,
+        "snippet": "uint ddUncompressedSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the entry's uncompressed content",
+      "covers": "the original file content that frData decompresses to",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frData"
+      ]
+    },
+    "ZIPFILERECORD.frSignature": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "A ZIP record signature. The top-level loop reads a four-byte tag at line 618 and dispatches on it; a value outside the seven it knows makes the template print 'Unknown ZIP tag encountered' and return -1, and every real reader locates its records by these same constants.",
+      "description": "Signature of a local file header, the four bytes 'PK\\x03\\x04'.",
+      "field_type": "SignatureTYPE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 392,
+        "snippet": "SignatureTYPE frSignature;    //0x04034b50"
+      },
+      "confidence": "high",
+      "required_value": 67324752,
+      "required_value_hex": "0x04034B50",
+      "required_value_ascii": "PK\\x03\\x04",
+      "endianness": "little",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 618,
+        "values": [
+          67324752,
+          134695760,
+          33639248,
+          84233040,
+          101075792,
+          117853008,
+          101010256
+        ],
+        "preferred": [
+          67324752,
+          33639248,
+          101010256
+        ],
+        "note": "tag = ReadUInt(FTell()) at line 618 is compared against all seven SignatureTYPE constants in the if/else chain at lines 624-663. These are exactly the good known values a generator must reproduce."
+      },
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Correct: all four decode. Incremented by one, with one byte wrong, byte-swapped, and zeroed: ALL FOUR tools fail - Info-ZIP 'bad zipfile offset', libarchive exits with an error, 7-Zip errors, Python reports the entry as bad.",
+        "conclusion": "The strictest signature in the format and the only one all four readers enforce. It is also the file's magic number: the template's header comment at line 13 records the ID bytes as 50 4B, which is 'PK'."
+      }
+    },
+    "ZIPFILERECORD.frFlags": {
+      "tier": "B",
+      "type": "bitmask_constraint",
+      "tier_rationale": "The general purpose bit flags. Two bits change the entry's physical layout - bit 0 requires an encryption header before the data and bit 3 moves the CRC and sizes into a trailing descriptor - and the template branches on both at lines 415, 435 and 462. Measured, no value is refused outright, so this is a finite bit space rather than a gate.",
+      "description": "General purpose bit flags controlling encryption, the data descriptor, and the filename encoding.",
+      "field_type": "FLAGTYPE (ushort)",
+      "source": "both",
+      "evidence": {
+        "line": 394,
+        "snippet": "FLAGTYPE frFlags;"
+      },
+      "confidence": "high",
+      "valid_bits": 65535,
+      "valid_values": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+        16384,
+        32768
+      ],
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Bits 1, 2, 3, 4, 11 and 13 set individually all decoded in all four tools. Bit 0 (FLAG_Encrypted) made Info-ZIP and 7-Zip demand a password and Python raise 'File is encrypted'. Bit 6 (FLAG_StrongEncrypted) made Python raise NotImplementedError for strong encryption while the other three still read the entry. 0xF7F6 - most bits at once - decoded in three of four.",
+        "conclusion": "All sixteen bits are legal to set. Bits 0 and 6 are the ones that change the layout the most, and bit 3 is what makes a data descriptor legal; the rest are reserved or advisory and are worth setting precisely because they are the values a narrowing pass would drop."
+      },
+      "notes": "The sixteen named bits are FLAG_Encrypted=0x0001, FLAG_CompressionFlagBit1=0x0002, FLAG_CompressionFlagBit2=0x0004, FLAG_DescriptorUsedMask=0x0008, FLAG_Reserved1=0x0010, FLAG_Reserved2=0x0020, FLAG_StrongEncrypted=0x0040, FLAG_CurrentlyUnused1=0x0080, FLAG_CurrentlyUnused2=0x0100, FLAG_CurrentlyUnused3=0x0200, FLAG_CurrentlyUnused4=0x0400, FLAG_Utf8=0x0800, FLAG_ReservedPKWARE1=0x1000, FLAG_CDEncrypted=0x2000, FLAG_ReservedPKWARE2=0x4000, FLAG_ReservedPKWARE3=0x8000. Bits 1 and 2 have method-specific meanings: for COMP_DEFLATE they name the compression level, and for COMP_IMPLODED they describe the dictionary size and Shannon-Fano tree count."
+    },
+    "ZIPFILERECORD.frCompression": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The compression method, and the field that decides what frData must contain. Measured, two methods are universally supported and the rest reach each reader's unsupported-method path rather than a generic failure, so the whole enumeration belongs here - narrowing it to 0 and 8 would delete seventeen distinct rejection and alternate-codec branches.",
+      "description": "Compression method applied to the entry's data.",
+      "field_type": "COMPTYPE (short)",
+      "source": "both",
+      "evidence": {
+        "line": 395,
+        "snippet": "COMPTYPE frCompression;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        14,
+        18,
+        19,
+        96,
+        97,
+        98,
+        99
+      ],
+      "value_names": [
+        "COMP_STORED",
+        "COMP_SHRUNK",
+        "COMP_REDUCED1",
+        "COMP_REDUCED2",
+        "COMP_REDUCED3",
+        "COMP_REDUCED4",
+        "COMP_IMPLODED",
+        "COMP_TOKEN",
+        "COMP_DEFLATE",
+        "COMP_DEFLATE64",
+        "COMP_PKImploding",
+        "COMP_BZip2",
+        "COMP_LZMA",
+        "COMP_Terse",
+        "COMP_Lz77",
+        "COMP_Jpeg",
+        "COMP_WavPack",
+        "COMP_PPMd",
+        "COMP_WzAES"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        0,
+        8
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "COMP_STORED (0) and COMP_DEFLATE (8) with matching payloads decode in all four. COMP_BZip2 (12) with a real bzip2 stream decodes in 7-Zip and Python; Info-ZIP reports unsupported. COMP_LZMA (14) with the 4-byte ZIP LZMA header plus an lzma_alone body decoded in Python. Methods 1-7, 9, 10, 18, 19 and 0x60-0x63 are refused by Info-ZIP with 'invalid compression method' or an unsupported exit, by 7-Zip, and by Python with NotImplementedError. libarchive accepts every method in listing mode because it does not decompress to list.",
+        "conclusion": "0 and 8 are the two to prefer, and they are the two whose payload construction is spelled out in ZIPFILERECORD.frData. Method 11 and 13 are absent from the template's enum and from APPNOTE alike; the nineteen values above are exactly what lines 88-110 declare."
+      },
+      "notes": "When this field is COMP_WzAES (0x63) the real method moves into the AES extra field's deCompression, which is a dependency."
+    },
+    "ZIPFILERECORD.frFileTime": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "An MS-DOS packed time. Timestamps are the archetypal Tier C field; measured, no reader validates the packed fields, and pinning it would make every generated entry carry the same modification time.",
+      "description": "Last modification time in MS-DOS packed format: seconds/2 in bits 0-4, minutes in 5-10, hours in 11-15.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 396,
+        "snippet": "ushort  frFileTime;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Values that decode to an impossible time, such as 62 seconds or hour 31, are representable and are not rejected; they reach a reader's date-normalisation path, which a valid time never does."
+    },
+    "ZIPFILERECORD.frFileDate": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "An MS-DOS packed date, free for the same reasons as frFileTime.",
+      "description": "Last modification date in MS-DOS packed format: day in bits 0-4, month in 5-8, year minus 1980 in 9-15.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 397,
+        "snippet": "ushort  frFileDate;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "ZIPFILERECORD.frCrc": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The CRC-32 of the entry's uncompressed content, and a measured hard gate: a value wrong by a single bit made Info-ZIP fail the entry, 7-Zip report a CRC failure and Python's testzip name the file as bad. Only libarchive's listing mode tolerated it, because listing does not decompress.",
+      "description": "CRC-32 checksum of the entry's uncompressed data.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 398,
+        "snippet": "uint     frCrc     <format=hex>;"
+      },
+      "confidence": "high",
+      "algorithm": "CRC-32/ISO-HDLC: reflected polynomial 0xEDB88320, initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF - the same CRC PNG and gzip use",
+      "covers": "every byte of the entry's UNCOMPRESSED content; it is computed BEFORE compression, never over frData",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.frUncompressedSize"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "The correct CRC decodes in all four. Zero, the correct value with one bit flipped, and 0xFFFFFFFF all made Info-ZIP fail the entry, 7-Zip report a CRC error and Python's testzip return the filename. libarchive listed the entry without complaint.",
+        "conclusion": "A genuine front gate in three of four readers. The single most important thing to get right about it is that it covers the UNCOMPRESSED bytes: computing it over the deflate stream instead is the natural mistake and fails every time."
+      },
+      "notes": "Must equal ZIPDIRENTRY.deCrc and, when a data descriptor is present, ZIPDATADESCR.ddCRC. When the AES extra field declares version 2 the field is zero instead, because authentication replaces it."
+    },
+    "ZIPFILERECORD.frCompressedSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of frData, and the value the template uses to size the array at line 460. Measured a hard gate: one byte short, one byte long, zero and a huge value all made Info-ZIP, 7-Zip and Python fail the entry, because the next record is then read from the wrong offset.",
+      "description": "Size in bytes of the entry's compressed data as stored in the archive.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 399,
+        "snippet": "uint     frCompressedSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the compressed data stream, equal to the uncompressed size when the method is COMP_STORED",
+      "covers": "every byte of ZIPFILERECORD.frData, and for an AES entry also the salt, password verifier and authentication code",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.frCompression",
+        "EXTRAFIELD.Strength"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "The exact value decodes in all four. 11 and 13 against a 12-byte payload, 0, and 1000 all made Info-ZIP fail with a bad entry, 7-Zip report a CRC or size error and Python's testzip name the file. libarchive listed it regardless.",
+        "conclusion": "Exact agreement with the bytes emitted, in both directions. 0xFFFFFFFF is the Zip64 escape and moves the real value into the Zip64 extra field; 0 with flag bit 3 set moves it into the trailing data descriptor. Both are dependencies."
+      },
+      "notes": "The template's three data branches turn on this field: line 458 reads frData directly when the value is between 1 and 0xFFFFFFFE, and line 462 takes the data-descriptor path when it is 0 and flag bit 3 is set."
+    },
+    "ZIPFILERECORD.frUncompressedSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of the entry's original content. A reader verifies the decompressed byte count against it; measured, every wrong value made Info-ZIP report a warning-level failure and made 7-Zip and Python fail when the value was short or zero.",
+      "description": "Size in bytes of the entry's content before compression.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 400,
+        "snippet": "uint     frUncompressedSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the original uncompressed content",
+      "covers": "the bytes that decompressing frData must produce",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.frCrc"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "The exact value decodes in all four. 11 against 12 real bytes, and 0, made Info-ZIP exit with a warning and made 7-Zip and Python fail. 13 and 1000 made Info-ZIP warn while 7-Zip and Python accepted them, since they stop at the end of the compressed stream.",
+        "conclusion": "Short values are fatal, long values are tolerated by half the readers. Compute it from the content. 0xFFFFFFFF is the Zip64 escape."
+      }
+    },
+    "ZIPFILERECORD.frFileNameLength": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of the filename that follows. Measured a hard gate: one byte short, one byte long and zero all made Info-ZIP, 7-Zip and Python fail, because the extra fields and then the file data are read from the wrong offset.",
+      "description": "Number of bytes in the entry's filename.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 401,
+        "snippet": "ushort   frFileNameLength;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the filename string, with no null terminator",
+      "covers": "ZIPFILERECORD.frFileName",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frFileName"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "The exact value decodes in all four. 4 and 6 against a 5-character name made Info-ZIP fail the entry, 7-Zip error and Python's testzip name the file; 0 additionally made libarchive exit with an error.",
+        "conclusion": "Exact. A zero-length name is legal in the format but the template only emits the array when the length is non-zero (line 403)."
+      }
+    },
+    "ZIPFILERECORD.frExtraFieldLength": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The total length of the extra-field block, and the budget the loop at line 407 consumes. A wrong value leaves the loop reading a record header from inside the file data, and the file data itself is then read from the wrong offset.",
+      "description": "Total number of bytes of extra-field records following the filename.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 402,
+        "snippet": "ushort   frExtraFieldLength;"
+      },
+      "confidence": "high",
+      "algorithm": "sum over the extra-field records of (4 + efDataSize)",
+      "covers": "every EXTRAFIELD record emitted for this entry",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "EXTRAFIELD.efDataSize",
+        "EXTRAFIELD.efHeaderID"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Zero, one record, and two concatenated records all decoded in all four tools when the length matched. A record declaring an efDataSize larger than the bytes present made Info-ZIP fail and libarchive exit with an error.",
+        "conclusion": "Must equal the sum of the records' full sizes. The template's loop at lines 406-411 decrements by efDataSize + 4 per record and requires the total to reach exactly zero."
+      },
+      "template_parse_requirement": "TEMPLATE HAZARD at lines 406-411: 'local int len = frExtraFieldLength;' then 'while (len > 0) { EXTRAFIELD frExtraField; len -= frExtraField.efDataSize + 4; }'. The test is 'len > 0' on a signed int, so an inexact total overshoots into negative and stops - which happens to terminate, but leaves the parser positioned inside the file data. The records must sum exactly."
+    },
+    "ZIPFILERECORD.frFileName": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The entry's path. Its length is fixed by frFileNameLength and its bytes are free - measured, every reader carried arbitrary names through. It is the field a generator is tempted to fix at one literal, which would make every archive contain the same single path and never exercise a reader's path-traversal, separator or encoding handling.",
+      "description": "Relative path of the entry within the archive, without a drive letter or leading slash.",
+      "field_type": "char[frFileNameLength]",
+      "source": "both",
+      "evidence": {
+        "line": 404,
+        "snippet": "char     frFileName[ frFileNameLength ];"
+      },
+      "confidence": "high",
+      "notes": "APPNOTE requires forward slashes as separators and forbids a leading slash or drive letter. Neither rule is enforced by any reader tested, which makes names such as '../x' and 'C:/x' legal to emit and exactly the inputs that reach a reader's path-sanitisation code - a branch a well-behaved name never touches. A trailing slash marks a directory entry, which is a different extraction path again. When flag bit 11 is set the bytes must be UTF-8."
+    },
+    "StrongEncryptedHeader.IVSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of the initialisation vector that immediately follows, and a value the template subtracts from frCompressedSize at line 433 to size the file data. A wrong value makes both the IV and the data array the wrong length.",
+      "description": "Size in bytes of the initialisation vector data that follows.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 419,
+        "snippet": "ushort  IVSize;"
+      },
+      "confidence": "medium",
+      "algorithm": "byte count of the IVData array",
+      "covers": "StrongEncryptedHeader.IVData",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "StrongEncryptedHeader.IVData"
+      ]
+    },
+    "StrongEncryptedHeader.IVData": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Random cipher input whose length is fixed by IVSize and whose contents are by definition arbitrary; constraining it would remove the only free bytes in the header.",
+      "description": "Initialisation vector for the entry's cipher.",
+      "field_type": "byte[IVSize]",
+      "source": "both",
+      "evidence": {
+        "line": 420,
+        "snippet": "byte    IVData[IVSize];"
+      },
+      "confidence": "medium"
+    },
+    "StrongEncryptedHeader.Size": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The size of the remainder of the strong-encryption header. Line 433 computes the file data length as frCompressedSize minus IVSize minus this value minus 6, so a wrong value shifts the entire data array.",
+      "description": "Size in bytes of the encryption header data that follows this field.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 421,
+        "snippet": "uint    Size;"
+      },
+      "confidence": "medium",
+      "algorithm": "byte count of Format through VCRC32, that is everything after this field",
+      "covers": "Format, AlgID, BitLen, Flags, ErdSize, ErdData, Reserved, VSize, VData and VCRC32",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "StrongEncryptedHeader.ErdSize",
+        "StrongEncryptedHeader.VSize"
+      ]
+    },
+    "StrongEncryptedHeader.Format": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A field of the strong-encryption header, which only an encryption-aware extractor parses; none of the four readers tested reaches it, so nothing here can gate a decode.",
+      "description": "Format version of the strong encryption header; APPNOTE defines 0x0002.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 422,
+        "snippet": "ushort  Format;"
+      },
+      "confidence": "medium"
+    },
+    "StrongEncryptedHeader.AlgID": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The cipher identifier, a closed twelve-value enumeration in which every value names a different algorithm an encryption-aware reader must dispatch on.",
+      "description": "Encryption algorithm identifier for the entry's data.",
+      "field_type": "ALGFLAG (ushort)",
+      "source": "both",
+      "evidence": {
+        "line": 423,
+        "snippet": "ALGFLAG AlgID;"
+      },
+      "confidence": "medium",
+      "valid_values": [
+        26113,
+        26114,
+        26115,
+        26121,
+        26126,
+        26127,
+        26128,
+        26370,
+        26400,
+        26401,
+        26625,
+        65535
+      ],
+      "value_names": [
+        "AlgID_DES",
+        "AlgID_RC2OLD",
+        "AlgID_3DES168",
+        "AlgID_3DES112",
+        "AlgID_AES128",
+        "AlgID_AES192",
+        "AlgID_AES256",
+        "AlgID_RC2",
+        "AlgID_Blowfish",
+        "AlgID_Twofish",
+        "AlgID_RC4",
+        "AlgID_Unknown"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        26126,
+        26128
+      ]
+    },
+    "StrongEncryptedHeader.BitLen": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A field of the strong-encryption header, which only an encryption-aware extractor parses; none of the four readers tested reaches it, so nothing here can gate a decode.",
+      "description": "Bit length of the encryption key.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 424,
+        "snippet": "ushort  BitLen;"
+      },
+      "confidence": "medium"
+    },
+    "StrongEncryptedHeader.Flags": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A field of the strong-encryption header, which only an encryption-aware extractor parses; none of the four readers tested reaches it, so nothing here can gate a decode.",
+      "description": "Processing flags for the strong-encryption record.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 425,
+        "snippet": "ushort  Flags;"
+      },
+      "confidence": "medium"
+    },
+    "StrongEncryptedHeader.ErdSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of the encrypted random data that follows; a wrong value makes ErdData the wrong length and shifts every field after it.",
+      "description": "Size in bytes of the encrypted random data block.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 426,
+        "snippet": "ushort  ErdSize;"
+      },
+      "confidence": "medium",
+      "algorithm": "byte count of the ErdData array",
+      "covers": "StrongEncryptedHeader.ErdData",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "StrongEncryptedHeader.ErdData"
+      ]
+    },
+    "StrongEncryptedHeader.ErdData": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Cipher output whose length is fixed by ErdSize and whose contents are arbitrary by construction.",
+      "description": "Encrypted random data used in key derivation.",
+      "field_type": "byte[ErdSize]",
+      "source": "both",
+      "evidence": {
+        "line": 427,
+        "snippet": "byte    ErdData[ErdSize];"
+      },
+      "confidence": "medium"
+    },
+    "StrongEncryptedHeader.Reserved": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Reserved space that no reader inspects; pinning it to zero would remove unchecked bytes for no gain.",
+      "description": "Reserved four bytes in the strong-encryption header.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 428,
+        "snippet": "uint    Reserved;"
+      },
+      "confidence": "medium"
+    },
+    "StrongEncryptedHeader.VSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of the validation data block. The template sizes VData as VSize minus 4 at line 430, so a value below 4 gives a negative array length and any wrong value shifts the trailing CRC.",
+      "description": "Size in bytes of the validation data block, including the four-byte CRC that follows it.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 429,
+        "snippet": "ushort  VSize;"
+      },
+      "confidence": "medium",
+      "algorithm": "byte count of VData plus the 4 bytes of VCRC32",
+      "covers": "StrongEncryptedHeader.VData and StrongEncryptedHeader.VCRC32",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "StrongEncryptedHeader.VData"
+      ],
+      "notes": "Line 430 reads VData[VSize - 4], so VSize must be at least 4."
+    },
+    "StrongEncryptedHeader.VData": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Cipher output whose length is fixed by VSize and whose contents are arbitrary.",
+      "description": "Validation data used to check the decryption key.",
+      "field_type": "byte[VSize - 4]",
+      "source": "both",
+      "evidence": {
+        "line": 430,
+        "snippet": "byte    VData[VSize - 4];"
+      },
+      "confidence": "medium"
+    },
+    "StrongEncryptedHeader.VCRC32": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "A CRC-32 over the validation data, which is how an extractor decides whether the supplied key is correct; a wrong value makes every password attempt appear to fail.",
+      "description": "CRC-32 of the decrypted validation data.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 431,
+        "snippet": "uint    VCRC32;"
+      },
+      "confidence": "medium",
+      "algorithm": "CRC-32/ISO-HDLC over the validation data",
+      "covers": "StrongEncryptedHeader.VData in its decrypted form",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "StrongEncryptedHeader.VData"
+      ]
+    },
+    "ZIPFILERECORD.SaltValue": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The AES key-derivation salt. Its length is fully determined by the AES strength - 8, 12 or 16 bytes, computed at lines 440-451 - and its contents are random by definition, so constraining them would remove the only free bytes in the AES preamble.",
+      "description": "Random salt used to derive the AES key from the password.",
+      "field_type": "uchar[lenSalt]",
+      "source": "both",
+      "evidence": {
+        "line": 453,
+        "snippet": "uchar   SaltValue[lenSalt];"
+      },
+      "confidence": "medium",
+      "notes": "Length comes from EXTRAFIELD.Strength: AES128 gives 8 bytes, AES192 12 and AES256 16. That dependency is what makes the strength field change the entry's byte layout."
+    },
+    "ZIPFILERECORD.PassVerification": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The two-byte password verifier. WinZip AES derives it from the password and salt, and an extractor compares it before attempting decryption - a wrong value makes every correct password be reported as wrong, so nothing is ever decrypted.",
+      "description": "Two-byte password verification value derived alongside the AES key.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 454,
+        "snippet": "ushort  PassVerification;"
+      },
+      "confidence": "medium",
+      "algorithm": "the final two bytes of the PBKDF2-HMAC-SHA1 output, after the encryption key and the authentication key",
+      "covers": "nothing in the file; it is derived from the password and SaltValue",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.SaltValue",
+        "EXTRAFIELD.Strength"
+      ]
+    },
+    "ZIPFILERECORD.AuthenticationCode": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The truncated HMAC over the encrypted data. WinZip AES checks it after decryption and reports a corrupt entry when it does not match, which is the AES equivalent of the CRC gate.",
+      "description": "First ten bytes of the HMAC-SHA1 authentication code over the encrypted data.",
+      "field_type": "uchar[10]",
+      "source": "both",
+      "evidence": {
+        "line": 456,
+        "snippet": "uchar   AuthenticationCode[ 10];"
+      },
+      "confidence": "medium",
+      "algorithm": "HMAC-SHA1 over the ciphertext using the derived authentication key, truncated to its first 10 bytes",
+      "covers": "every byte of ZIPFILERECORD.frData in its encrypted form",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.SaltValue"
+      ],
+      "notes": "Its fixed 10-byte length is why frCompressedSize for an AES entry is the ciphertext length plus the salt plus 2 plus 10, which line 455 encodes as frCompressedSize - 12 - lenSalt."
+    },
+    "ZIPFILERECORD.frData": {
+      "tier": "A",
+      "type": "payload_wellformedness",
+      "tier_rationale": "The entry's compressed data. The template declares it as a bare byte array sized by a length field and says nothing whatever about its contents - exactly the situation checklist item 3 exists for. Measured, random bytes under COMP_DEFLATE abort the inflate in three of four readers with 'invalid compressed data to inflate' and its equivalents, so nothing downstream of the decompressor runs.",
+      "description": "The entry's file data, compressed by the method that frCompression names.",
+      "field_type": "uchar[frCompressedSize]",
+      "source": "both",
+      "evidence": {
+        "line": 460,
+        "snippet": "uchar    frData[ frCompressedSize ];"
+      },
+      "confidence": "high",
+      "codec": "selected by ZIPFILERECORD.frCompression; the two universally supported cases are no compression at all (COMP_STORED) and raw DEFLATE (RFC 1951, WITHOUT the RFC 1950 zlib wrapper)",
+      "must_produce": "What frData must contain is decided entirely by ZIPFILERECORD.frCompression. The two cases that matter:\\n\\nCOMP_STORED (frCompression = 0) - the payload IS the file content, byte for byte, with no framing at all. frCompressedSize and frUncompressedSize are then equal, and frCrc is the CRC-32 of those same bytes.\\n\\nCOMP_DEFLATE (frCompression = 8) - a RAW DEFLATE stream as defined by RFC 1951, and this is the single most important detail in the whole entry: it must NOT carry the two-byte zlib header of RFC 1950 and must NOT carry a trailing Adler-32. ZIP wraps deflate with its own CRC-32 instead. A stream produced by a generic 'zlib compress' call has the 0x78 0x9C header and fails.\\n  A raw deflate stream is a sequence of blocks. Each begins with a 3-bit header: one BFINAL bit, set only on the last block, then two BTYPE bits - 00 stored, 01 fixed Huffman, 10 dynamic Huffman. For BTYPE 00 the stream then pads to a byte boundary and carries LEN as a little-endian uint16, NLEN as its one's complement, and LEN literal bytes.\\n\\nCOMP_BZip2 (12) - a complete bzip2 stream beginning 'BZh'. COMP_LZMA (14) - a 4-byte ZIP-specific header (LZMA version major, minor, then the properties size as a uint16) followed by the LZMA properties and the raw LZMA stream. Every other method has its own format and none of the four readers tested implements more than these.",
+      "decoder_gate": "Measured against Info-ZIP UnZip 6.00, libarchive 3.7.4, 7-Zip and Python zipfile.\\n  COMP_DEFLATE with RANDOM BYTES: Info-ZIP aborts the entry with 'invalid compressed data to inflate', 7-Zip reports an error, and Python raises 'Error -3 while decompressing data'. Three separate random payloads all failed identically. Nothing downstream of the inflate call runs.\\n  COMP_DEFLATE with the RAW UNCOMPRESSED BYTES - the natural shortcut - fails exactly the same way.\\n  COMP_DEFLATE with a ZLIB-WRAPPED stream, the output of an ordinary zlib.compress, ALSO fails the same way, because the 0x78 0x9C header is not a valid deflate block header. This is the mistake most likely to be made and it is indistinguishable from random data to the decoder.\\n  COMP_DEFLATE with a correct raw deflate stream, whether produced by a real compressor or by the stored-block construction below, decodes in all four tools.\\n  libarchive tolerates every case in listing mode only because listing does not decompress; asked to extract, it fails with the rest.",
+      "generation_strategy": "Two correct constructions, both verified end to end in all four readers.\\n\\n1. COMP_STORED, the simplest of all. Set frCompression = 0 and emit the content unchanged:\\n     frData = content\\n     frCompressedSize = frUncompressedSize = len(content)\\n     frCrc = CRC-32 of content\\n   A complete one-entry archive built this way is 120 bytes and decodes in all four tools.\\n\\n2. COMP_DEFLATE using STORED DEFLATE BLOCKS - the exact analogue of the PNG construction that gained 8.2 points, and the reason this entry exists. Emit, for each chunk of at most 65535 bytes of content:\\n     byte 0        0x01 if this is the last chunk, else 0x00   (BFINAL set, BTYPE 00)\\n     bytes 1-2     LEN, the chunk length, little-endian uint16\\n     bytes 3-4     NLEN, the one's complement of LEN, little-endian uint16\\n     bytes 5..     the chunk's literal bytes, uncompressed\\n   For empty content emit the single final empty block: 01 00 00 FF FF.\\n   Worked example, content 'hello world\\\\n' (12 bytes):\\n     01 0C 00 F3 FF 68 65 6C 6C 6F 20 77 6F 72 6C 64 0A\\n   - 17 bytes, and frCompressedSize is 17 while frUncompressedSize is 12.\\n   VERIFIED at content lengths 0, 1, 12, 1000 and 70000 bytes; the last exercises the multi-block path, since content above 65535 bytes needs more than one stored block. All five decoded in all four tools.\\n\\nIn both constructions the payload is computed from the content and the three size and checksum fields are computed from the payload. The content length is a free choice and is never trimmed to fit a precomputed payload.",
+      "derives_from": [
+        "ZIPFILERECORD.frCompression",
+        "ZIPFILERECORD.frUncompressedSize",
+        "ZIPFILERECORD.frCompressedSize",
+        "EXTRAFIELD.Strength",
+        "ZIPFILERECORD.frFlags"
+      ],
+      "content_is_free": true,
+      "endianness": "little",
+      "cross_check": {
+        "line": 471,
+        "snippet": "uchar frData[posNext - posCurrent];"
+      },
+      "notes": "PIN THE ENVELOPE, FREE THE CONTENTS: the deflate framing is Tier A but the bytes inside a stored block are the file content itself and are completely unconstrained - any length, any bytes. That is how this entry buys the whole decompression path at zero cost in diversity.\\nTHE CENTRAL RULE: the payload is computed from the content, and frCompressedSize, frUncompressedSize and frCrc are then computed from the payload. Neither the content length nor any size field may be narrowed so that a precomputed stream fits.\\nTHREE DECLARATIONS share this field name, at line 433 for the strong-encryption branch, line 455 for the AES branch, line 460 for the ordinary branch and line 471 for the data-descriptor branch - four in total, all mutually exclusive branches of the same if/else chain at lines 415-476."
+    },
+    "ZIPDIRENTRY.deSignature": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "A ZIP record signature. The top-level loop reads a four-byte tag at line 618 and dispatches on it; a value outside the seven it knows makes the template print 'Unknown ZIP tag encountered' and return -1.",
+      "description": "Signature of a central directory file header, the four bytes 'PK\\x01\\x02'.",
+      "field_type": "SignatureTYPE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 482,
+        "snippet": "SignatureTYPE deSignature;     //0x02014b50"
+      },
+      "confidence": "high",
+      "required_value": 33639248,
+      "required_value_hex": "0x02014B50",
+      "required_value_ascii": "PK\\x01\\x02",
+      "endianness": "little",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 618,
+        "values": [
+          67324752,
+          134695760,
+          33639248,
+          84233040,
+          101075792,
+          117853008,
+          101010256
+        ],
+        "preferred": [
+          67324752,
+          33639248,
+          101010256
+        ],
+        "note": "tag = ReadUInt(FTell()) at line 618, compared in the if/else chain at lines 624-663."
+      },
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Correct: all four decode. Incremented by one, or replaced with the local-header signature: Info-ZIP fails with a start-of-central-directory error, 7-Zip errors and Python raises BadZipFile 'Bad magic number for central directory'. libarchive tolerates it, because it reads the local headers streamingly and never consults the directory.",
+        "conclusion": "A hard gate in three of four readers; libarchive is the exception because it does not use the central directory at all."
+      }
+    },
+    "ZIPDIRENTRY.deFlags": {
+      "tier": "B",
+      "type": "bitmask_constraint",
+      "tier_rationale": "The central directory's copy of the general purpose flags. It must agree with the local header's copy for a reader that cross-checks, and the same sixteen bits carry the same meanings, so the legal set is identical to frFlags.",
+      "description": "General purpose bit flags for this entry, repeated in the central directory.",
+      "field_type": "FLAGTYPE (ushort)",
+      "source": "both",
+      "evidence": {
+        "line": 485,
+        "snippet": "FLAGTYPE deFlags;"
+      },
+      "confidence": "high",
+      "valid_bits": 65535,
+      "valid_values": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+        16384,
+        32768
+      ],
+      "endianness": "little",
+      "notes": "Must equal ZIPFILERECORD.frFlags for the same entry; bit 3 in particular tells a reader to expect a data descriptor after the file data."
+    },
+    "ZIPDIRENTRY.deCompression": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The central directory's copy of the compression method. Measured, a value disagreeing with the local header made 7-Zip error and Python fail with a decompression error, because Python decompresses using the directory's method against data compressed with the local one.",
+      "description": "Compression method for this entry, repeated in the central directory.",
+      "field_type": "COMPTYPE (short)",
+      "source": "both",
+      "evidence": {
+        "line": 486,
+        "snippet": "COMPTYPE deCompression;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        14,
+        18,
+        19,
+        96,
+        97,
+        98,
+        99
+      ],
+      "value_names": [
+        "COMP_STORED",
+        "COMP_SHRUNK",
+        "COMP_REDUCED1",
+        "COMP_REDUCED2",
+        "COMP_REDUCED3",
+        "COMP_REDUCED4",
+        "COMP_IMPLODED",
+        "COMP_TOKEN",
+        "COMP_DEFLATE",
+        "COMP_DEFLATE64",
+        "COMP_PKImploding",
+        "COMP_BZip2",
+        "COMP_LZMA",
+        "COMP_Terse",
+        "COMP_Lz77",
+        "COMP_Jpeg",
+        "COMP_WavPack",
+        "COMP_PPMd",
+        "COMP_WzAES"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        0,
+        8
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "A central entry declaring COMP_DEFLATE against a STORED local entry: Info-ZIP decoded it anyway because it reads the local header, libarchive listed it, but 7-Zip reported an archive error and Python raised 'Error -3 while decompressing data'.",
+        "conclusion": "Must agree with ZIPFILERECORD.frCompression. Which reader wins depends on whether it trusts the directory or the local header, and the two halves of the archive disagreeing is itself a case worth generating."
+      }
+    },
+    "ZIPDIRENTRY.deFileTime": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "An MS-DOS packed time repeated in the directory; free for the same reasons as the local copy.",
+      "description": "Last modification time in MS-DOS packed format.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 487,
+        "snippet": "ushort  deFileTime;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "ZIPDIRENTRY.deFileDate": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "An MS-DOS packed date repeated in the directory; free for the same reasons as the local copy.",
+      "description": "Last modification date in MS-DOS packed format.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 488,
+        "snippet": "ushort  deFileDate;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "ZIPDIRENTRY.deCrc": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The directory's copy of the entry CRC. Measured, a value disagreeing with the local header made libarchive exit with an error, 7-Zip report an archive error and Python's testzip name the file, because those readers verify against the directory.",
+      "description": "CRC-32 of the entry's uncompressed data, repeated in the central directory.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 489,
+        "snippet": "uint     deCrc     <format=hex>;"
+      },
+      "confidence": "high",
+      "algorithm": "CRC-32/ISO-HDLC over the uncompressed content, identical to ZIPFILERECORD.frCrc",
+      "covers": "every byte of the entry's uncompressed content",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frCrc",
+        "ZIPFILERECORD.frData"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "A central CRC of 0xDEADBEEF against a correct local CRC: Info-ZIP still decoded, libarchive exited with an error, 7-Zip errored and Python's testzip named the file.",
+        "conclusion": "Must equal the local header's CRC. The disagreement splits the readers exactly along the line of which copy each one trusts."
+      }
+    },
+    "ZIPDIRENTRY.deCompressedSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The directory's copy of the compressed length; measured, a disagreement with the local header made libarchive, 7-Zip and Python all fail.",
+      "description": "Compressed size of the entry, repeated in the central directory.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 490,
+        "snippet": "uint     deCompressedSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the compressed data stream",
+      "covers": "every byte of ZIPFILERECORD.frData",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frCompressedSize"
+      ]
+    },
+    "ZIPDIRENTRY.deUncompressedSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The directory's copy of the uncompressed length; measured, a disagreement made libarchive and 7-Zip fail while Info-ZIP and Python tolerated it.",
+      "description": "Uncompressed size of the entry, repeated in the central directory.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 491,
+        "snippet": "uint     deUncompressedSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the entry's uncompressed content",
+      "covers": "the content that frData decompresses to",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frUncompressedSize"
+      ]
+    },
+    "ZIPDIRENTRY.deFileNameLength": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "A length field the parser uses to size the array that follows; a wrong value makes every byte after it be read from the wrong offset.",
+      "description": "Number of bytes in the entry's filename as stored in the directory.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 492,
+        "snippet": "ushort   deFileNameLength;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the data it introduces",
+      "covers": "ZIPDIRENTRY.deFileName",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deFileName"
+      ],
+      "notes": "Must equal ZIPFILERECORD.frFileNameLength and the name itself must match, or a reader cannot pair the directory entry with its local header."
+    },
+    "ZIPDIRENTRY.deExtraFieldLength": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "A length field the parser uses to size the array that follows; a wrong value makes every byte after it be read from the wrong offset.",
+      "description": "Total bytes of extra-field records in this directory entry.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 493,
+        "snippet": "ushort   deExtraFieldLength;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the data it introduces",
+      "covers": "every EXTRAFIELD record emitted inside this ZIPDIRENTRY",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "EXTRAFIELD.efDataSize",
+        "EXTRAFIELD.efHeaderID"
+      ],
+      "notes": "The central and local extra-field blocks are independent: APPNOTE allows an entry to carry different records in each, and the loop at lines 501-506 consumes this one exactly as the local loop does, with the same exact-sum requirement."
+    },
+    "ZIPDIRENTRY.deFileCommentLength": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "A length field the parser uses to size the array that follows; a wrong value makes every byte after it be read from the wrong offset.",
+      "description": "Number of bytes in this entry's comment.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 494,
+        "snippet": "ushort   deFileCommentLength;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the data it introduces",
+      "covers": "ZIPDIRENTRY.deFileComment",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deFileComment"
+      ],
+      "notes": "The comment exists only in the central directory; a local file header has no comment field."
+    },
+    "ZIPDIRENTRY.deDiskNumberStart": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The disk the entry starts on in a split archive. Every reader tested works on single-file archives where the value is 0, and none refused a different one at the entry level; constraining it would remove the split-archive path entirely.",
+      "description": "Number of the disk on which this entry's local header begins.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 495,
+        "snippet": "ushort   deDiskNumberStart;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "0xFFFF is the Zip64 escape, moving the real disk number into the Zip64 extra field."
+    },
+    "ZIPDIRENTRY.deInternalAttributes": {
+      "tier": "B",
+      "type": "bitmask_constraint",
+      "tier_rationale": "The internal file attributes. Bit 0 declares the entry to be text rather than binary, which is what makes a reader's line-ending translation path reachable; bit 2 marks a record-length control field. Neither is a gate, and both are branches.",
+      "description": "Internal attributes: bit 0 marks the entry as text, bit 2 as having a control field preceding each record.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 496,
+        "snippet": "ushort   deInternalAttributes;"
+      },
+      "confidence": "high",
+      "valid_bits": 5,
+      "valid_values": [
+        1,
+        4
+      ],
+      "endianness": "little",
+      "notes": "Info-ZIP's -a option translates line endings only for entries whose bit 0 is set, so that bit is the only way to reach the text-conversion code."
+    },
+    "ZIPDIRENTRY.deExternalAttributes": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The external file attributes, whose interpretation depends on VERECORD.HostOS: the low word is DOS attribute bits and the high word a Unix st_mode. Each named bit changes what an extractor does with the file - directory versus regular file, symlink versus content, the permission bits it applies - and none is refused.",
+      "description": "External file attributes, holding DOS attribute bits in the low word and a Unix mode in the high word.",
+      "field_type": "FILEATTRIBUTE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 497,
+        "snippet": "FILEATTRIBUTE deExternalAttributes;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        1,
+        2,
+        4,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+        16384,
+        65536,
+        4026531840,
+        1073741824,
+        2147483648,
+        3221225472,
+        2684354560,
+        1610612736,
+        536870912,
+        268435456,
+        134217728,
+        67108864,
+        33554432,
+        29360128,
+        16777216,
+        8388608,
+        4194304,
+        3670016,
+        2097152,
+        1048576,
+        524288,
+        458752,
+        262144,
+        131072,
+        65536
+      ],
+      "value_names": [
+        "FA_READONLY",
+        "FA_HIDDEN",
+        "FA_SYSTEM",
+        "FA_DIRECTORY",
+        "FA_ARCHIVE",
+        "FA_DEVICE",
+        "FA_NORMAL",
+        "FA_TEMPORARY",
+        "FA_SPARSE_FILE",
+        "FA_REPARSE_POINT",
+        "FA_COMPRESSED",
+        "FA_OFFLINE",
+        "FA_NOT_CONTENT_INDEXED",
+        "FA_ENCRYPTED",
+        "FA_VIRTUAL",
+        "kIFMT",
+        "kIFDIR",
+        "kIFREG",
+        "kIFSOCK",
+        "kIFLNK",
+        "kIFBLK",
+        "kIFCHR",
+        "kIFIFO",
+        "kISUID",
+        "kISGID",
+        "kISVTX",
+        "kIRWXU",
+        "kIRUSR",
+        "kIWUSR",
+        "kIXUSR",
+        "kIRWXG",
+        "kIRGRP",
+        "kIWGRP",
+        "kIXGRP",
+        "kIRWXO",
+        "kIROTH",
+        "kIWOTH",
+        "kIXOTH"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        32,
+        2175008768,
+        1106051072
+      ],
+      "notes": "The enum at lines 315-357 merges two conventions. The fifteen FA_ values are Windows FILE_ATTRIBUTE_ constants occupying the low word. The kI values are Unix mode bits shifted left by 16, so kIFDIR marks a directory and kIFLNK a symbolic link - and a symlink entry makes an extractor treat the file content as a link target, which is a completely different extraction path from a regular file. kIFMT is the type mask rather than a value in its own right."
+    },
+    "ZIPDIRENTRY.deHeaderOffset": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The offset of the entry's local file header, and the strictest cross-reference in the format. Measured, a value off by one, off by four, or past the end of file made ALL FOUR readers fail - Info-ZIP with 'bad zipfile offset', libarchive with an error exit, 7-Zip with an entry error and Python's testzip naming the file.",
+      "description": "Byte offset from the start of the archive to this entry's local file header.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 498,
+        "snippet": "uint     deHeaderOffset;"
+      },
+      "confidence": "high",
+      "algorithm": "absolute byte offset from the beginning of the file to the 'PK\\x03\\x04' signature of the matching local header",
+      "covers": "the position of one ZIPFILERECORD",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frSignature",
+        "ZIPFILERECORD.frCompressedSize",
+        "ZIPFILERECORD.frFileNameLength",
+        "ZIPFILERECORD.frExtraFieldLength"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Offsets of +1, +4 and 9999 against a correct 0: all four readers failed in every case.",
+        "conclusion": "The only field in the archive that every one of the four readers enforces besides the local signature. Compute it as the running byte position while emitting the local records. 0xFFFFFFFF is the Zip64 escape."
+      }
+    },
+    "ZIPDIRENTRY.deFileName": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The entry's path as recorded in the directory. Free for the same reasons as the local copy - every reader carried arbitrary names through - and it must simply match the local one, which is a dependency rather than a narrowing.",
+      "description": "Relative path of the entry, repeated in the central directory.",
+      "field_type": "char[deFileNameLength]",
+      "source": "both",
+      "evidence": {
+        "line": 500,
+        "snippet": "char     deFileName[ deFileNameLength ];"
+      },
+      "confidence": "high",
+      "notes": "Must be byte-identical to ZIPFILERECORD.frFileName; that pairing is how a reader matches a directory entry to its local header."
+    },
+    "ZIPDIRENTRY.deFileComment": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A free-text per-entry comment that no reader parses. Its length is fixed by deFileCommentLength and its contents are arbitrary, which makes it one of the two places in a ZIP where bulk bytes can vary without touching anything validated.",
+      "description": "Free-text comment attached to this entry.",
+      "field_type": "uchar[deFileCommentLength]",
+      "source": "both",
+      "evidence": {
+        "line": 508,
+        "snippet": "uchar    deFileComment[ deFileCommentLength ];"
+      },
+      "confidence": "high"
+    },
+    "ZIPDIGITALSIG.dsSignature": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "A ZIP record signature. The top-level loop reads a four-byte tag at line 618 and dispatches on it; a value outside the seven it knows makes the template print 'Unknown ZIP tag encountered' and return -1.",
+      "description": "Signature of the central directory digital signature record, the four bytes 'PK\\x05\\x05'.",
+      "field_type": "SignatureTYPE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 513,
+        "snippet": "SignatureTYPE dsSignature;    //0x05054b50"
+      },
+      "confidence": "high",
+      "required_value": 84233040,
+      "required_value_hex": "0x05054B50",
+      "required_value_ascii": "PK\\x05\\x05",
+      "endianness": "little",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 618,
+        "values": [
+          67324752,
+          134695760,
+          33639248,
+          84233040,
+          101075792,
+          117853008,
+          101010256
+        ],
+        "preferred": [
+          67324752,
+          33639248,
+          101010256
+        ],
+        "note": "tag = ReadUInt(FTell()) at line 618, compared in the if/else chain at lines 624-663."
+      },
+      "notes": "Optional in the format and written after the last directory entry. None of the four readers verifies the signature data; they skip the record by its length."
+    },
+    "ZIPDIGITALSIG.dsDataLength": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "A length field the parser uses to size the array that follows; a wrong value makes every byte after it be read from the wrong offset.",
+      "description": "Number of bytes of signature data that follow.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 514,
+        "snippet": "ushort   dsDataLength;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the data it introduces",
+      "covers": "ZIPDIGITALSIG.dsData",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIGITALSIG.dsData"
+      ]
+    },
+    "ZIPDIGITALSIG.dsData": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The signature blob itself. No reader tested verifies it, and its length is fixed by dsDataLength, so its contents are entirely free.",
+      "description": "PKCS#7 signature data covering the central directory.",
+      "field_type": "uchar[dsDataLength]",
+      "source": "both",
+      "evidence": {
+        "line": 516,
+        "snippet": "uchar \tdsData[ dsDataLength ];"
+      },
+      "confidence": "high"
+    },
+    "ZIP64ENDLOCATORRECORD.elr64Signature": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "A ZIP record signature. The top-level loop reads a four-byte tag at line 618 and dispatches on it; a value outside the seven it knows makes the template print 'Unknown ZIP tag encountered' and return -1.",
+      "description": "Signature of the Zip64 end of central directory record, the four bytes 'PK\\x06\\x06'.",
+      "field_type": "SignatureTYPE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 521,
+        "snippet": "SignatureTYPE elr64Signature; //0x06064b50"
+      },
+      "confidence": "high",
+      "required_value": 101075792,
+      "required_value_hex": "0x06064B50",
+      "required_value_ascii": "PK\\x06\\x06",
+      "endianness": "little",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 618,
+        "values": [
+          67324752,
+          134695760,
+          33639248,
+          84233040,
+          101075792,
+          117853008,
+          101010256
+        ],
+        "preferred": [
+          67324752,
+          33639248,
+          101010256
+        ],
+        "note": "tag = ReadUInt(FTell()) at line 618, compared in the if/else chain at lines 624-663."
+      },
+      "notes": "Present only in archives that use Zip64; a reader locates it through the Zip64 locator that follows it."
+    },
+    "ZIP64ENDLOCATORRECORD.elr64DirectoryRecordSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The size of the Zip64 end record, and the value the template tests at lines 523 through 539 to decide which of the following fields exist at all. A wrong value silently omits fields the reader then takes from the wrong offset.",
+      "description": "Size in bytes of this record after this field, that is the record size minus 12.",
+      "field_type": "int64",
+      "source": "both",
+      "evidence": {
+        "line": 522,
+        "snippet": "int64       elr64DirectoryRecordSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of everything after this field: 44 for the fixed part, plus any extensible data sector",
+      "covers": "elr64VersionMadeBy through the end of DataSect",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIP64ENDLOCATORRECORD.DataSect"
+      ],
+      "template_parse_requirement": "TEMPLATE QUIRK. APPNOTE fixes this field's meaning as 'size of the record minus 12', so the normal value is 44 and every field is present. The template instead treats it as a progressive threshold, testing '> 1', '> 2', '> 4', '> 8', '> 12', '> 20', '> 28', '> 36' and '> 44' to decide whether each successive field exists. A value of 44 makes every test true except the last, which is the correct layout, so 44 is the only value that produces a well-formed record through this template."
+    },
+    "ZIP64ENDLOCATORRECORD.el64DiskNumber": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The disk number of this record in a split archive; a single-file archive uses 0 and no reader tested refused any other value at this level.",
+      "description": "Number of the disk containing this Zip64 end of central directory record.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 528,
+        "snippet": "uint        el64DiskNumber;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "ZIP64ENDLOCATORRECORD.el64StartDiskNumber": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The disk on which the central directory starts; free for the same reason as el64DiskNumber.",
+      "description": "Number of the disk on which the central directory begins.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 530,
+        "snippet": "uint        el64StartDiskNumber;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "ZIP64ENDLOCATORRECORD.el64EntriesOnDisk": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The Zip64 count of directory entries on this disk; a reader that has followed the Zip64 locator uses it instead of the 16-bit count and stops early or overruns when it is wrong.",
+      "description": "Number of central directory entries on this disk, as a 64-bit count.",
+      "field_type": "int64",
+      "source": "both",
+      "evidence": {
+        "line": 532,
+        "snippet": "int64       el64EntriesOnDisk;"
+      },
+      "confidence": "high",
+      "algorithm": "count of ZIPDIRENTRY records on this disk",
+      "covers": "the central directory",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deSignature"
+      ]
+    },
+    "ZIP64ENDLOCATORRECORD.el64EntriesInDirectory": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The Zip64 total count of directory entries; the same consequences as the 16-bit field it supersedes.",
+      "description": "Total number of central directory entries across all disks, as a 64-bit count.",
+      "field_type": "int64",
+      "source": "both",
+      "evidence": {
+        "line": 534,
+        "snippet": "int64       el64EntriesInDirectory;"
+      },
+      "confidence": "high",
+      "algorithm": "total count of ZIPDIRENTRY records",
+      "covers": "the central directory",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deSignature"
+      ]
+    },
+    "ZIP64ENDLOCATORRECORD.el64DirectorySize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The Zip64 byte size of the central directory; a reader uses it to bound the directory scan and reads past the end or stops early when it is wrong.",
+      "description": "Size in bytes of the central directory, as a 64-bit value.",
+      "field_type": "int64",
+      "source": "both",
+      "evidence": {
+        "line": 536,
+        "snippet": "int64       el64DirectorySize;"
+      },
+      "confidence": "high",
+      "algorithm": "total byte count of every ZIPDIRENTRY record",
+      "covers": "from the first deSignature to the last byte of the last directory entry",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deFileNameLength",
+        "ZIPDIRENTRY.deExtraFieldLength",
+        "ZIPDIRENTRY.deFileCommentLength"
+      ]
+    },
+    "ZIP64ENDLOCATORRECORD.el64DirectoryOffset": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The Zip64 offset of the central directory, the 64-bit counterpart of the field whose 32-bit version every reader was measured to enforce.",
+      "description": "Byte offset from the start of the archive to the first central directory entry, as a 64-bit value.",
+      "field_type": "int64",
+      "source": "both",
+      "evidence": {
+        "line": 538,
+        "snippet": "int64       el64DirectoryOffset;"
+      },
+      "confidence": "high",
+      "algorithm": "absolute byte offset to the first ZIPDIRENTRY",
+      "covers": "the position of the central directory",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frCompressedSize",
+        "ZIPDIRENTRY.deHeaderOffset"
+      ]
+    },
+    "ZIP64ENDLOCATORRECORD.DataSect": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The Zip64 extensible data sector. APPNOTE reserves it for PKWARE and says readers should skip it, so its contents are free and its length is fully determined by elr64DirectoryRecordSize.",
+      "description": "Zip64 extensible data sector, reserved for future use.",
+      "field_type": "char[elr64DirectoryRecordSize - 44]",
+      "source": "both",
+      "evidence": {
+        "line": 541,
+        "snippet": "char DataSect [elr64DirectoryRecordSize - 44];"
+      },
+      "confidence": "high",
+      "notes": "Present only when elr64DirectoryRecordSize exceeds 44. The template's commented-out block at lines 542-547 shows the author intended to parse it as EXTRA64FIELD records but did not."
+    },
+    "ZIP64ENDLOCATOR.elSignature": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "A ZIP record signature. The top-level loop reads a four-byte tag at line 618 and dispatches on it; a value outside the seven it knows makes the template print 'Unknown ZIP tag encountered' and return -1.",
+      "description": "Signature of the Zip64 end of central directory locator, the four bytes 'PK\\x06\\x07'.",
+      "field_type": "SignatureTYPE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 554,
+        "snippet": "SignatureTYPE elSignature;    //0x07064b50"
+      },
+      "confidence": "high",
+      "required_value": 117853008,
+      "required_value_hex": "0x07064B50",
+      "required_value_ascii": "PK\\x06\\x07",
+      "endianness": "little",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 618,
+        "values": [
+          67324752,
+          134695760,
+          33639248,
+          84233040,
+          101075792,
+          117853008,
+          101010256
+        ],
+        "preferred": [
+          67324752,
+          33639248,
+          101010256
+        ],
+        "note": "tag = ReadUInt(FTell()) at line 618, compared in the if/else chain at lines 624-663."
+      },
+      "notes": "Written between the Zip64 end record and the ordinary end record; a reader finds the Zip64 end record by seeking to the offset this locator carries."
+    },
+    "ZIP64ENDLOCATOR.elStartDiskNumber": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The disk holding the Zip64 end record in a split archive; 0 in a single-file archive and unvalidated at this level.",
+      "description": "Number of the disk containing the Zip64 end of central directory record.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 555,
+        "snippet": "uint     elStartDiskNumber;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "ZIP64ENDLOCATOR.elDirectoryOffset": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The offset of the Zip64 end of central directory record. It is the only pointer to that record, so a wrong value makes a Zip64-aware reader seek to the wrong place and fall back to the 32-bit fields, silently losing every Zip64 value in the archive.",
+      "description": "Byte offset from the start of the archive to the Zip64 end of central directory record.",
+      "field_type": "int64",
+      "source": "both",
+      "evidence": {
+        "line": 556,
+        "snippet": "int64    elDirectoryOffset;"
+      },
+      "confidence": "high",
+      "algorithm": "absolute byte offset to the 'PK\\x06\\x06' signature",
+      "covers": "the position of the ZIP64ENDLOCATORRECORD",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIP64ENDLOCATORRECORD.elr64Signature",
+        "ZIP64ENDLOCATORRECORD.elr64DirectoryRecordSize"
+      ]
+    },
+    "ZIP64ENDLOCATOR.elEntriesInDirectory": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "Despite its name this field is the TOTAL NUMBER OF DISKS, not an entry count - APPNOTE defines the locator's last field that way. A reader compares it against the disk it is reading and refuses a multi-disk archive it cannot assemble.",
+      "description": "Total number of disks in the archive; the template's name for this field is misleading.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 557,
+        "snippet": "uint     elEntriesInDirectory;"
+      },
+      "confidence": "high",
+      "algorithm": "count of disks in the archive, which is 1 for an ordinary single-file archive",
+      "covers": "the archive as a whole; it is not a byte count",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [],
+      "notes": "TEMPLATE MISNAMING. APPNOTE 4.3.15 gives the Zip64 end of central directory locator three fields: the disk with the Zip64 end record, the relative offset of that record, and the total number of disks. The template calls the third elEntriesInDirectory, which is the name of an entry count in the other two end records. The layout is correct; only the name is wrong."
+    },
+    "ZIPENDLOCATOR.elSignature": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The end of central directory signature. Readers find the directory by scanning backwards from the end of the file for this exact four-byte value; measured, changing it made Info-ZIP report 'End-of-central-directory signature not found', 7-Zip error and Python raise 'File is not a zip file'.",
+      "description": "Signature of the end of central directory record, the four bytes 'PK\\x05\\x06'.",
+      "field_type": "SignatureTYPE (uint)",
+      "source": "both",
+      "evidence": {
+        "line": 562,
+        "snippet": "SignatureTYPE elSignature;    //0x06054b50"
+      },
+      "confidence": "high",
+      "required_value": 101010256,
+      "required_value_hex": "0x06054B50",
+      "required_value_ascii": "PK\\x05\\x06",
+      "endianness": "little",
+      "lookahead": {
+        "function": "ReadUInt",
+        "call_site_line": 618,
+        "values": [
+          67324752,
+          134695760,
+          33639248,
+          84233040,
+          101075792,
+          117853008,
+          101010256
+        ],
+        "preferred": [
+          67324752,
+          33639248,
+          101010256
+        ],
+        "note": "tag = ReadUInt(FTell()) at line 618, compared in the if/else chain at lines 624-663."
+      },
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "Correct: all four decode. Incremented by one, or zeroed: Info-ZIP fails with 'End-of-central-directory signature not found', 7-Zip errors and Python raises BadZipFile 'File is not a zip file'. libarchive tolerates it, since it streams the local headers and never looks for the directory.",
+        "conclusion": "The anchor of the whole archive for three of four readers: without it there is no directory and no entry list."
+      }
+    },
+    "ZIPENDLOCATOR.elDiskNumber": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The number of this disk in a split archive. Measured not a hard gate - Info-ZIP emitted a warning and still exited non-zero, 7-Zip errored, but libarchive and Python decoded the archive - and constraining it to 0 would delete the entire split-archive path, which is a large body of code in every reader.",
+      "description": "Number of this disk in a multi-disk archive; 0 for an ordinary single-file archive.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 563,
+        "snippet": "ushort   elDiskNumber;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "0 decodes in all four. 1 and 99 made Info-ZIP warn and exit 1 and made 7-Zip report an error, while libarchive and Python decoded the archive unchanged.",
+        "conclusion": "Half the readers complain and half do not, so it fails the Tier A test. It is exactly the kind of field a narrowing pass would pin to 0, which would remove the multi-disk branch from every one of them."
+      }
+    },
+    "ZIPENDLOCATOR.elStartDiskNumber": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The disk on which the central directory starts; the same measured standing as elDiskNumber and the same reason to leave it free.",
+      "description": "Number of the disk on which the central directory begins.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 564,
+        "snippet": "ushort   elStartDiskNumber;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "ZIPENDLOCATOR.elEntriesOnDisk": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The count of directory entries on this disk. Measured, 7-Zip refuses the archive when it disagrees with the entries actually present - 0, 2 and 99 against one real entry all produced an archive error.",
+      "description": "Number of central directory entries recorded on this disk.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 565,
+        "snippet": "ushort   elEntriesOnDisk;"
+      },
+      "confidence": "high",
+      "algorithm": "count of ZIPDIRENTRY records physically present on this disk",
+      "covers": "the central directory",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deSignature"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "With one entry present: 1 decodes everywhere; 0, 2 and 99 made 7-Zip report an archive error while Info-ZIP, libarchive and Python accepted them.",
+        "conclusion": "A gate in one of four readers. 0xFFFF is the Zip64 escape, moving the real count into the Zip64 end record."
+      }
+    },
+    "ZIPENDLOCATOR.elEntriesInDirectory": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The total count of directory entries. Measured a harder gate than elEntriesOnDisk: a value disagreeing with the entries present made Info-ZIP fail with 'expected central file header signature not found' and made 7-Zip error, because the reader keeps consuming directory entries until the count is exhausted.",
+      "description": "Total number of central directory entries across all disks.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 566,
+        "snippet": "ushort   elEntriesInDirectory;"
+      },
+      "confidence": "high",
+      "algorithm": "total count of ZIPDIRENTRY records in the archive",
+      "covers": "the central directory",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deSignature"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "With one entry present: 1 decodes everywhere; 0, 2 and 99 all made Info-ZIP fail with 'expected central file header signature not found' and made 7-Zip error. libarchive and Python decoded regardless.",
+        "conclusion": "Must equal the number of directory entries emitted. 0xFFFF is the Zip64 escape."
+      }
+    },
+    "ZIPENDLOCATOR.elDirectorySize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The byte size of the central directory. Measured a gate in three of four: zero, too small and too large all made Info-ZIP fail, 7-Zip error and Python raise either 'Truncated central directory' or 'Bad offset for central directory'.",
+      "description": "Size in bytes of the central directory.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 567,
+        "snippet": "uint     elDirectorySize;"
+      },
+      "confidence": "high",
+      "algorithm": "total byte count of every ZIPDIRENTRY record, from the first deSignature to the last comment byte",
+      "covers": "the whole central directory, not the end record",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPDIRENTRY.deFileNameLength",
+        "ZIPDIRENTRY.deExtraFieldLength",
+        "ZIPDIRENTRY.deFileCommentLength"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "The exact size decodes in all four. 0 made Info-ZIP warn, 7-Zip error and Python list zero entries. 10 made Python raise 'Truncated central directory'. 9999 made Info-ZIP report a missing directory and Python raise 'Bad offset for central directory'.",
+        "conclusion": "Compute it from the directory entries emitted. 0xFFFFFFFF is the Zip64 escape."
+      }
+    },
+    "ZIPENDLOCATOR.elDirectoryOffset": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The offset of the first central directory entry, and with deHeaderOffset one of the two cross-references every reader enforces. Measured, 0 and an offset four bytes off made ALL FOUR readers fail, and an offset past the end of file made three of four fail.",
+      "description": "Byte offset from the start of the archive to the first central directory entry.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 568,
+        "snippet": "uint     elDirectoryOffset;"
+      },
+      "confidence": "high",
+      "algorithm": "absolute byte offset from the beginning of the file to the first 'PK\\x01\\x02' signature",
+      "covers": "the position of the central directory",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPFILERECORD.frCompressedSize",
+        "ZIPFILERECORD.frFileNameLength",
+        "ZIPFILERECORD.frExtraFieldLength",
+        "ZIPDIRENTRY.deHeaderOffset"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "The exact offset decodes in all four. 0 made all four fail - Info-ZIP reported a NULL central directory offset, libarchive exited with an error, 7-Zip errored and Python's testzip named the file. +4 failed in all four the same way. An offset past the end of file made Info-ZIP report a missing directory, 7-Zip error and Python raise OSError.",
+        "conclusion": "Together with ZIPDIRENTRY.deHeaderOffset this is the strictest cross-reference in the format. Emit the directory, record where it started, and write that number here. 0xFFFFFFFF is the Zip64 escape."
+      }
+    },
+    "ZIPENDLOCATOR.elCommentLength": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The length of the archive comment. It is a length field and checklist item 2 covers it, but measurement was a genuine surprise: a value of 5 against a 20-byte comment was accepted by all four readers, because each scans backwards for the end record and then simply reads to end of file.",
+      "description": "Number of bytes in the archive-level comment that follows.",
+      "field_type": "ushort",
+      "source": "both",
+      "evidence": {
+        "line": 569,
+        "snippet": "ushort   elCommentLength;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of ZIPENDLOCATOR.elComment",
+      "covers": "ZIPENDLOCATOR.elComment",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "ZIPENDLOCATOR.elComment"
+      ],
+      "measured_gate": {
+        "decoders": "Info-ZIP UnZip 6.00, libarchive 3.7.4 (bsdtar), 7-Zip, Python 3 zipfile",
+        "observed": "A 20-byte comment with a correct length decoded in all four. The same comment with the length declared as 5 ALSO decoded in all four. 32 bytes of trailing data after the end record, with no comment declared, decoded in all four as well.",
+        "conclusion": "The most forgiving length in the archive - none of the four readers enforces it. It is still recorded as a calculated_value because it is a length, but the measurement says a mismatch is free variation rather than damage."
+      }
+    },
+    "ZIPENDLOCATOR.elComment": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The archive comment: free text at the very end of the file that no reader parses. With the per-entry comment it is one of the two places bulk bytes can vary without touching anything validated, which is why the file-size budget lives on the repeating structures and not on any field.",
+      "description": "Free-text comment describing the archive as a whole.",
+      "field_type": "char[elCommentLength]",
+      "source": "both",
+      "evidence": {
+        "line": 571,
+        "snippet": "char elComment[ elCommentLength ];"
+      },
+      "confidence": "high",
+      "notes": "A reader scanning backwards for the end record must search the last 65535 + 22 bytes, so a long comment is what forces that scan to be a real search rather than a single read at a fixed offset - a branch a comment-free archive never reaches."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frCompression",
+        "equals": 0
+      },
+      "then": {
+        "field": "ZIPFILERECORD.frData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "frData is the file content byte for byte, and frCompressedSize must equal frUncompressedSize"
+      },
+      "description": "A stored entry carries its content uncompressed, so the two size fields are the same number.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: a 120-byte stored archive decoded in all four readers. Any disagreement between the two sizes made Info-ZIP, 7-Zip and Python fail."
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frCompression",
+        "equals": 8
+      },
+      "then": {
+        "field": "ZIPFILERECORD.frData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "frData must be a RAW deflate stream per RFC 1951, with no RFC 1950 zlib header and no trailing Adler-32"
+      },
+      "description": "A deflated entry carries a bare deflate stream; ZIP supplies its own CRC-32 instead of zlib's framing.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: a correct raw deflate stream decodes in all four. Random bytes, the raw uncompressed content, and a zlib-wrapped stream from an ordinary zlib.compress call ALL fail identically - Info-ZIP 'invalid compressed data to inflate', Python 'Error -3 while decompressing data', 7-Zip an archive error. The zlib-wrapper case is the one most likely to be emitted by mistake.",
+      "note": "The stored-deflate construction in frData.generation_strategy was verified at content lengths 0, 1, 12, 1000 and 70000 bytes."
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frCompression",
+        "equals": 99
+      },
+      "then": {
+        "field": "EXTRAFIELD.deCompression",
+        "required": true,
+        "detail": "an EH_WzAES extra field must be present and its deCompression field carries the real compression method"
+      },
+      "description": "COMP_WzAES is a marker rather than a method: the actual codec moves into the AES extra field.",
+      "source": "both",
+      "confidence": "high",
+      "note": "Lines 435-457 also require the AES preamble: a salt whose length comes from the strength, a 2-byte password verifier, then the data, then a 10-byte authentication code."
+    },
+    {
+      "when": {
+        "field": "EXTRAFIELD.Strength",
+        "in": [
+          1,
+          2,
+          3
+        ]
+      },
+      "then": {
+        "field": "ZIPFILERECORD.SaltValue",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "the salt is 8 bytes for AES128, 12 for AES192 and 16 for AES256, and frCompressedSize must be the ciphertext length plus the salt plus 12"
+      },
+      "description": "The AES key strength sets the salt length and therefore shifts every byte of the entry's data.",
+      "source": "template",
+      "confidence": "high",
+      "note": "Lines 440-451 compute lenSalt from the strength; line 455 then sizes frData as frCompressedSize - 12 - lenSalt."
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frFlags",
+        "min": 1
+      },
+      "then": {
+        "field": "ZIPFILERECORD.frData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "when flag bit 0 (FLAG_Encrypted) is set the data is preceded by an encryption header and a password is required to extract"
+      },
+      "description": "Bit 0 declares the entry encrypted, which changes both the layout and whether extraction is possible at all.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: setting bit 0 made Info-ZIP and 7-Zip demand a password and made Python raise 'File is encrypted, password required for extraction'. libarchive still listed the entry."
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frFlags",
+        "min": 64
+      },
+      "then": {
+        "field": "StrongEncryptedHeader.IVSize",
+        "required": true,
+        "detail": "when bits 0 and 6 are both set the data is preceded by the full strong-encryption header of lines 417-432"
+      },
+      "description": "Strong encryption prefixes the entry data with an IV and a key-validation block.",
+      "source": "template",
+      "confidence": "high",
+      "measured_gate": "Measured: bit 6 alone made Python raise NotImplementedError for strong encryption; the other three readers still read the entry.",
+      "note": "Line 415 requires BOTH bit 0 and bit 6, so bit 6 alone does not reach the StrongEncryptedHeader branch in this template."
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frFlags",
+        "min": 8
+      },
+      "then": {
+        "field": "ZIPDATADESCR.ddSignature",
+        "required": true,
+        "detail": "when flag bit 3 is set and frCompressedSize is 0, a data descriptor follows the file data carrying the real CRC and sizes"
+      },
+      "description": "Bit 3 says the CRC and sizes were unknown when the header was written and appear after the data instead.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: a data descriptor written with the signature and one written without it both decoded in all four readers, for both STORED and DEFLATE entries.",
+      "note": "TEMPLATE REQUIREMENT: line 462 takes this branch only when frCompressedSize is exactly 0, and line 468 then locates the descriptor with FindFirst(S_ZIPDATADESCR), so the optional signature is mandatory here. A generator emitting a descriptor must set frCompressedSize to 0 and emit the signature."
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frCompressedSize",
+        "equals": 4294967295
+      },
+      "then": {
+        "field": "EXTRAFIELD.efCompressedSize",
+        "required": true,
+        "detail": "0xFFFFFFFF is the Zip64 escape; the real 64-bit value must be carried in an EH_Zip64 extra field"
+      },
+      "description": "A size that cannot fit in 32 bits is escaped and moved into the Zip64 extra field.",
+      "source": "both",
+      "confidence": "high",
+      "note": "The same escape applies to frUncompressedSize, deCompressedSize, deUncompressedSize, deHeaderOffset, elDirectorySize and elDirectoryOffset, and to 0xFFFF for the entry counts and disk numbers. The template's top-level loop at lines 628-632 relies on the Zip64 record being the FIRST extra field, since it reads record.frExtraField.efCompressedSize without searching."
+    },
+    {
+      "when": {
+        "field": "EXTRAFIELD.efHeaderID",
+        "equals": 1
+      },
+      "then": {
+        "field": "EXTRAFIELD.efDataSize",
+        "tier": "A",
+        "type": "calculated_value",
+        "required_value": 16
+      },
+      "description": "The template reads exactly two uint64s from a Zip64 extra field, so its declared size must be 16.",
+      "source": "template",
+      "confidence": "high",
+      "note": "APPNOTE allows 8, 16, 24 or 28 bytes depending on which fields are escaped; this template models only the 16-byte form because lines 236-237 comment out the remaining two fields."
+    },
+    {
+      "when": {
+        "field": "EXTRAFIELD.efHeaderID",
+        "equals": 28789
+      },
+      "then": {
+        "field": "EXTRAFIELD.efDataSize",
+        "tier": "A",
+        "type": "calculated_value",
+        "detail": "must be 5 plus the length of the UTF-8 name, since the record is a version byte, a 4-byte CRC and the name"
+      },
+      "description": "The Info-ZIP Unicode Path record's size is the fixed prefix plus the name.",
+      "source": "both",
+      "confidence": "high",
+      "note": "Line 243 sizes the name as efDataSize - 5, so a value below 5 gives a negative array length."
+    },
+    {
+      "when": {
+        "field": "EXTRAFIELD.efHeaderID",
+        "equals": 10
+      },
+      "then": {
+        "field": "EXTRAFIELD.Size",
+        "tier": "A",
+        "type": "calculated_value",
+        "required_value": 24
+      },
+      "description": "An NTFS attribute sub-record with Tag 1 carries exactly three 8-byte FILETIMEs.",
+      "source": "both",
+      "confidence": "high",
+      "note": "The sub-records plus their 4-byte headers must also sum to efDataSize - 4, which lines 247 and 260 enforce."
+    },
+    {
+      "when": {
+        "field": "EXTRAFIELD.efHeaderID",
+        "equals": 39169
+      },
+      "then": {
+        "field": "EXTRAFIELD.efDataSize",
+        "tier": "A",
+        "type": "calculated_value",
+        "required_value": 7
+      },
+      "description": "The WinZip AES extra field is a fixed seven bytes: version, two-character vendor ID, strength and the real method.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "ZIPDIRENTRY.deHeaderOffset",
+        "present": true
+      },
+      "then": {
+        "field": "ZIPFILERECORD.frSignature",
+        "required": true,
+        "detail": "the four bytes at deHeaderOffset must be the local header signature 0x04034b50"
+      },
+      "description": "Every central directory entry must point at a real local file header.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: offsets of +1, +4 and past the end of file made ALL FOUR readers fail. This and the local signature are the only two fields every reader enforces."
+    },
+    {
+      "when": {
+        "field": "ZIPDIRENTRY.deSignature",
+        "present": true
+      },
+      "then": {
+        "field": "ZIPDIRENTRY.deFileName",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "deFileName, deCrc, deCompressedSize, deUncompressedSize, deFlags and deCompression must each equal their local-header counterpart"
+      },
+      "description": "The central directory repeats the local header's fields and the two copies must agree.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured, the readers split exactly along which copy they trust: a central CRC, compressed size or uncompressed size disagreeing with the local header made libarchive, 7-Zip and Python fail while Info-ZIP decoded from the local header regardless; a disagreeing compression method made 7-Zip and Python fail while Info-ZIP and libarchive succeeded.",
+      "note": "A deliberate disagreement is a legitimate file that splits readers, and is exactly the sort of input a narrowed generator can never produce."
+    },
+    {
+      "when": {
+        "field": "VERECORD.HostOS",
+        "in": [
+          3,
+          19
+        ]
+      },
+      "then": {
+        "field": "ZIPDIRENTRY.deExternalAttributes",
+        "tier": "B",
+        "type": "enumerated_values",
+        "detail": "the high 16 bits are a Unix st_mode, so kIFREG, kIFDIR and kIFLNK select the file type and the permission bits apply"
+      },
+      "description": "A Unix host makes the external attributes a mode word rather than DOS attribute bits.",
+      "source": "both",
+      "confidence": "high",
+      "note": "kIFLNK in particular makes an extractor treat the entry's content as a symlink target rather than file data, which is a completely different extraction path."
+    },
+    {
+      "when": {
+        "field": "VERECORD.HostOS",
+        "in": [
+          0,
+          11,
+          14
+        ]
+      },
+      "then": {
+        "field": "ZIPDIRENTRY.deExternalAttributes",
+        "tier": "B",
+        "type": "enumerated_values",
+        "detail": "the low 16 bits are DOS attribute bits: FA_READONLY, FA_HIDDEN, FA_SYSTEM, FA_DIRECTORY, FA_ARCHIVE"
+      },
+      "description": "A DOS or Windows host makes the external attributes a FILE_ATTRIBUTE_ mask.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frFileName",
+        "present": true
+      },
+      "then": {
+        "field": "ZIPDIRENTRY.deExternalAttributes",
+        "tier": "B",
+        "type": "enumerated_values",
+        "detail": "a name ending in '/' marks a directory entry, which conventionally has zero-length data and should carry FA_DIRECTORY or kIFDIR"
+      },
+      "description": "Directory entries are marked by a trailing slash on the name, not by a separate field.",
+      "source": "spec",
+      "confidence": "high",
+      "note": "A directory entry with non-empty data, or a file entry with the directory attribute, is legal to emit and reaches an extractor's type-reconciliation code."
+    },
+    {
+      "when": {
+        "field": "ZIPFILERECORD.frFlags",
+        "min": 2048
+      },
+      "then": {
+        "field": "ZIPFILERECORD.frFileName",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "when flag bit 11 (FLAG_Utf8) is set the filename and comment bytes must be valid UTF-8"
+      },
+      "description": "Bit 11 declares the name encoding, which changes how every reader decodes it.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: setting bit 11 decoded in all four readers. Python in particular switches from cp437 to utf-8 decoding on this bit, which is a distinct code path.",
+      "note": "An entry with bit 11 set and non-UTF-8 bytes is legal to emit and reaches each reader's decoding-error handling."
+    },
+    {
+      "when": {
+        "field": "ZIP64ENDLOCATOR.elSignature",
+        "present": true
+      },
+      "then": {
+        "field": "ZIP64ENDLOCATORRECORD.elr64Signature",
+        "required": true,
+        "detail": "the Zip64 locator's elDirectoryOffset must point at a real Zip64 end of central directory record"
+      },
+      "description": "The Zip64 locator exists only to point at the Zip64 end record.",
+      "source": "both",
+      "confidence": "high",
+      "note": "Both must appear between the last central directory entry and the ordinary end record, in that order."
+    },
+    {
+      "when": {
+        "field": "ZIPENDLOCATOR.elEntriesInDirectory",
+        "equals": 65535
+      },
+      "then": {
+        "field": "ZIP64ENDLOCATORRECORD.el64EntriesInDirectory",
+        "required": true,
+        "detail": "0xFFFF is the Zip64 escape for the entry counts, as 0xFFFFFFFF is for the sizes and offsets"
+      },
+      "description": "A count that cannot fit in 16 bits is escaped into the Zip64 end record.",
+      "source": "both",
+      "confidence": "high"
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "ZIPFILERECORD",
+      "detail": "The archive's first four bytes should be the local file header signature 'PK\\x03\\x04'.",
+      "description": "A ZIP file conventionally opens with the first entry's local header.",
+      "source": "both",
+      "measured_gate": "Measured: a corrupted local signature made ALL FOUR readers fail. But 64 bytes of arbitrary data PREPENDED before it also decoded in all four, because readers locate the directory from the end of the file - that is how self-extracting archives work.",
+      "generation_note": "Emit the local records first. TEMPLATE LIMITATION: the template's loop reads a tag at offset 0 and aborts on anything it does not recognise, so a prefix that real readers accept cannot be expressed here."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "ZIPFILERECORD",
+      "detail": "Zero or more local file records, each a header followed by its compressed data and optionally a data descriptor.",
+      "description": "The entries are the archive's payload and its main repeating structure.",
+      "source": "both",
+      "output_budget": "Budget the local-record region to about 4 MB, as a running total the generator increments by each entry's full size - 30 bytes of fixed header, plus the name, plus the extra fields, plus frCompressedSize, plus 16 for a data descriptor. Stop adding entries when the budget is exhausted, then emit a directory entry for each one actually written. No content length, name length or size field is capped to reach this figure; the generator stops adding entries instead.",
+      "generation_note": "Emit each record, recording its starting offset for the matching deHeaderOffset, then the directory, then the end record."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "EXTRAFIELD within one record",
+      "detail": "Zero or more extra-field records fill exactly frExtraFieldLength bytes, each a 4-byte header plus efDataSize bytes.",
+      "description": "Extra fields are a nested repeating structure inside every local header and directory entry.",
+      "source": "both",
+      "output_budget": "Budget all extra fields in one entry to about 4 KB, since frExtraFieldLength is a ushort and cannot exceed 65535 in any case. The generator adds records while the running total allows and then writes frExtraFieldLength from what it emitted - never the other way round.",
+      "generation_note": "Emit the records, sum their full sizes, write that sum into frExtraFieldLength."
+    },
+    {
+      "rule": "required",
+      "subject": "ZIPDIRENTRY",
+      "detail": "One central directory entry per local file record, after all the local records.",
+      "description": "The central directory is the archive's index and is what three of the four readers navigate by.",
+      "source": "both",
+      "measured_gate": "Measured: a corrupted central signature made Info-ZIP, 7-Zip and Python fail; only libarchive, which streams the local headers, was unaffected.",
+      "generation_note": "Emit one ZIPDIRENTRY per ZIPFILERECORD, in the same order, each repeating the local fields and carrying the local header's offset."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "ZIPDIRENTRY",
+      "detail": "The directory holds exactly as many entries as ZIPENDLOCATOR.elEntriesInDirectory declares.",
+      "description": "The entry count and the entries themselves must agree or a reader consumes the wrong number of records.",
+      "source": "both",
+      "measured_gate": "Measured: a count of 0, 2 or 99 against one real entry made Info-ZIP fail with 'expected central file header signature not found' and made 7-Zip error.",
+      "output_budget": "Covered by the ZIPFILERECORD budget, since the directory holds one entry per local record: about 46 bytes plus the name, extra fields and comment per entry. The generator emits exactly as many as it wrote local records.",
+      "generation_note": "Count the entries as you emit them and write that number into both elEntriesOnDisk and elEntriesInDirectory."
+    },
+    {
+      "rule": "ordering",
+      "subject": "local records, then central directory, then end records",
+      "detail": "All ZIPFILERECORDs precede all ZIPDIRENTRYs, which precede the digital signature, the Zip64 records and the end record, in that order.",
+      "description": "ZIP has a strict three-part layout that readers depend on to locate the directory from the end of the file.",
+      "source": "both",
+      "generation_note": "Lay the file out in order, tracking the running offset, so that deHeaderOffset, elDirectoryOffset and elDirectorySize can all be computed from it."
+    },
+    {
+      "rule": "last_element",
+      "subject": "ZIPENDLOCATOR",
+      "detail": "The end of central directory record must be the last record, followed only by its own comment.",
+      "description": "Readers scan backwards from the end of the file for its signature, so nothing structural may follow it.",
+      "source": "both",
+      "measured_gate": "Measured: 32 bytes of trailing data after the end record decoded in all four readers, and so did an archive comment whose declared length was wrong - the backward scan finds the signature either way.",
+      "generation_note": "Emit it last, after every other record, with its four size and count fields computed from what precedes it."
+    },
+    {
+      "rule": "requires",
+      "subject": "ZIPENDLOCATOR.elDirectoryOffset and ZIPDIRENTRY.deHeaderOffset",
+      "detail": "Both offsets must be absolute byte positions of real signatures in the file.",
+      "description": "These two cross-references are the only fields every one of the four readers enforces.",
+      "source": "both",
+      "measured_gate": "Measured: an error of one byte in either made all four readers fail.",
+      "generation_note": "Record the byte position as each record is emitted; never compute either offset independently of the bytes actually written."
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "the four ZIPFILERECORD data branches",
+      "detail": "Exactly one of the strong-encryption branch, the AES branch, the plain-data branch and the data-descriptor branch applies per entry, selected by frFlags and frCompressedSize.",
+      "description": "The entry's data layout is a four-way branch on the flags and the declared size.",
+      "source": "template",
+      "generation_note": "Choose the flags and compression first, then emit the matching preamble and data. The branches are at lines 415, 435, 458 and 462."
+    },
+    {
+      "rule": "required",
+      "subject": "ZIP64ENDLOCATORRECORD and ZIP64ENDLOCATOR together",
+      "detail": "A Zip64 archive carries both records, the end record first and the locator immediately after it, before the ordinary end record.",
+      "description": "The locator's only purpose is to point at the Zip64 end record, so neither is useful alone.",
+      "source": "both",
+      "condition": "any 32-bit size, offset or count field carries its 0xFFFFFFFF or 0xFFFF escape value",
+      "generation_note": "Emit the Zip64 end record, note its offset, emit the locator carrying that offset, then the ordinary end record with escaped 32-bit fields."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "any top-level record other than the seven signatures",
+      "detail": "The template's loop accepts only the seven SignatureTYPE values and aborts on anything else.",
+      "description": "Real archives may carry data readers skip, but this template cannot express it.",
+      "source": "template",
+      "measured_gate": "Measured: 64 bytes of prefix data and 32 bytes of trailing data were both accepted by all four readers, so the restriction is the template's alone.",
+      "generation_note": "Emit only the seven record types at the top level."
+    },
+    {
+      "rule": "contiguous",
+      "subject": "ZIPFILERECORD data",
+      "detail": "An entry's compressed data runs contiguously from the end of its extra fields to the start of the next record or its data descriptor.",
+      "description": "There is no framing inside the data; its extent is given entirely by frCompressedSize.",
+      "source": "both",
+      "generation_note": "Nothing may be inserted between the header and the data, or between the data and the next record."
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "ZIPFILERECORD.frCompression",
+      "why": "The compression method, and the field that decides what the payload must be. Measured, it selects between a completely uncompressed payload, a raw deflate stream, a bzip2 stream, an LZMA stream and fifteen unsupported-method rejection paths. Narrowing it to 0 and 8 - the obvious safe pair - would delete seventeen branches.",
+      "decoder_paths": "0 takes the no-decompression path, 8 the inflate path, 12 and 14 separate decoder libraries, and every other value each reader's unsupported-method handling. The choice also changes whether frCompressedSize and frUncompressedSize are equal.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.frCompressedSize",
+        "EXTRAFIELD.deCompression"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "ZIPFILERECORD.frUncompressedSize",
+      "why": "The entry's content length. It is the value the payload is derived FROM: the deflate stream, the CRC and both size fields are all computed from the content, and the content length is drawn freely. This is the GIF trap in ZIP's clothing - a generator wanting small archives will be tempted to fix the content at one short literal.",
+      "decoder_paths": "Content length decides how many deflate blocks the stream needs - above 65535 bytes a stored-block stream must split, which is a loop a short entry never enters - and it drives the decompressor's output buffer growth and the CRC accumulation loop.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.frCrc",
+        "ZIPFILERECORD.frCompressedSize"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a size field that must match the content exactly, but the content LENGTH it records is a completely free choice and must stay so. 'unconstrained' here means do not fix the content size, not that the field may disagree with it."
+    },
+    {
+      "field": "ZIPFILERECORD.frCompressedSize",
+      "why": "The payload length. Like the uncompressed size it is computed from the payload rather than chosen, but how large a payload an entry carries is free, and that freedom is what varies the archive.",
+      "decoder_paths": "Bounds the read of frData and, through it, where the next record begins; a reader streaming the archive uses it to skip entries it is not extracting.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.frUncompressedSize"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a size that must be exact; the payload size it records is free."
+    },
+    {
+      "field": "ZIPFILERECORD.frFlags",
+      "why": "The general purpose bit flags. Bit 0 requires an encryption header, bit 3 moves the CRC and sizes into a trailing descriptor, bit 6 adds the strong-encryption block and bit 11 changes the filename encoding - four different physical layouts from one word. Measured, no value is refused.",
+      "decoder_paths": "Bit 0 and bit 6 select two of the four data branches at lines 415-476; bit 3 selects the third; bit 11 switches a reader from cp437 to UTF-8 filename decoding. The reserved and unused bits reach each reader's flag-validation code.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frData",
+        "ZIPDATADESCR.ddSignature",
+        "ZIPFILERECORD.frFileName",
+        "EXTRAFIELD.Strength"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "EXTRAFIELD.Strength",
+      "why": "The AES key strength. Its three values set the salt length to 8, 12 or 16 bytes, so this one byte shifts every byte of the entry's data - a payload-layout field disguised as a mode selector.",
+      "decoder_paths": "Selects the AES key size and the salt length, which changes both the cipher and the entry's byte layout.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frData",
+        "ZIPFILERECORD.SaltValue"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "ZIPFILERECORD.frFileName",
+      "why": "The entry's path. Measured completely free, and the field most likely to be fixed at one literal. Names such as '../x', an absolute path, a trailing-slash directory marker, or a very long path are all legal to emit and each reaches a reader's path-sanitisation, directory-creation or buffer-handling code that a plain 'a.txt' never touches.",
+      "decoder_paths": "Drives path normalisation, the traversal guard, the directory-versus-file decision on a trailing slash, and - with flag bit 11 - the cp437 versus UTF-8 decoding branch.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frFileNameLength",
+        "ZIPDIRENTRY.deFileName"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "ZIPFILERECORD.frFileNameLength",
+      "why": "The name length. It is a count that sizes an allocation in every reader, and the whole 16-bit span is legal; a very long name is what makes a reader's name buffer handling non-trivial.",
+      "decoder_paths": "Sizes the filename allocation and the read that follows it; a zero-length name and a 65535-byte name are both legal and reach different handling.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frFileName"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a length that must be exact; the name length it records is a free choice."
+    },
+    {
+      "field": "ZIPFILERECORD.frExtraFieldLength",
+      "why": "The extra-field block length. How many extra-field records an entry carries, and which, is entirely free, and each record type the template models opens a different parse.",
+      "decoder_paths": "Bounds the extra-field loop; zero takes the no-iteration path while several records exercise the record walker and each ID's own branch.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "EXTRAFIELD.efDataSize",
+        "EXTRAFIELD.efHeaderID"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a length that must equal the records' total; how many records there are is free."
+    },
+    {
+      "field": "EXTRAFIELD.efHeaderID",
+      "why": "The extra-field type. Five IDs open structured parses in the template - Zip64, Unicode path, NTFS times, strong encryption and WinZip AES - and every other ID reaches the opaque branch. Measured, none is refused, so the whole registry is emittable.",
+      "decoder_paths": "Each modelled ID parses a different record layout; unregistered IDs take the skip-by-length path, which is itself the branch most real archives exercise.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "EXTRAFIELD.efDataSize"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "EXTRAFIELD.efDataSize",
+      "why": "The extra-field record length. It must match its record's payload, but how large that payload is - particularly for the Unicode path and certificate records - is free.",
+      "decoder_paths": "Sizes the record payload and advances the extra-field walker; a wrong value was measured to make Info-ZIP and libarchive fail.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "EXTRAFIELD.efHeaderID",
+        "ZIPFILERECORD.frExtraFieldLength"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a length that must be exact; the payload size it records is free."
+    },
+    {
+      "field": "ZIPDIRENTRY.deExternalAttributes",
+      "why": "The external attributes. With the host OS they decide whether the entry is a regular file, a directory, a symlink or a device, and which permission bits an extractor applies - completely different extraction paths from one word.",
+      "decoder_paths": "kIFLNK makes an extractor treat the content as a symlink target; kIFDIR makes it create a directory; the DOS bits drive the read-only and hidden handling. Each is a distinct branch.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "VERECORD.HostOS"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "VERECORD.HostOS",
+      "why": "The host filesystem. It decides how deExternalAttributes is interpreted, so it silently re-types another field; emitting only OS_FAT would make the Unix mode path unreachable.",
+      "decoder_paths": "Selects between DOS attribute-bit handling and Unix mode handling for the external attributes, and influences filename case handling in some readers.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPDIRENTRY.deExternalAttributes"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "VERECORD.Version",
+      "why": "The version needed to extract. Measured, Info-ZIP refuses versions at and above 6.3, so the field reaches each reader's capability check - a branch a file claiming 2.0 never touches.",
+      "decoder_paths": "A reader compares it against its own feature level and declines the entry when it is too high; the comparison itself is a branch.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPFILERECORD.frCompression"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "ZIPENDLOCATOR.elEntriesInDirectory",
+      "why": "The directory entry count. How many entries an archive holds is the single most structural free choice in the format, and this field merely records it. Measured, a mismatch made Info-ZIP and 7-Zip fail, so it must be computed - but the number itself must not be fixed.",
+      "decoder_paths": "Bounds the directory read loop; a zero-entry archive, a one-entry archive and a many-entry archive take visibly different paths through every reader's index construction.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPDIRENTRY.deSignature",
+        "ZIPFILERECORD.frSignature"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a count that must match the entries emitted; how many entries there are is free."
+    },
+    {
+      "field": "ZIPENDLOCATOR.elDiskNumber",
+      "why": "The disk number. Measured not a hard gate - half the readers complain and half do not - and pinning it to 0 would delete the split-archive path from all of them.",
+      "decoder_paths": "A non-zero value makes a reader look for other volumes, which is a large body of code that a single-disk archive never reaches.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPENDLOCATOR.elStartDiskNumber",
+        "ZIPDIRENTRY.deDiskNumberStart"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "ZIPENDLOCATOR.elComment",
+      "why": "The archive comment - free text at the end of the file that no reader parses. With the per-entry comment it is where bulk bytes belong, which is why the size budget lives on the repeating structures and not on any content field.",
+      "decoder_paths": "A long comment forces the backward scan for the end record to be a real search over up to 65557 bytes rather than a single read at a fixed offset.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPENDLOCATOR.elCommentLength"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "ZIPDIRENTRY.deFileComment",
+      "why": "The per-entry comment. Free text that no reader parses, and the second place bulk bytes can vary without touching anything validated.",
+      "decoder_paths": "Skipped by length in every reader, so it contributes no branches of its own but varies the archive's size and byte distribution freely.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "ZIPDIRENTRY.deFileCommentLength"
+      ],
+      "tier": "C"
+    }
+  ]
+}

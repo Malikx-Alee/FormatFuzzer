@@ -1,0 +1,2012 @@
+{
+  "meta": {
+    "format": "pcap",
+    "source_template": "templates_originals/pcap-orig.bt",
+    "model": "claude-opus-5",
+    "strategy": "tiered",
+    "spec_reference": "The libpcap capture file format as documented by the Wireshark wiki page the template cites at line 20 and by the tcpdump.org LINKTYPE registry, which assigns PCAPHEADER.network; IEEE 802.3 and 802.1Q for the Ethernet and VLAN headers and the IEEE EtherType registry; RFC 791 for IPv4 and the IANA protocol-number registry for Layer_3.L4proto; RFC 768 for UDP and RFC 9293 for TCP and its option kinds; RFC 1035 (DNS) and RFC 9110 (HTTP) for the two application payloads measured; RFC 1071 for the Internet checksum algorithm. Decoder behaviour was measured against three independent readers: libpcap 1.10.1 through tcpdump 4.99.1, Wireshark 4.4.6 through tshark, and capinfos.",
+    "schema_extensions": [
+      {
+        "name": "measured_gate",
+        "where": "constraints.<field>.measured_gate, dependencies[].measured_gate, structure[].measured_gate",
+        "why": "An object of {decoders, observed, conclusion} recording what real readers did when a field was set wrongly. PCAP has no checksum over its own structure and almost nothing self-describing beyond incl_len, so reasoning from the specification would have over-constrained nearly every field. Measurement reversed the expected answer twice: the IPv4 header checksum turns out NOT to be validated by default in any reader, and snaplen turns out to bound nothing at all - while incl_len, which sits beside the completely unchecked orig_len, has no tolerance whatsoever."
+      },
+      {
+        "name": "checksum_algorithm",
+        "where": "constraints.Layer_3.HdrChecksum, constraints.Layer_4.ChkSum",
+        "why": "Two fields are genuine checksums that measurement showed are not gates: Wireshark reports ip.checksum.status of 2 - unverified - for every IPv4 packet by default, and the UDP checksum is optional over IPv4 with zero meaning 'not computed'. Recording them as calculated_value would imply they are pinned, which would be wrong and would cost the wrong-checksum case; recording them as bare Tier C would throw away the algorithm a generator needs when it does want a valid one. This key carries the algorithm without implying the tier."
+      },
+      {
+        "name": "alternate_legal_values",
+        "where": "constraints.PCAPHEADER.magic_number",
+        "why": "The magic number has four legal values in the format but the template's guard at line 25 accepts exactly one, and line 214's unconditional LittleEndian() makes two of the other three inexpressible. A plain fixed_value would hide that the nanosecond variant 0xA1B23C4D was MEASURED to decode in all three readers and is a real alternative a rewrite can unlock by relaxing one line."
+      },
+      {
+        "name": "template_parse_requirement",
+        "where": "constraints.Layer_3.total_length, and notes marked TEMPLATE LIMITATION or TEMPLATE ARITHMETIC",
+        "why": "Separates rules that come from this template's construction from rules that come from the format. Three matter and all three restrict what a generator may emit. Layer_3 is declared only for EtherTypes 0x0800 and 0x8100 but line 158 references its fields unconditionally, so IPv6, ARP and MPLS frames - all of which real dissectors handle - cannot be represented. Every link type except 101 is given a 14-byte Ethernet header whether it has one or not. And three arrays are sized by subtraction from Layer_3.total_length, so a wrong value there produces a negative length rather than a merely wrong one."
+      },
+      {
+        "name": "cross_check",
+        "where": "constraints.Layer_2.L3type, Layer_3.L4proto, Layer_4.SrcPort, Layer_4.DstPort, Dot1q.L3type, PCAPRECORD.AppData",
+        "why": "A second evidence line, filled verbatim from the template like the first. Six fields are either declared in one place and branched on in another, or declared twice in mutually exclusive arms - SrcPort and DstPort at lines 97/104 and 98/105, AppData at 165/173 - so a single evidence line would hide half of each field's declarations."
+      },
+      {
+        "name": "tier on a diversity axis",
+        "where": "diversity_axes[].tier and diversity_axes[].tier_note",
+        "why": "Eleven of the twenty axes are Tier A or Tier B rather than Tier C. For the Tier A length fields - incl_len, total_length, ip_hdr_len, tcp_hdr_len, udp_hdr_len - the VALUE must be exact, but the quantity it records is a completely free choice: how large a frame is, how much payload it carries, whether the header has options. For the Tier B enumerations it means emit the whole legal set rather than the convenient member. The tier_note says which reading applies."
+      }
+    ],
+    "structure_note": "A PCAP file is a 24-byte global header declaring the byte order, the timestamp resolution and one link-layer type for the whole capture, followed by a flat run of packet records, each a 16-byte record header and then exactly incl_len bytes of captured frame, with no separator, no index, no terminator and no checksum over the container at all. The format's depth is not in the container - which is trivial - but in the frame bytes, which this template decomposes into Ethernet, optional 802.1Q, IPv4 and TCP or UDP headers and which two opaque arrays carry: the rest of the TCP header, whose flags byte drives the whole conversation state machine, and the application payload, whose required format is chosen by the port pair and which random bytes cause the dissector to abort.",
+    "no_container_checksum_note": "PCAP has no CRC, checksum or magic beyond the file-header magic number. Checklist items 1 and 2 were re-scanned specifically: the only Tier A fixed_values are PCAPHEADER.magic_number, PCAPHEADER.version_major and Layer_3.version, and the calculated_values are PCAPHEADER.version_minor's bound, PCAPRECORD.incl_len, Layer_3.ip_hdr_len, Layer_3.total_length, Layer_4.udp_hdr_len and Layer_4.tcp_hdr_len. The two fields that ARE checksums - Layer_3.HdrChecksum and Layer_4.ChkSum - were measured not to be validated and are Tier C with their algorithms recorded under checksum_algorithm.",
+    "dissector_gate_note": "The most important measured finding for coverage. Neither payload gate refuses the capture file: tcpdump, tshark and capinfos all open a file whose application payload is random bytes. What the payload decides is whether the DISSECTOR runs, and that is where essentially all of Wireshark's code lives. A well-formed HTTP request on TCP port 80 dissects as HTTP; the same length of random bytes falls back to plain TCP and not one line of the HTTP dissector executes. A well-formed DNS query on UDP port 53 dissects completely and yields dns.qry.name; random bytes give '[Malformed Packet: DNS]' and the dissector aborts on entry. So for this format 'depth' means reaching the dissector, not surviving the container parse.",
+    "measurement_note": "Every gate marked measured_gate was established empirically. A parameterised PCAP builder was written, a 92-byte Ethernet/IPv4/UDP baseline was verified to decode in all three readers, and roughly 120 single-field mutations were run across the four magic numbers, both version fields, snaplen, twenty link types, eight EtherTypes, five VLAN tag combinations, nine IP protocol numbers, the IPv4 checksum, total length and header length, nine TCP flag combinations, five TCP data offsets, seven UDP destination ports, both record lengths, the timestamps, the link-layer padding and the application payload with well-formed and random contents for both DNS and HTTP.",
+    "uncovered_field_names": {
+      "why": "Four declarations in the .bt carry no constraints entry. All four are struct instances rather than scalar fields, and they are named here so the coverage audit is complete rather than merely silent.",
+      "struct_instances": {
+        "names": [
+          "Layer_2.DstMac [44]",
+          "Layer_2.SrcMac [45]",
+          "Layer_3.SRC_IP [82]",
+          "Layer_3.DST_IP [83]"
+        ],
+        "reason": "Two instances of the MACaddr struct and two of the IPv4addr struct. Every byte of each is constrained under MACaddr.Byte and IPv4addr.Byte respectively, and both of those entries record the address classifications - broadcast, multicast, loopback, private - that make the field worth leaving free. The instances themselves carry no constraint of their own."
+      },
+      "note": "The top-level instances header (line 215) and record (line 219) are instances of PCAPHEADER and PCAPRECORD whose every field is keyed under those prefixes; L2, L3, L4 and d1q (lines 147, 145, 158, 153) are instances of Layer_2, Layer_3, Layer_4 and Dot1q, likewise keyed at their leaves. len_before_l3, hdr_length, ip_hdr_length and both AppDataLen declarations are locals, which the rules forbid keying. Layer_4.SrcPort, Layer_4.DstPort and PCAPRECORD.AppData each have two declarations in mutually exclusive branches, recorded through cross_check."
+    },
+    "tier_counts": {
+      "A": 11,
+      "B": 7,
+      "C": 22
+    }
+  },
+  "constraints": {
+    "PCAPHEADER.magic_number": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The file's magic number, and the only value the template itself guards: line 25 compares it against 0xA1B2C3D4 and, on a mismatch, issues a Warning and returns 1, abandoning the parse. Measured, every reader refuses a value outside the four the format defines - tcpdump with 'unknown file format', Wireshark with 'isn't a capture file in a format TShark understands'.",
+      "description": "Magic number identifying the file as a libpcap capture and declaring its byte order and timestamp resolution.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 24,
+        "snippet": "uint32 magic_number <format=hex>;   /* magic number */"
+      },
+      "confidence": "high",
+      "required_value": 2712847316,
+      "required_value_hex": "0xA1B2C3D4",
+      "required_value_ascii": "\\xD4\\xC3\\xB2\\xA1",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "0xA1B2C3D4 read little-endian - the bytes D4 C3 B2 A1 on disk - decodes in all three. 0xA1B23C4D, the nanosecond-resolution variant, ALSO decodes in all three. 0xD4C3B2A1 and 0x4D3CB2A1, the byte-swapped forms, failed in all three with 'unsupported' and 'network type reserved field not zero', because they declare that every subsequent field is big-endian and this builder wrote them little-endian. 0xA1B2C3D5, zero, and the pcapng signature 0x0A0D0D0A were refused outright by all three.",
+        "conclusion": "Four values are legal in the format and two of them work when the rest of the file is little-endian. The template accepts only 0xA1B2C3D4, because line 25 tests for it explicitly and line 214 calls LittleEndian() unconditionally, so the byte-swapped forms cannot be expressed at all."
+      },
+      "alternate_legal_values": {
+        "values": [
+          2712847316,
+          2712812621,
+          3569595041,
+          1295823521
+        ],
+        "value_names": [
+          "microsecond_little_endian",
+          "nanosecond_little_endian",
+          "microsecond_byte_swapped",
+          "nanosecond_byte_swapped"
+        ],
+        "note": "The magic declares two independent things: the byte order of every field in the file, and whether PCAPRECORD.ts_usec counts microseconds or nanoseconds. 0xA1B23C4D is the nanosecond variant and was MEASURED to decode in all three readers, so it is legal to emit and reaches a different timestamp-scaling path - but the template's guard at line 25 rejects it, so a rewrite must relax that guard first."
+      },
+      "notes": "The template's header comment at line 11 records the ID bytes as D4 C3 B2 A1, which is this value written little-endian."
+    },
+    "PCAPHEADER.version_major": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The major format version. Measured a hard gate in every reader: major 0 and 1 are refused as 'archaic pcap savefile format' by tcpdump and rejected by Wireshark and capinfos, and major 3 is refused by tcpdump. Only 2 works everywhere.",
+      "description": "Major version number of the libpcap file format; 2 in every version ever released.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 29,
+        "snippet": "uint16 version_major;  /* major version number */"
+      },
+      "confidence": "high",
+      "required_value": 2,
+      "required_value_hex": "0x0002",
+      "required_value_ascii": "\\x02\\x00",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "Major 2 decodes in all three. Major 0 and 1 give tcpdump 'archaic pcap savefile format' and are refused by Wireshark and capinfos with 'pcap: major version 0/1'. Major 3 and 65535 are refused by tcpdump with 'unsupported pcap version' while Wireshark and capinfos accept them.",
+        "conclusion": "2 is the only value all three accept, and the only one the format has ever used."
+      }
+    },
+    "PCAPHEADER.version_minor": {
+      "tier": "A",
+      "type": "enumerated_values",
+      "tier_rationale": "The minor version. Measured a gate in libpcap specifically: tcpdump accepts 0 through 4 and refuses 5 and above with 'unsupported pcap version', while Wireshark accepts any minor. The legal set is therefore the five values libpcap has ever recognised.",
+      "description": "Minor version number of the libpcap file format; 4 is the current and universal value.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 30,
+        "snippet": "uint16 version_minor;  /* minor version number */"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "value_names": [
+        "v2.0",
+        "v2.1",
+        "v2.2",
+        "v2.3",
+        "v2.4_current"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        4
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "Minor 0, 1, 2, 3 and 4 all decode in all three readers. Minor 5 and 10 are refused by tcpdump with 'unsupported pcap version' while Wireshark and capinfos accept them.",
+        "conclusion": "Five legal values and all five work everywhere. 4 is what every writer emits; the lower four are legal history and are exactly the awkward values a narrowing pass would drop."
+      }
+    },
+    "PCAPHEADER.thiszone": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The GMT-to-local correction in seconds. The specification says it is always zero in practice and measured, no reader looks at it - 0, one hour either way and INT_MAX all decoded identically - so pinning it would remove the only signed field in the header.",
+      "description": "Correction in seconds between GMT and the local timezone of the capture; zero in every file written by libpcap.",
+      "field_type": "int32",
+      "source": "both",
+      "evidence": {
+        "line": 31,
+        "snippet": "int32  thiszone;       /* GMT to local correction */"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "Values 0, 3600, -3600 and 2147483647 all produced an identical decode in all three readers.",
+        "conclusion": "Entirely ignored. It is declared signed, so the negative half of the span is expressible and equally free."
+      }
+    },
+    "PCAPHEADER.sigfigs": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The accuracy of the timestamps in significant figures. The specification says it is always zero and measured, no reader inspects it; constraining it would remove an entirely free 32-bit field.",
+      "description": "Accuracy of the timestamps, in significant figures; zero in every file written by libpcap.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 32,
+        "snippet": "uint32 sigfigs;        /* accuracy of timestamps */"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "Values 0, 6 and 9999 all produced an identical decode in all three readers.",
+        "conclusion": "Entirely ignored."
+      }
+    },
+    "PCAPHEADER.snaplen": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The maximum captured packet length. This is the field most likely to be pinned - it looks like a bound on every record - and measurement says it must not be: 0, 1, 14, a value smaller than the record actually present, and 0xFFFFFFFF all decoded identically in all three readers. It bounds nothing that is checked.",
+      "description": "Maximum number of octets of any one packet that were saved, as declared by the capturing program.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 33,
+        "snippet": "uint32 snaplen;        /* max length of captured packets, in octets */"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "snaplen of 65535, 0, 1, 14, 51 and 52 against a 52-byte record, 262144, 2147483648 and 4294967295 all decoded identically in all three readers - including the cases where the record is longer than the declared snaplen.",
+        "conclusion": "Advisory only. NO MINIMUM OR MAXIMUM IS RECORDED and none may be added: a snaplen smaller than the records present is a legitimate file - it is what a truncated capture looks like - and reaches a reader's truncation handling, which a consistent file never does. File size is bounded by the output_budget on the record structure rule, not here."
+      }
+    },
+    "PCAPHEADER.network": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The link-layer header type, and by a wide margin the highest-leverage field in the format: it chooses which of Wireshark's link-layer dissectors runs on every record in the file. Measured, eighteen different values produced eighteen different encapsulations - Ethernet, Token Ring, SLIP, PPP, FDDI, PPPoE, ATM, Raw IP, Cisco HDLC, 802.11, Localtalk, radiotap, Raw IPv4, Raw IPv6 and two Linux cooked modes among them - and only values outside the registry were refused.",
+      "description": "LINKTYPE_ value identifying the link-layer header format of every packet record in the file.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 34,
+        "snippet": "uint32 network;        /* data link type */"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        3,
+        6,
+        7,
+        8,
+        9,
+        10,
+        32,
+        50,
+        51,
+        99,
+        100,
+        101,
+        104,
+        105,
+        106,
+        107,
+        108,
+        113,
+        114,
+        117,
+        119,
+        122,
+        123,
+        127,
+        129,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        147,
+        162,
+        163,
+        165,
+        166,
+        169,
+        170,
+        171,
+        177,
+        187,
+        189,
+        192,
+        195,
+        196,
+        197,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        209,
+        215,
+        220,
+        224,
+        225,
+        226,
+        227,
+        228,
+        229,
+        230,
+        231,
+        235,
+        236,
+        237,
+        239,
+        240,
+        241,
+        242,
+        243,
+        244,
+        245,
+        247,
+        248,
+        249,
+        250,
+        251,
+        253,
+        254,
+        255,
+        256,
+        257,
+        258,
+        259,
+        260,
+        261,
+        262,
+        263,
+        264,
+        265,
+        266,
+        268,
+        270,
+        271,
+        272,
+        273,
+        274,
+        275,
+        276
+      ],
+      "value_names": [
+        "LINKTYPE_NULL",
+        "LINKTYPE_ETHERNET",
+        "LINKTYPE_AX25",
+        "LINKTYPE_IEEE802_5",
+        "LINKTYPE_ARCNET_BSD",
+        "LINKTYPE_SLIP",
+        "LINKTYPE_PPP",
+        "LINKTYPE_FDDI",
+        "LINKTYPE_REDBACK_SMARTEDGE",
+        "LINKTYPE_PPP_HDLC",
+        "LINKTYPE_PPP_ETHER",
+        "LINKTYPE_SYMANTEC_FIREWALL",
+        "LINKTYPE_ATM_RFC1483",
+        "LINKTYPE_RAW",
+        "LINKTYPE_C_HDLC",
+        "LINKTYPE_IEEE802_11",
+        "LINKTYPE_ATM_CLIP",
+        "LINKTYPE_FRELAY",
+        "LINKTYPE_LOOP",
+        "LINKTYPE_LINUX_SLL",
+        "LINKTYPE_LTALK",
+        "LINKTYPE_PFLOG",
+        "LINKTYPE_IEEE802_11_PRISM",
+        "LINKTYPE_IP_OVER_FC",
+        "LINKTYPE_SUNATM",
+        "LINKTYPE_IEEE802_11_RADIOTAP",
+        "LINKTYPE_ARCNET_LINUX",
+        "LINKTYPE_APPLE_IP_OVER_IEEE1394",
+        "LINKTYPE_MTP2_WITH_PHDR",
+        "LINKTYPE_MTP2",
+        "LINKTYPE_MTP3",
+        "LINKTYPE_SCCP",
+        "LINKTYPE_DOCSIS",
+        "LINKTYPE_LINUX_IRDA",
+        "LINKTYPE_USER0",
+        "LINKTYPE_USER15",
+        "LINKTYPE_IEEE802_11_AVS",
+        "LINKTYPE_BACNET_MS_TP",
+        "LINKTYPE_PPP_PPPD",
+        "LINKTYPE_GPRS_LLC",
+        "LINKTYPE_GPF_T",
+        "LINKTYPE_GPF_F",
+        "LINKTYPE_LINUX_LAPD",
+        "LINKTYPE_BLUETOOTH_HCI_H4",
+        "LINKTYPE_USB_LINUX",
+        "LINKTYPE_PPI",
+        "LINKTYPE_IEEE802_15_4_WITHFCS",
+        "LINKTYPE_SITA",
+        "LINKTYPE_ERF",
+        "LINKTYPE_BLUETOOTH_HCI_H4_WITH_PHDR",
+        "LINKTYPE_AX25_KISS",
+        "LINKTYPE_LAPD",
+        "LINKTYPE_PPP_WITH_DIR",
+        "LINKTYPE_C_HDLC_WITH_DIR",
+        "LINKTYPE_FRELAY_WITH_DIR",
+        "LINKTYPE_IPMB_LINUX",
+        "LINKTYPE_IEEE802_15_4_NONASK_PHY",
+        "LINKTYPE_USB_LINUX_MMAPPED",
+        "LINKTYPE_FC_2",
+        "LINKTYPE_FC_2_WITH_FRAME_DELIMS",
+        "LINKTYPE_IPNET",
+        "LINKTYPE_CAN_SOCKETCAN",
+        "LINKTYPE_IPV4",
+        "LINKTYPE_IPV6",
+        "LINKTYPE_IEEE802_15_4_NOFCS",
+        "LINKTYPE_DBUS",
+        "LINKTYPE_DVB_CI",
+        "LINKTYPE_MUX27010",
+        "LINKTYPE_STANAG_5066_D_PDU",
+        "LINKTYPE_NFLOG",
+        "LINKTYPE_NETANALYZER",
+        "LINKTYPE_NETANALYZER_TRANSPARENT",
+        "LINKTYPE_IPOIB",
+        "LINKTYPE_MPEG_2_TS",
+        "LINKTYPE_NG40",
+        "LINKTYPE_NFC_LLCP",
+        "LINKTYPE_INFINIBAND",
+        "LINKTYPE_SCTP",
+        "LINKTYPE_USBPCAP",
+        "LINKTYPE_RTAC_SERIAL",
+        "LINKTYPE_BLUETOOTH_LE_LL",
+        "LINKTYPE_NETLINK",
+        "LINKTYPE_BLUETOOTH_LINUX_MONITOR",
+        "LINKTYPE_BLUETOOTH_BREDR_BB",
+        "LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR",
+        "LINKTYPE_PROFIBUS_DL",
+        "LINKTYPE_PKTAP",
+        "LINKTYPE_EPON",
+        "LINKTYPE_IPMI_HPM_2",
+        "LINKTYPE_ZWAVE_R1_R2",
+        "LINKTYPE_ZWAVE_R3",
+        "LINKTYPE_WATTSTOPPER_DLM",
+        "LINKTYPE_ISO_14443",
+        "LINKTYPE_RDS",
+        "LINKTYPE_USB_DARWIN",
+        "LINKTYPE_SDLC",
+        "LINKTYPE_LORATAP",
+        "LINKTYPE_VSOCK",
+        "LINKTYPE_NORDIC_BLE",
+        "LINKTYPE_DOCSIS31_XRA31",
+        "LINKTYPE_ETHERNET_MPACKET",
+        "LINKTYPE_DISPLAYPORT_AUX",
+        "LINKTYPE_LINUX_SLL2"
+      ],
+      "completeness": "partial",
+      "endianness": "little",
+      "preferred_value": [
+        1,
+        101,
+        113,
+        0,
+        9,
+        105,
+        127,
+        228,
+        276
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "0 gave NULL/Loopback, 1 Ethernet, 6 Token Ring, 8 SLIP, 9 PPP, 10 FDDI, 50 PPP, 51 PPP-over-Ethernet, 100 RFC 1483 ATM, 101 Raw IP, 104 Cisco HDLC, 105 IEEE 802.11, 113 Linux cooked-mode, 114 Localtalk, 127 802.11 plus radiotap, 228 Raw IPv4, 229 Raw IPv6 and 276 Linux cooked v2 - eighteen distinct encapsulations, every one of which decoded in all three readers. 65535 and 99999 were refused by all three with 'link-type 65535 unknown or unsupported' and 'network type reserved field not zero'.",
+        "conclusion": "The single richest source of decoder diversity in PCAP: one 32-bit field selects an entire dissector chain. completeness is 'partial' because the LINKTYPE registry is maintained by tcpdump.org and grows; the 83 values listed are the registered assignments, and an unregistered value still reaches each reader's unknown-link-type rejection path, which is itself worth generating."
+      },
+      "notes": "The template branches on this field once, at line 144: value 101 (LINKTYPE_RAW) makes it parse the record as a bare IPv4 header with no link-layer header at all, and every other value makes it assume a 14-byte Ethernet header. So from this template's point of view there are two shapes, but from a real dissector's point of view there are more than eighty - which is why the whole registry belongs in the set even though the template models two of them."
+    },
+    "MACaddr.Byte": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The six octets of an Ethernet address. Every value is a legal address and no reader refuses one; the interesting bits - the broadcast address, the multicast bit and the locally-administered bit - are all reached by leaving the field free and would be lost by pinning it.",
+      "description": "One octet of a 48-bit Ethernet MAC address.",
+      "field_type": "uchar[6]",
+      "source": "both",
+      "evidence": {
+        "line": 39,
+        "snippet": "uchar Byte[6];"
+      },
+      "confidence": "high",
+      "notes": "Bit 0 of the first octet is the individual/group bit and bit 1 is the universal/local bit, so ff:ff:ff:ff:ff:ff is broadcast and 01:00:5e:... is IPv4 multicast. A dissector labels each differently, so those patterns are reachable only while the field stays free."
+    },
+    "Layer_2.L3type": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The Ethernet type field, which selects the network-layer dissector and which the template branches on at lines 149 and 152. Measured, eight values produced eight different dissections - IPv4, LLC, IPv6, ARP, MPLS, LLDP and raw Ethernet II - and none was refused, so this is the full legal set rather than a gate.",
+      "description": "EtherType identifying the protocol carried in the Ethernet frame's payload, or a length when 1500 or below.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 46,
+        "snippet": "uint16 L3type<name=\"Layer 3 Protocol\">;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        2048,
+        2054,
+        2114,
+        8944,
+        8947,
+        8938,
+        24578,
+        24579,
+        32821,
+        32923,
+        33011,
+        33024,
+        33026,
+        33027,
+        33079,
+        33284,
+        34525,
+        34824,
+        34825,
+        34841,
+        34887,
+        34888,
+        34915,
+        34916,
+        34939,
+        34958,
+        34962,
+        34970,
+        34978,
+        34980,
+        34984,
+        34987,
+        35000,
+        35001,
+        35002,
+        35020,
+        35021,
+        35041,
+        35043,
+        35045,
+        35047,
+        35063,
+        35064,
+        35067,
+        35074,
+        35078,
+        35092,
+        35093,
+        35101,
+        35130,
+        35119,
+        36864,
+        37120,
+        61889
+      ],
+      "value_names": [
+        "IPv4",
+        "ARP",
+        "Wake_on_LAN",
+        "AVTP",
+        "IETF_TRILL",
+        "Stream_Reservation",
+        "DEC_MOP_RC",
+        "DECnet_Phase_IV",
+        "RARP",
+        "AppleTalk",
+        "AARP",
+        "VLAN_802_1Q",
+        "SLPP",
+        "VLACP",
+        "IPX",
+        "QNX_Qnet",
+        "IPv6",
+        "Ethernet_Flow_Control",
+        "Ethernet_Slow_Protocols",
+        "CobraNet",
+        "MPLS_unicast",
+        "MPLS_multicast",
+        "PPPoE_Discovery",
+        "PPPoE_Session",
+        "HomePlug_1_0_MME",
+        "EAP_over_LAN",
+        "PROFINET",
+        "HyperSCSI",
+        "ATA_over_Ethernet",
+        "EtherCAT",
+        "Service_VLAN_802_1ad",
+        "Ethernet_Powerlink",
+        "GOOSE",
+        "GSE_Management",
+        "SV",
+        "LLDP",
+        "SERCOS_III",
+        "HomePlug_GreenPHY",
+        "MRP",
+        "MACsec_802_1AE",
+        "PBB_802_1ah",
+        "PTP_over_Ethernet",
+        "NC_SI",
+        "PRP",
+        "CFM_802_1ag",
+        "FCoE",
+        "FCoE_Initialization",
+        "RoCE",
+        "TTE",
+        "1905_1",
+        "HSR",
+        "ECTP",
+        "Q_in_Q",
+        "TSN_802_1CB"
+      ],
+      "completeness": "partial",
+      "endianness": "big",
+      "preferred_value": [
+        2048,
+        33024,
+        34525,
+        2054
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "0x0800 dissected as IPv4 and through to the transport payload; 0x8100 as 802.1Q, which in this test fell through to LLC because no VLAN tag followed; 0x86DD as IPv6; 0x0806 as ARP; 0x8847 as MPLS; 0x88CC as LLDP; 0x0000 as bare Ethernet II; and 0x05DC, being 1500 or below, as an IEEE 802.3 length field routed to LLC. All eight decoded without the file being refused.",
+        "conclusion": "Eight distinct dissectors from one 16-bit field. completeness is 'partial' because the EtherType registry is maintained by the IEEE and grows; the listed values are the well-known assignments. Values of 1500 or below are not EtherTypes at all but IEEE 802.3 lengths, which route to the LLC dissector - a completely different branch that only stays reachable while the whole 16-bit span is free."
+      },
+      "cross_check": {
+        "line": 149,
+        "snippet": "if (L2.L3type == 0x0800) {"
+      },
+      "notes": "The template models only two of these: 0x0800 opens the Layer_3 struct at line 150 and 0x8100 opens the Dot1q struct at line 153. Every other EtherType leaves L3 undeclared, which makes the unconditional reference to L3.ip_hdr_len at line 158 read an undefined variable - a template limitation recorded on Layer_3.version."
+    },
+    "Dot1q.priority": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The 802.1p priority code point, a three-bit field with eight defined traffic classes. Each value names a different class of service that a dissector labels separately, and measured, all eight decoded.",
+      "description": "IEEE 802.1p Priority Code Point giving the frame's class of service.",
+      "field_type": "uint16:3",
+      "source": "both",
+      "evidence": {
+        "line": 51,
+        "snippet": "uint16 priority:3;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "value_names": [
+        "Best_Effort",
+        "Background",
+        "Excellent_Effort",
+        "Critical_Applications",
+        "Video",
+        "Voice",
+        "Internetwork_Control",
+        "Network_Control"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "big",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "Priority 0, 3 and 7 with various DEI and VLAN ID values all dissected correctly, with Wireshark reporting the VLAN ID back in every case.",
+        "conclusion": "All eight values are legal and each is a distinct label; none is a gate."
+      }
+    },
+    "Dot1q.dei": {
+      "tier": "B",
+      "type": "bitmask_constraint",
+      "tier_rationale": "The Drop Eligible Indicator, a single bit with both states defined; a dissector labels each differently and neither is refused.",
+      "description": "Drop Eligible Indicator: when set, the frame may be dropped under congestion.",
+      "field_type": "uint16:1",
+      "source": "both",
+      "evidence": {
+        "line": 52,
+        "snippet": "uint16 dei:1;"
+      },
+      "confidence": "high",
+      "valid_bits": 1,
+      "valid_values": [
+        0,
+        1
+      ],
+      "endianness": "big",
+      "notes": "Formerly the Canonical Format Indicator in 802.1Q-1998, which is why some dissectors still label it CFI."
+    },
+    "Dot1q.id": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The 12-bit VLAN identifier. Measured free across its whole span - 0, 1, 100 and 4095 all dissected with the ID reported back correctly - and the two reserved endpoints are the interesting ones: 0 means priority-tagged with no VLAN and 4095 is reserved, and both reach labelling a middle value never does.",
+      "description": "IEEE 802.1Q VLAN identifier for the frame.",
+      "field_type": "uint16:12",
+      "source": "both",
+      "evidence": {
+        "line": 53,
+        "snippet": "uint16 id:12<name=\"Vlan Id\">;"
+      },
+      "confidence": "high",
+      "endianness": "big",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "VLAN IDs 0, 1, 100 and 4095 all dissected, with Wireshark reporting vlan.id back as the value written in every case.",
+        "conclusion": "Entirely free across the 12-bit span, including both reserved endpoints."
+      }
+    },
+    "Dot1q.L3type": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The EtherType carried after the VLAN tag, with exactly the same legal set and the same consequences as Layer_2.L3type - it selects the network-layer dissector. The template passes it to Layer_3 at line 155.",
+      "description": "EtherType of the protocol carried inside the 802.1Q-tagged frame.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 54,
+        "snippet": "uint16 L3type<name=\"Layer 3 Protocol\">;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        2048,
+        2054,
+        33024,
+        34525,
+        34887,
+        34888,
+        34915,
+        34916,
+        34958,
+        34984,
+        35020,
+        37120
+      ],
+      "value_names": [
+        "IPv4",
+        "ARP",
+        "VLAN_802_1Q_stacked",
+        "IPv6",
+        "MPLS_unicast",
+        "MPLS_multicast",
+        "PPPoE_Discovery",
+        "PPPoE_Session",
+        "EAP_over_LAN",
+        "Service_VLAN_802_1ad",
+        "LLDP",
+        "Q_in_Q"
+      ],
+      "completeness": "partial",
+      "endianness": "big",
+      "preferred_value": [
+        2048,
+        34525
+      ],
+      "cross_check": {
+        "line": 155,
+        "snippet": "Layer_3 L3(d1q.L3type) <name=\"Layer 3\">;"
+      },
+      "notes": "The full EtherType registry applies here exactly as it does to Layer_2.L3type; the shorter list above names the values that actually occur inside a VLAN tag. A value of 0x8100 or 0x88A8 here means a stacked Q-in-Q tag, which the template does not model - it passes straight to Layer_3."
+    },
+    "IPv4addr.Byte": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "One octet of an IPv4 address. Every value is a legal address and no reader refuses one; the structurally interesting addresses - 0.0.0.0, 255.255.255.255, the 127/8 loopback, the 224/4 multicast range and the RFC 1918 private ranges - are each labelled differently by a dissector and are reachable only while the field stays free.",
+      "description": "One octet of a 32-bit IPv4 address.",
+      "field_type": "uchar[4]",
+      "source": "both",
+      "evidence": {
+        "line": 59,
+        "snippet": "uchar Byte[4];"
+      },
+      "confidence": "high",
+      "notes": "A dissector classifies the address before anything else: broadcast, multicast, loopback, private and public each produce different labels and different conversation tracking. Pinning the field to one address would collapse all of that to a single path."
+    },
+    "Layer_3.version": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The IP version nibble. The template reaches this struct only when the EtherType is 0x0800, which declares IPv4, so anything other than 4 makes a dissector treat the header as a different protocol version and abandon the IPv4 parse it was told to expect.",
+      "description": "IP version number; 4 for the IPv4 header this struct models.",
+      "field_type": "uchar:4",
+      "source": "both",
+      "evidence": {
+        "line": 70,
+        "snippet": "uchar version:4;"
+      },
+      "confidence": "high",
+      "required_value": 4,
+      "required_value_hex": "0x4",
+      "required_value_ascii": "\\x4",
+      "endianness": "big",
+      "notes": "TEMPLATE LIMITATION worth knowing: the Layer_3 struct is declared only inside the 0x0800 and 0x8100 branches at lines 150 and 155, but line 158 references L3.ip_hdr_len, L3.total_length and L3.L4proto unconditionally. A frame whose EtherType is anything else - IPv6, ARP, MPLS, all of which real dissectors handle - leaves L3 undeclared and the record cannot be parsed by this template at all."
+    },
+    "Layer_3.ip_hdr_len": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The IPv4 header length in 32-bit words, and the value the template multiplies by four at lines 72, 93, 162 and 189 to locate everything after the header. Measured, Wireshark reports a value below 5 as a bogus header length, and the template computes a negative array size from it.",
+      "description": "Length of the IPv4 header in 32-bit words; 5 for a header with no options.",
+      "field_type": "uchar:4",
+      "source": "both",
+      "evidence": {
+        "line": 71,
+        "snippet": "uchar ip_hdr_len:4;"
+      },
+      "confidence": "high",
+      "algorithm": "(20 + length of the IPv4 options) divided by 4",
+      "covers": "the IPv4 header from the version nibble through the end of the options, not the payload",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.total_length"
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "ihl 5 with no options, 6 with four option bytes, 8 with twelve and 15 with forty all dissected correctly. ihl 4 and 0 were still read by all three readers without the file being refused, but the header is then shorter than the twenty bytes IPv4 defines.",
+        "conclusion": "The legal span is 5 to 15, and the value must equal the header actually emitted. The template's arithmetic makes it load-bearing: line 162 computes the TCP application data length as total_length minus ip_hdr_len*4 minus tcp_hdr_len*4, so a wrong value shifts the payload boundary."
+      }
+    },
+    "Layer_3.DiffServField": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The Differentiated Services field: six bits of DSCP and two of ECN. Every value is legal and no reader refuses one, and the ECN bits in particular are the sort of detail a narrowing pass would zero, which would delete the congestion-notification labelling from every generated packet.",
+      "description": "Differentiated Services Code Point in the high six bits and Explicit Congestion Notification in the low two.",
+      "field_type": "BYTE",
+      "source": "both",
+      "evidence": {
+        "line": 73,
+        "snippet": "BYTE DiffServField;"
+      },
+      "confidence": "high",
+      "notes": "The eight-bit space holds 64 DSCP classes and four ECN states, each labelled separately by a dissector; ECN 0b11 in particular marks Congestion Experienced and changes how a transport dissector annotates the flow."
+    },
+    "Layer_3.total_length": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The total length of the IP datagram, and the value the template uses at lines 114, 162, 176 and 177 to size the unknown-layer-4 payload, the TCP application data and the link-layer padding. A wrong value gives a negative array length or silently shifts the payload boundary.",
+      "description": "Total length in octets of the IPv4 datagram, counting the header and the payload.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 74,
+        "snippet": "uint16 total_length;"
+      },
+      "confidence": "high",
+      "algorithm": "ip_hdr_len * 4 plus the length of everything the IP datagram carries",
+      "covers": "the IPv4 header and its entire payload, but not the link-layer header or any trailing padding",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_3.ip_hdr_len",
+        "Layer_4.udp_hdr_len",
+        "Layer_4.tcp_hdr_len",
+        "PCAPRECORD.AppData"
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "The correct value dissected cleanly. 0, 19 - below the twenty-byte header - and 1000, larger than the frame actually present, were all READ by all three readers without the file being refused; Wireshark simply labels the packet as having a bogus length or as truncated.",
+        "conclusion": "Not a capture-file gate: the readers keep going. But it IS a hard template requirement, because line 177 computes the padding length as incl_len minus len_before_l3 minus total_length, and line 162 computes the TCP payload length from it. Both go negative when it is wrong."
+      },
+      "template_parse_requirement": "Three arrays are sized from this field: Layer_4.packet at line 114 as total_length - ip_hdr_length, PCAPRECORD.AppData at line 162 as total_length - ip_hdr_len*4 - tcp_hdr_len*4, and PCAPRECORD.padding at line 177 as incl_len - len_before_l3 - total_length. A generator must compute it so that all three are non-negative and the record's bytes add up exactly."
+    },
+    "Layer_3.Identification": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The fragment identification field. Every 16-bit value is legal; it is the key a reassembly engine groups fragments by, so leaving it free is what lets several packets in one capture share or differ in an identifier - which is exactly what drives the reassembly path.",
+      "description": "Identification value used to group the fragments of one IPv4 datagram.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 77,
+        "snippet": "uint16 Identification;"
+      },
+      "confidence": "high",
+      "endianness": "big"
+    },
+    "Layer_3.Flags": {
+      "tier": "B",
+      "type": "bitmask_constraint",
+      "tier_rationale": "Despite its name this 16-bit field is three flag bits plus a 13-bit fragment offset. The More Fragments bit and a non-zero offset together put a dissector into its reassembly path, which is a large body of code no unfragmented packet reaches - so the whole field must stay free and the three named bits belong in the set.",
+      "description": "Three IPv4 flag bits - reserved, Don't Fragment and More Fragments - followed by the 13-bit fragment offset.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 78,
+        "snippet": "uint16 Flags;"
+      },
+      "confidence": "high",
+      "valid_bits": 65535,
+      "valid_values": [
+        32768,
+        16384,
+        8192
+      ],
+      "endianness": "big",
+      "notes": "Bit 15 is reserved and must be zero per RFC 791 - it is the 'evil bit' of RFC 3514 - bit 14 is Don't Fragment and bit 13 is More Fragments. Bits 12 down to 0 are the fragment offset in units of eight octets, and every value of that offset is legal. valid_values names only the three flag bits because the offset is a free 13-bit number rather than an enumeration; setting More Fragments or a non-zero offset is what opens the fragment-reassembly dissector."
+    },
+    "Layer_3.TTL": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The Time To Live hop count. Every value is legal and no reader refuses one; 0 and 1 in particular make a dissector flag an expiring packet, which a mid-range value never does.",
+      "description": "Remaining hop count for the datagram.",
+      "field_type": "BYTE",
+      "source": "both",
+      "evidence": {
+        "line": 79,
+        "snippet": "BYTE   TTL;"
+      },
+      "confidence": "high"
+    },
+    "Layer_3.L4proto": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The IP protocol number, and the field that selects the transport dissector. Measured, nine different values produced nine different dissections - TCP, UDP, ICMP, IGMP, GRE, ESP, OSPF, SCTP and a fallback to bare IPv4 - and none was refused, so this is the full legal set. The template branches on it at lines 95, 102, 160 and 168.",
+      "description": "IANA protocol number identifying the transport-layer protocol carried in the datagram.",
+      "field_type": "BYTE",
+      "source": "both",
+      "evidence": {
+        "line": 80,
+        "snippet": "BYTE   L4proto<name=\"Layer 4 Protocol\",read=L4protoName>;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        4,
+        6,
+        8,
+        9,
+        17,
+        27,
+        33,
+        41,
+        43,
+        44,
+        46,
+        47,
+        50,
+        51,
+        58,
+        59,
+        60,
+        88,
+        89,
+        94,
+        97,
+        103,
+        108,
+        112,
+        115,
+        124,
+        132,
+        133,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        253,
+        254,
+        255
+      ],
+      "value_names": [
+        "HOPOPT",
+        "ICMP",
+        "IGMP",
+        "IPv4_encap",
+        "TCP",
+        "EGP",
+        "IGP",
+        "UDP",
+        "RDP",
+        "DCCP",
+        "IPv6_encap",
+        "IPv6_Route",
+        "IPv6_Frag",
+        "RSVP",
+        "GRE",
+        "ESP",
+        "AH",
+        "IPv6_ICMP",
+        "IPv6_NoNxt",
+        "IPv6_Opts",
+        "EIGRP",
+        "OSPF",
+        "IPIP",
+        "ETHERIP",
+        "PIM",
+        "IPComp",
+        "VRRP",
+        "L2TP",
+        "ISIS_over_IPv4",
+        "SCTP",
+        "FC",
+        "UDPLite",
+        "MPLS_in_IP",
+        "manet",
+        "HIP",
+        "Shim6",
+        "WESP",
+        "ROHC",
+        "Ethernet",
+        "experimental_253",
+        "experimental_254",
+        "Reserved"
+      ],
+      "completeness": "partial",
+      "endianness": "n/a",
+      "preferred_value": [
+        6,
+        17,
+        1,
+        132,
+        47
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "proto 6 dissected as TCP, 17 as UDP, 1 as ICMP, 2 as IGMPv0, 47 as GRE, 50 as ESP, 89 as OSPF, 132 as SCTP, and 255 fell back to bare IPv4. All nine decoded without the file being refused.",
+        "conclusion": "Nine distinct transport dissectors from one byte, and the registry holds more. completeness is 'partial' because IANA maintains the assignment list and it grows; the 42 values above are the well-known ones. The template models only 6 and 17 - lines 95 and 102 - and every other value takes the generic branch at line 112, which reads the payload as opaque bytes. That generic branch is the only route to the twenty-odd other dissectors and is worth reaching often."
+      },
+      "cross_check": {
+        "line": 160,
+        "snippet": "if (L3.L4proto == 0x6)"
+      }
+    },
+    "Layer_3.HdrChecksum": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The IPv4 header checksum, and the biggest surprise in this extraction. It looks like a textbook Tier A calculated_value, and measurement says it is not: Wireshark reports ip.checksum.status of 2 - unverified - and dissects the packet identically whether the checksum is correct, zero, all ones or simply wrong, because IPv4 checksum validation is OFF by default. tcpdump does not check it either. Pinning it would buy nothing and would remove the wrong-checksum case that reaches a validating reader's error path.",
+      "description": "One's complement checksum over the IPv4 header only.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 81,
+        "snippet": "uint16 HdrChecksum;"
+      },
+      "confidence": "high",
+      "endianness": "big",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "A correct checksum, zero, 0xFFFF and an arbitrary wrong value all produced an IDENTICAL dissection in all three readers, with Wireshark reporting ip.checksum.status = 2 ('unverified') in every case including the correct one.",
+        "conclusion": "Not a gate in any reader tested with default settings. The Tier A test is applied literally here and it fails, so the field is Tier C. The correct algorithm is recorded in checksum_algorithm below so a generator can still emit a valid checksum when it wants one - Wireshark validates it when ip.check_checksum is enabled, and a hardware NIC or a router would drop the packet - but the value must not be pinned."
+      },
+      "checksum_algorithm": {
+        "name": "RFC 1071 one's complement Internet checksum",
+        "covers": "the IPv4 header only, from the version nibble through the end of the options, with this field taken as zero",
+        "method": "Sum the header as big-endian 16-bit words with this field set to zero, folding every carry out of bit 15 back into bit 0, then take the one's complement of the result. A computed value of 0x0000 is transmitted as 0xFFFF.",
+        "note": "Recorded as a schema extension rather than as a calculated_value, because the field's tier is C and a calculated_value would imply it is pinned."
+      }
+    },
+    "Layer_3.Unknown": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The catch-all header bytes read when the template is handed a protocol type other than 0x0800. Its length is fully determined by ip_hdr_len and nothing inspects its contents, so it is ordinary free-form payload.",
+      "description": "Uninterpreted network-layer header bytes for a protocol type the template does not model.",
+      "field_type": "BYTE[hdr_length-4]",
+      "source": "both",
+      "evidence": {
+        "line": 87,
+        "snippet": "BYTE Unknown[hdr_length-4];"
+      },
+      "confidence": "high",
+      "notes": "This branch is unreachable in practice: Layer_3 is only ever instantiated with 0x0800 at lines 145, 150 and 155, so the else at line 85 never fires. It is recorded for completeness and because a rewrite that routes IPv6 or ARP into Layer_3 would land here."
+    },
+    "Layer_4.SrcPort": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The transport source port. Measured, the port pair is what selects the application dissector - port 53 routed to DNS, 67 to BOOTP, 123 to NTP, 514 to Syslog, 80 to HTTP - so every one of the 65536 values is a potential dissector selector. Pinning it would collapse the entire application layer to one protocol.",
+      "description": "Source port number of the UDP datagram or TCP segment.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 97,
+        "snippet": "uint16 SrcPort<name=\"Source Port\">;"
+      },
+      "confidence": "high",
+      "endianness": "big",
+      "cross_check": {
+        "line": 104,
+        "snippet": "uint16 SrcPort<name=\"Source Port\">;"
+      },
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "Wireshark selected a different application dissector for each destination port tried: 53 gave DNS, 67 BOOTP, 123 NTP, 514 Syslog, 1900 plain UDP and 80 over TCP gave HTTP. The source port participates in the same lookup.",
+        "conclusion": "The most productive Tier C field in the format after the link type. Two declarations share this key - line 97 in the UDP branch and line 104 in the TCP branch - as mutually exclusive arms of the same if/else."
+      }
+    },
+    "Layer_4.DstPort": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The transport destination port, and the primary key Wireshark uses to choose an application dissector. Measured to select six different dissectors across six values; narrowing it would delete every application protocol but one.",
+      "description": "Destination port number of the UDP datagram or TCP segment.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 98,
+        "snippet": "uint16 DstPort<name=\"Destination Port\">;"
+      },
+      "confidence": "high",
+      "endianness": "big",
+      "cross_check": {
+        "line": 105,
+        "snippet": "uint16 DstPort<name=\"Destination Port\">;"
+      },
+      "notes": "Two declarations share this key, at lines 98 and 105. The well-known ports that open a large dissector are 53 DNS, 67 and 68 DHCP, 80 and 8080 HTTP, 123 NTP, 161 SNMP, 443 TLS, 514 Syslog, 1900 SSDP and 5353 mDNS - but the field must stay free, because the payload is derived from whichever port is chosen, not the other way round."
+    },
+    "Layer_4.udp_hdr_len": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The UDP datagram length, and the value the template subtracts eight from at line 170 to size the application payload. A value below eight gives a negative array length, and a value that disagrees with the bytes present shifts the payload boundary.",
+      "description": "Length in octets of the UDP datagram, counting the eight-byte header and the payload.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 99,
+        "snippet": "uint16 udp_hdr_len<name=\"Datagram Length\">;"
+      },
+      "confidence": "high",
+      "algorithm": "8 plus the length of the UDP payload",
+      "covers": "the UDP header and the application data that follows it",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "PCAPRECORD.AppData"
+      ],
+      "notes": "Line 170 computes AppDataLen as udp_hdr_len - 8, so the field must be at least 8. It must also agree with Layer_3.total_length: total_length equals ip_hdr_len*4 plus udp_hdr_len for a UDP datagram."
+    },
+    "Layer_4.ChkSum": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The UDP checksum. RFC 768 makes it OPTIONAL over IPv4 - the value zero explicitly means 'no checksum computed' - and measured, no reader refused any value, so it fails the Tier A test twice over. The algorithm is recorded below for a generator that wants a valid one.",
+      "description": "One's complement checksum over a pseudo-header, the UDP header and the payload; zero means no checksum.",
+      "field_type": "uint16",
+      "source": "both",
+      "evidence": {
+        "line": 100,
+        "snippet": "uint16 ChkSum<name=\"Checksum\">;"
+      },
+      "confidence": "high",
+      "endianness": "big",
+      "checksum_algorithm": {
+        "name": "RFC 768 one's complement checksum over an IPv4 pseudo-header",
+        "covers": "a twelve-byte pseudo-header of source address, destination address, a zero byte, the protocol number 17 and the UDP length, followed by the whole UDP header with this field zeroed and the payload padded to an even length",
+        "method": "Sum as big-endian 16-bit words, fold the carries, take the one's complement; a computed zero is transmitted as 0xFFFF so that the value zero can mean 'not computed'.",
+        "note": "Optional over IPv4 and mandatory over IPv6. Recorded as an extension rather than a calculated_value because the field is Tier C."
+      }
+    },
+    "Layer_4.SEQ": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The TCP sequence number. Every 32-bit value is legal, and a dissector's relative-sequence tracking, out-of-order detection and retransmission analysis all key off how the value changes between segments - none of which is reachable from a fixed value.",
+      "description": "Sequence number of the first data octet in this TCP segment.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 106,
+        "snippet": "uint32 SEQ;"
+      },
+      "confidence": "high",
+      "endianness": "big"
+    },
+    "Layer_4.ACK": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The TCP acknowledgement number, free for the same reasons as SEQ and meaningful only when the ACK flag is set.",
+      "description": "Next sequence number the sender of this segment expects to receive.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 107,
+        "snippet": "uint32 ACK;"
+      },
+      "confidence": "high",
+      "endianness": "big"
+    },
+    "Layer_4.tcp_hdr_len": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The TCP data offset in 32-bit words, and the value the template multiplies by four at lines 110, 162 and 189 to size the rest of the header and locate the application data. Measured, a value below 5 makes Wireshark report 'bogus TCP header length', and the template computes a negative array size from it.",
+      "description": "Length of the TCP header in 32-bit words; 5 for a header with no options.",
+      "field_type": "uchar:4",
+      "source": "both",
+      "evidence": {
+        "line": 108,
+        "snippet": "uchar tcp_hdr_len:4;"
+      },
+      "confidence": "high",
+      "algorithm": "(20 + length of the TCP options) divided by 4",
+      "covers": "the TCP header from the source port through the end of the options, not the payload",
+      "includes_self": true,
+      "endianness": "big",
+      "depends_on": [
+        "Layer_4.Crap"
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "data offset 5 with no options, 6 with four option bytes, 8 with twelve and 15 with forty all dissected correctly. A data offset of 4 produced 'bogus TCP header length' in Wireshark's info column while still being read.",
+        "conclusion": "The legal span is 5 to 15 and the value must equal the header actually emitted. Line 110 sizes Crap as tcp_hdr_len*4 - 13, so a value below 4 gives a negative length and a value of 4 gives a three-byte Crap that cannot hold the flags, window, checksum and urgent pointer the header requires."
+      }
+    },
+    "Layer_4.Reserved": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The four bits below the data offset. RFC 793 reserved them and said they must be zero, but RFC 3168 and RFC 3540 reassigned the low ones to the ECN nonce and the accurate-ECN bits, so they are live flag bits today. Measured, setting every bit of the flags byte was dissected and labelled rather than refused.",
+      "description": "Four bits between the data offset and the flags; reserved in RFC 793 and partly reassigned to ECN since.",
+      "field_type": "uchar:4",
+      "source": "both",
+      "evidence": {
+        "line": 109,
+        "snippet": "uchar Reserved:4;"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "A TCP segment with all eight flag bits set, including the two that neighbour this field, was dissected and every flag labelled - 'FIN, SYN, RST, PSH, ACK, URG, ECE, CWR'.",
+        "conclusion": "Not reserved in practice. Pinning it to zero would remove the ECN signalling that a dissector labels separately."
+      }
+    },
+    "Layer_4.Crap": {
+      "tier": "A",
+      "type": "payload_wellformedness",
+      "tier_rationale": "The template declares this as a bare byte array with a dismissive name, and it is actually the TCP flags, window, checksum, urgent pointer and options - the half of the TCP header that drives every conversation-tracking decision a dissector makes. Measured, the first byte alone produced nine different dissections, and a header length too short to hold the fields produced 'bogus TCP header length'.",
+      "description": "The remainder of the TCP header after the first thirteen bytes: flags, window, checksum, urgent pointer and options.",
+      "field_type": "BYTE[tcp_hdr_len*4-13]",
+      "source": "both",
+      "evidence": {
+        "line": 110,
+        "snippet": "BYTE Crap[tcp_hdr_len*4-13];"
+      },
+      "confidence": "high",
+      "codec": "TCP header fields and option list (RFC 9293, formerly RFC 793; options per RFC 9293 section 3.2 and the IANA TCP option kind registry)",
+      "must_produce": "Despite its name this array is not slack - it is the rest of the TCP header. The template reads the source port, destination port, sequence number, acknowledgement number and the data-offset/reserved byte explicitly, which is thirteen bytes, and then sizes this array as tcp_hdr_len*4 - 13. For the minimum header of twenty bytes that is seven bytes, and they are NOT free:\\n  byte 0     TCP FLAGS. Bit 0 FIN, 1 SYN, 2 RST, 3 PSH, 4 ACK, 5 URG, 6 ECE, 7 CWR.\\n  bytes 1-2  WINDOW SIZE, big-endian uint16.\\n  bytes 3-4  CHECKSUM, big-endian uint16; may be zero, which a dissector labels as not computed.\\n  bytes 5-6  URGENT POINTER, big-endian uint16; meaningful only when the URG flag is set.\\n  bytes 7..  TCP OPTIONS, present only when tcp_hdr_len exceeds 5. Each option is either a single byte - 00 End of Option List, 01 No-Operation - or a kind byte, a length byte that counts itself, and that many bytes less two of data. The common ones are 02 04 <MSS:2>, 03 03 <shift>, 04 02 SACK permitted, 08 0A <TSval:4> <TSecr:4>. The option list is padded with 01 or 00 bytes to a multiple of four so that tcp_hdr_len*4 comes out whole.",
+      "decoder_gate": "Measured against Wireshark 4.4.6. The flags byte alone produced nine visibly different dissections from one array: 0x02 gave '[SYN] Seq=0', 0x12 '[SYN, ACK]', 0x10 '[ACK]', 0x18 '[PSH, ACK]', 0x11 '[FIN, ACK]', 0x04 '[RST]', 0x00 '[<None>]', 0x3F '[FIN, SYN, RST, PSH, ACK, URG]' and 0xFF all eight including ECE and CWR. Each of those drives a different branch of Wireshark's TCP conversation tracking: SYN and SYN+ACK open a stream and enable relative sequence numbers, FIN and RST close it, PSH marks a segment for reassembly, and a bare ACK with no data is analysed for duplicates and window updates.\\n  Random bytes here do not make the file be refused - the capture still opens - but they produce a meaningless flag combination and a window and checksum that the analysis engine then reasons about wrongly, so the stream tracking, reassembly and expert-info paths never run properly.\\n  A data offset of 4, which makes this array three bytes long and unable to hold the flags, window, checksum and urgent pointer at all, produced 'bogus TCP header length' in Wireshark's info column.",
+      "generation_strategy": "For the minimum twenty-byte header set tcp_hdr_len = 5 and emit exactly seven bytes:\\n  18            flags = PSH|ACK, the ordinary data-carrying combination\\n  20 00         window = 8192\\n  00 00         checksum = 0, which a dissector accepts and labels as not computed\\n  00 00         urgent pointer = 0\\nVERIFIED: a complete 92-byte capture built this way dissects as a normal TCP segment in all three readers.\\nTo reach the other conversation states, change only the first byte: 02 for SYN, 12 for SYN|ACK, 10 for a bare ACK, 11 for FIN|ACK, 04 for RST. Each was measured to produce a different dissection.\\nTo emit options, raise tcp_hdr_len and append a well-formed option list after the seven fixed bytes. The simplest is a SYN with MSS and SACK-permitted, tcp_hdr_len = 7 and eleven bytes of array:\\n  02 20 00 00 00 00 00        flags SYN, window 8192, checksum 0, urgent 0\\n  02 04 05 B4                 MSS = 1460\\n  04 02 01 01                 SACK permitted, then two No-Operation pad bytes\\nThe option list length is derived from tcp_hdr_len, never the reverse: pick the header length, then fill it with options and pad with 01 bytes to the boundary.",
+      "derives_from": [
+        "Layer_4.tcp_hdr_len"
+      ],
+      "content_is_free": true,
+      "endianness": "big",
+      "notes": "PIN THE ENVELOPE, FREE THE CONTENTS: the seven fixed bytes have a mandatory layout, but the window size, the checksum and the urgent pointer are all free 16-bit numbers inside it, and the flags byte is free across all 256 combinations. The option list's LENGTH is derived from tcp_hdr_len - pick the header length first and fill it, never shrink the header to fit a fixed option list."
+    },
+    "Layer_4.packet": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The transport payload for any IP protocol other than TCP and UDP. The template reads it as opaque bytes and its length is fully determined by total_length and ip_hdr_len, so nothing about its contents can fail - but the protocol number that selects this branch does decide which dissector reads it, which is recorded as a dependency.",
+      "description": "Uninterpreted transport-layer bytes for a protocol the template does not model.",
+      "field_type": "BYTE[total_length-ip_hdr_length]",
+      "source": "both",
+      "evidence": {
+        "line": 114,
+        "snippet": "BYTE packet[total_length-ip_hdr_length]<name=\"Unknown Layer 4 Data\">;"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "With Layer_3.L4proto set to 1, 2, 47, 50, 89, 132 and 255 these bytes were handed to Wireshark's ICMP, IGMP, GRE, ESP, OSPF, SCTP and raw-IPv4 dissectors respectively, each of which parsed them according to its own rules.",
+        "conclusion": "Opaque to the template, structured to the dissector. This branch is the only route to the twenty-odd non-TCP, non-UDP transport dissectors, so emitting it often - with the protocol number varied - is worth far more than its opaqueness suggests. The per-protocol layouts are outside this template's scope, which is why the field stays Tier C rather than becoming a payload entry with twenty codecs."
+      },
+      "notes": "TEMPLATE ARITHMETIC: line 114 sizes the array as total_length - ip_hdr_length where ip_hdr_length is the local set at line 93 to VER_HDR*4, and VER_HDR is the ip_hdr_len nibble passed in at line 158. So the length is total_length minus the IP header length, which is correct."
+    },
+    "PCAPRECORD.ts_sec": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The capture timestamp in seconds since the Unix epoch. Timestamps are the archetypal Tier C field; measured, 0, a recent value and 0xFFFFFFFF all decoded identically, and the inter-packet deltas a reader computes are interesting precisely because the values differ between records.",
+      "description": "Seconds since the Unix epoch at which the packet was captured.",
+      "field_type": "time_t",
+      "source": "both",
+      "evidence": {
+        "line": 137,
+        "snippet": "time_t ts_sec;         /* timestamp seconds */"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "ts_sec of 0, 1700000000 and 4294967295 all decoded in all three readers, with Wireshark rendering each as an absolute date.",
+        "conclusion": "Entirely free. Records whose timestamps go backwards are legal and reach a reader's negative-delta handling, which a monotonic capture never does."
+      }
+    },
+    "PCAPRECORD.ts_usec": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The sub-second part of the timestamp. Measured free across the entire 32-bit span - including 1000000 and 0xFFFFFFFF, both of which exceed one second and are therefore illegal by the specification, and neither of which any reader refused.",
+      "description": "Microseconds, or nanoseconds when the nanosecond magic is used, within the second given by ts_sec.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 138,
+        "snippet": "uint32 ts_usec;        /* timestamp microseconds */"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "ts_usec of 0, 999999, 1000000 - which is one full second and out of range - and 4294967295 all decoded identically in all three readers.",
+        "conclusion": "Entirely free, including the out-of-range values. The unit depends on PCAPHEADER.magic_number: microseconds for 0xA1B2C3D4 and nanoseconds for 0xA1B23C4D, which is a dependency rather than a constraint on this field."
+      }
+    },
+    "PCAPRECORD.incl_len": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The number of packet octets stored in this record, and the strictest field in the whole format. Measured, one byte too few or too many makes ALL THREE readers refuse the entire file - tcpdump 'truncated dump file', Wireshark 'appears to have been cut short' - because the next record header is then read from the wrong offset and the chain collapses.",
+      "description": "Number of octets of packet data actually saved in this record.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 139,
+        "snippet": "uint32 incl_len;       /* number of octets of packet saved in file */"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the packet data that follows the sixteen-byte record header",
+      "covers": "every byte of the record's frame: the Layer_2 header or the bare Layer_3 header, the optional Dot1q tag, the Layer_3 header, the Layer_4 header, the AppData and the trailing padding",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "Layer_3.total_length",
+        "PCAPHEADER.network",
+        "Layer_2.L3type",
+        "PCAPRECORD.padding"
+      ],
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "The exact value decodes in all three. One short and one long both produce 'truncated dump file; tried to read N captured bytes, only got M' in tcpdump and 'appears to have been cut short' in Wireshark. Zero makes the reader interpret the next sixteen bytes as another record header and produce an absurd capture length - Wireshark reported a 3148519816-byte packet. A value past the end of file fails the same way. Three stray bytes appended after the last record are equally fatal, for the same reason.",
+        "conclusion": "The one field with no tolerance anywhere. Compute it from the frame emitted, and make sure the file ends exactly at a record boundary. It is also what the template's padding arithmetic at line 177 subtracts from."
+      },
+      "notes": "The specification says incl_len should not exceed PCAPHEADER.snaplen, but measured, a record longer than the declared snaplen decoded in all three readers without complaint - so that rule is advisory and snaplen stays Tier C."
+    },
+    "PCAPRECORD.orig_len": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The original on-the-wire length of the packet. It looks like a size field and measurement says it is not checked at all: 0, a value smaller than incl_len and a value a thousand bytes larger all decoded identically. When it exceeds incl_len a dissector labels the packet as sliced, which is a distinct path that an equal value never reaches.",
+      "description": "Length of the packet as it appeared on the network, before any truncation by the capture.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 140,
+        "snippet": "uint32 orig_len;       /* actual length of packet */"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "orig_len equal to incl_len, one less, zero, and a thousand more all decoded identically in all three readers, with Wireshark reporting the frame as 'N bytes on wire, M bytes captured' using whichever pair it was given.",
+        "conclusion": "Completely unvalidated - a genuine surprise given that it sits beside incl_len, which has no tolerance at all. Making it larger than incl_len is what marks a sliced capture and is worth emitting deliberately."
+      }
+    },
+    "PCAPRECORD.AppData": {
+      "tier": "A",
+      "type": "payload_wellformedness",
+      "tier_rationale": "The application-layer payload. The template declares it as a bare byte array sized by arithmetic and says nothing about its contents - exactly the situation checklist item 3 exists for. Measured, a well-formed HTTP request reaches the HTTP dissector while the same length of random bytes falls back to plain TCP and the dissector never runs; a well-formed DNS query dissects completely while random bytes abort with '[Malformed Packet: DNS]'.",
+      "description": "Application-layer data carried by the TCP segment or UDP datagram, whose format is chosen by the port pair.",
+      "field_type": "BYTE[AppDataLen]",
+      "source": "both",
+      "evidence": {
+        "line": 165,
+        "snippet": "BYTE AppData[AppDataLen]<name=\"TCP Application Data\">;"
+      },
+      "confidence": "high",
+      "codec": "selected by Layer_4.SrcPort and Layer_4.DstPort; the measured cases are DNS (RFC 1035) on UDP 53 and HTTP (RFC 9110) on TCP 80",
+      "must_produce": "The application-layer payload, and what must be inside it is chosen by the PORT PAIR in Layer_4.SrcPort and Layer_4.DstPort. Wireshark looks the ports up in its dissector table and hands these bytes to whichever protocol dissector is registered. The useful cases:\\n\\nUDP PORT 53, DNS (RFC 1035). A twelve-byte header - transaction ID, flags, and four 16-bit counts for questions, answers, authority and additional records - followed by that many records. A question is a name, then a 16-bit type, then a 16-bit class. A name is a sequence of length-prefixed labels terminated by a zero byte, each label at most 63 bytes.\\n\\nUDP PORT 123, NTP (RFC 5905). A fixed 48-byte header: one byte of leap indicator, version and mode, then stratum, poll and precision bytes, then root delay and dispersion, a four-byte reference identifier and four 64-bit timestamps.\\n\\nUDP PORTS 67 and 68, DHCP (RFC 2131). A 236-byte fixed header beginning with op, htype, hlen and hops, then the magic cookie 63 82 53 63, then a TLV option list terminated by option 255.\\n\\nUDP PORT 514, SYSLOG (RFC 5424). Printable text beginning with a priority in angle brackets.\\n\\nTCP PORT 80, HTTP (RFC 9110). A request line of method, space, target, space, 'HTTP/1.1', then CRLF, then zero or more 'Name: value' header lines each ending CRLF, then a bare CRLF. A response begins 'HTTP/1.1 200 OK' instead.\\n\\nThe payload LENGTH is not free: line 162 computes it for TCP as Layer_3.total_length minus Layer_3.ip_hdr_len*4 minus Layer_4.tcp_hdr_len*4, and line 170 computes it for UDP as Layer_4.udp_hdr_len minus 8. The bytes must fill exactly that many.",
+      "decoder_gate": "Measured against Wireshark 4.4.6, which is where every application dissector lives.\\n  TCP PORT 80 WITH A REAL HTTP REQUEST - 'GET / HTTP/1.1' and a Host header - dissected as protocol HTTP with info 'GET / HTTP/1.1'. THE SAME LENGTH OF RANDOM BYTES fell back to protocol TCP with info '12345 -> 80 [PSH, ACK] Seq=1 Ack=1 Win=8192 Len=36'. The HTTP dissector never ran at all: not one line of it is reachable without a well-formed request line.\\n  UDP PORT 53 WITH A REAL DNS QUERY dissected fully - protocol DNS, info 'Standard query 0x1234 A example.com', and the field dns.qry.name read back as 'example.com'. THE SAME LENGTH OF RANDOM BYTES gave info 'Unknown operation (7) 0xdd7a[Malformed Packet]' and the expert field _ws.malformed set to '[Malformed Packet: DNS]', so the dissector entered and immediately aborted.\\n  Neither case makes the capture file be refused - tcpdump and capinfos read all of them - so this is not a front gate on the container. It is a gate on the dissector, which is where essentially all of Wireshark's code lives.",
+      "generation_strategy": "Derive the payload from the port, and the length from the header fields.\\n\\nDNS over UDP port 53, the cheapest fully-dissecting payload at 29 bytes for 'example.com':\\n  12 34        transaction ID, any value\\n  01 00        flags: standard query, recursion desired\\n  00 01        questions = 1\\n  00 00 00 00 00 00   answers, authority, additional = 0\\n  07 'example' 03 'com' 00    the name as length-prefixed labels\\n  00 01        type A\\n  00 01        class IN\\nVERIFIED: dissects as DNS with dns.qry.name = 'example.com' and no malformed flag.\\n\\nHTTP over TCP port 80, 36 bytes:\\n  'GET / HTTP/1.1\\\\r\\\\nHost: example.com\\\\r\\\\n\\\\r\\\\n'\\nVERIFIED: dissects as protocol HTTP with info 'GET / HTTP/1.1'.\\n\\nIn both cases set the lengths afterwards, working outwards: choose the payload, then Layer_4.udp_hdr_len = 8 + len(payload) for UDP, then Layer_3.total_length = ip_hdr_len*4 + udp_hdr_len, then PCAPRECORD.incl_len = 14 + total_length for an Ethernet frame. For TCP set Layer_3.total_length = ip_hdr_len*4 + tcp_hdr_len*4 + len(payload).\\n\\nThe port is a FREE CHOICE and the payload is computed from it - never the other way round. A generator that fixes the payload and then picks a port to suit it has made the GIF mistake: it would collapse the port space, which is the field that selects the dissector in the first place.",
+      "derives_from": [
+        "Layer_4.SrcPort",
+        "Layer_4.DstPort",
+        "Layer_3.total_length",
+        "Layer_3.ip_hdr_len",
+        "Layer_4.tcp_hdr_len",
+        "Layer_4.udp_hdr_len",
+        "Layer_3.L4proto"
+      ],
+      "content_is_free": true,
+      "endianness": "big",
+      "cross_check": {
+        "line": 173,
+        "snippet": "BYTE AppData[AppDataLen]<name=\"UDP Application Data\">;"
+      },
+      "notes": "THE CENTRAL RULE FOR THIS FORMAT: the port selects the codec and the header fields set the length, so the payload is computed from both. Neither the port nor any length field may be narrowed so that one precomputed payload fits - the port space IS the dissector space, and collapsing it is the most expensive narrowing available here.\\nTWO DECLARATIONS share this field name, at line 165 for the TCP branch and line 173 for the UDP branch, as mutually exclusive arms of the if/else at lines 160-175. Both are guarded by 'if (AppDataLen > 0)', so a zero-length payload emits no field at all - which is the normal case for a SYN or an ACK and must remain reachable."
+    },
+    "PCAPRECORD.padding": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Link-layer padding after the IP datagram, added by an Ethernet adapter to reach the 60-byte minimum frame size. Measured, its contents are never inspected - 6 and 20 bytes of arbitrary values decoded identically - so it is the one region of a PCAP record where bytes can vary without touching anything a dissector reasons about.",
+      "description": "Trailing bytes between the end of the IP datagram and the end of the captured frame.",
+      "field_type": "uchar[incl_len - len_before_l3 - L3.total_length]",
+      "source": "both",
+      "evidence": {
+        "line": 177,
+        "snippet": "uchar padding[incl_len - len_before_l3 - L3.total_length]<name=\"Layer 2 Padding\">;"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "libpcap 1.10.1 via tcpdump 4.99.1, Wireshark 4.4.6 via tshark, and capinfos",
+        "observed": "Frames with 0, 6 and 20 bytes of arbitrary padding after a complete IP datagram all decoded identically in all three readers.",
+        "conclusion": "Entirely free in both length and contents. Its LENGTH, however, is determined by the template's arithmetic at line 176: it exists only when len_before_l3 plus Layer_3.total_length is less than incl_len, and is exactly the difference. A generator chooses how much padding to emit and then sets incl_len from the total."
+      },
+      "notes": "len_before_l3 is the local accumulated at lines 143, 148 and 154: zero for LINKTYPE_RAW, 14 for a plain Ethernet frame, 18 when a Dot1q tag is present. The template's version history at line 13 records this padding handling as the 0.5 fix."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "PCAPHEADER.magic_number",
+        "equals": 2712812621
+      },
+      "then": {
+        "field": "PCAPRECORD.ts_usec",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "the sub-second timestamp counts NANOSECONDS rather than microseconds"
+      },
+      "description": "The magic number declares the timestamp resolution as well as the byte order.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: the nanosecond magic 0xA1B23C4D decoded in all three readers exactly as the microsecond magic did, with the timestamps scaled differently. The template's guard at line 25 rejects it, so a rewrite must relax that guard to reach the nanosecond path.",
+      "note": "0xD4C3B2A1 and 0x4D3CB2A1 additionally declare that every field in the file is big-endian, which line 214's unconditional LittleEndian() makes inexpressible."
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.network",
+        "equals": 101
+      },
+      "then": {
+        "field": "Layer_2.L3type",
+        "forbidden": true,
+        "detail": "LINKTYPE_RAW has no link-layer header at all; the record begins directly with the IP header"
+      },
+      "description": "A raw-IP capture carries no Ethernet header, which the template handles as a special case.",
+      "source": "template",
+      "confidence": "high",
+      "measured_gate": "Measured: network=101 with a bare IPv4 frame decoded as 'Raw IP' in all three readers. Line 144 tests for exactly 101 and line 145 instantiates Layer_3 directly with a hard-coded 0x0800.",
+      "note": "len_before_l3 stays 0 in this branch (line 143), which changes the padding arithmetic at line 177."
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.network",
+        "min": 0,
+        "max": 100
+      },
+      "then": {
+        "field": "Layer_2.DstMac",
+        "required": true,
+        "detail": "every link type other than 101 makes the template read a 14-byte Ethernet header first"
+      },
+      "description": "The template assumes Ethernet framing for every link type except raw IP.",
+      "source": "template",
+      "confidence": "high",
+      "measured_gate": "Measured: eighteen different link types decoded in all three readers and each selected a different encapsulation, but only type 1 actually has a 14-byte Ethernet header. The template reads one regardless, so for types such as 113 (Linux cooked, 16-byte header) or 127 (radiotap, variable) the bytes it labels as MAC addresses are really something else.",
+      "note": "TEMPLATE LIMITATION. Only LINKTYPE_ETHERNET (1) and LINKTYPE_RAW (101) are modelled correctly; the other 101 registered link types are emitted with an Ethernet header they do not have."
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "equals": 2048
+      },
+      "then": {
+        "field": "Layer_3.version",
+        "tier": "A",
+        "type": "fixed_value",
+        "required_value": 4,
+        "detail": "the EtherType declares IPv4, so the version nibble must be 4"
+      },
+      "description": "EtherType 0x0800 commits the frame to carrying an IPv4 datagram.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: 0x0800 with a well-formed IPv4 header dissected through to the transport and application layers in all three readers."
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "equals": 33024
+      },
+      "then": {
+        "field": "Dot1q.id",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "a four-byte 802.1Q tag follows, and the real EtherType moves into Dot1q.L3type"
+      },
+      "description": "EtherType 0x8100 inserts a VLAN tag before the network-layer header.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: a complete Ethernet + 802.1Q + IPv4 + UDP frame dissected with Wireshark reporting vlan.id back correctly for IDs 0, 1, 100 and 4095.",
+      "note": "Line 154 adds 4 to len_before_l3, which the padding arithmetic at line 177 then depends on."
+    },
+    {
+      "when": {
+        "field": "Layer_2.L3type",
+        "in": [
+          34525,
+          2054,
+          34887,
+          35020
+        ]
+      },
+      "then": {
+        "field": "Layer_3.version",
+        "forbidden": true,
+        "detail": "the template declares Layer_3 only for EtherTypes 0x0800 and 0x8100, so these leave L3 undeclared"
+      },
+      "description": "Every EtherType other than IPv4 and VLAN leaves the template with no Layer_3 struct.",
+      "source": "template",
+      "confidence": "high",
+      "measured_gate": "Measured: IPv6, ARP, MPLS and LLDP EtherTypes all dissected correctly in Wireshark - as IPv6, ARP, MPLS and LLDP - so they are perfectly legal frames that this template simply cannot represent.",
+      "note": "TEMPLATE LIMITATION. Line 158 then references L3.ip_hdr_len, L3.total_length and L3.L4proto unconditionally, which is an undefined reference. A generator using this template must emit 0x0800 or 0x8100."
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 6
+      },
+      "then": {
+        "field": "Layer_4.tcp_hdr_len",
+        "tier": "A",
+        "type": "calculated_value",
+        "detail": "a TCP header follows: ports, sequence, acknowledgement, the data-offset byte, then Crap holding flags, window, checksum, urgent pointer and options"
+      },
+      "description": "Protocol 6 commits the datagram to carrying a TCP segment.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: protocol 6 dissected as TCP in all three readers, and the flags byte inside Crap produced nine visibly different dissections.",
+      "note": "Line 162 then computes the application data length as total_length - ip_hdr_len*4 - tcp_hdr_len*4, so all three fields must agree."
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 17
+      },
+      "then": {
+        "field": "Layer_4.udp_hdr_len",
+        "tier": "A",
+        "type": "calculated_value",
+        "detail": "an eight-byte UDP header follows, and udp_hdr_len must be 8 plus the payload length"
+      },
+      "description": "Protocol 17 commits the datagram to carrying a UDP datagram.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: protocol 17 dissected as UDP in all three readers, and the destination port then selected DNS, BOOTP, NTP or Syslog.",
+      "note": "Line 170 computes the application data length as udp_hdr_len - 8, so the field must be at least 8."
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "in": [
+          1,
+          2,
+          47,
+          50,
+          89,
+          132,
+          255
+        ]
+      },
+      "then": {
+        "field": "Layer_4.packet",
+        "required": true,
+        "detail": "the template reads the transport payload as opaque bytes sized total_length - ip_hdr_len*4"
+      },
+      "description": "Any protocol other than TCP and UDP takes the template's generic transport branch.",
+      "source": "template",
+      "confidence": "high",
+      "measured_gate": "Measured: protocols 1, 2, 47, 50, 89, 132 and 255 were handed to Wireshark's ICMP, IGMP, GRE, ESP, OSPF, SCTP and raw-IPv4 dissectors respectively. This branch is the only route to any of them.",
+      "note": "Line 112's else is the only way to reach the twenty-odd non-TCP, non-UDP transport dissectors, so it is worth taking often."
+    },
+    {
+      "when": {
+        "field": "Layer_4.DstPort",
+        "equals": 53
+      },
+      "then": {
+        "field": "PCAPRECORD.AppData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "the payload must be a DNS message per RFC 1035: a 12-byte header then that many question and resource records"
+      },
+      "description": "Port 53 routes the payload to Wireshark's DNS dissector.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: a real DNS query dissected fully with dns.qry.name read back as 'example.com' and no malformed flag; the same length of random bytes gave 'Unknown operation (7)' and _ws.malformed set to '[Malformed Packet: DNS]'."
+    },
+    {
+      "when": {
+        "field": "Layer_4.DstPort",
+        "equals": 80
+      },
+      "then": {
+        "field": "PCAPRECORD.AppData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "the payload must be an HTTP message per RFC 9110: a request line, CRLF-terminated headers, then a bare CRLF"
+      },
+      "description": "Port 80 routes the payload to Wireshark's HTTP dissector.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: 'GET / HTTP/1.1' plus a Host header dissected as protocol HTTP with info 'GET / HTTP/1.1'; the same length of random bytes fell back to protocol TCP and the HTTP dissector never ran at all."
+    },
+    {
+      "when": {
+        "field": "Layer_4.DstPort",
+        "in": [
+          67,
+          68,
+          123,
+          161,
+          514,
+          1900,
+          5353
+        ]
+      },
+      "then": {
+        "field": "PCAPRECORD.AppData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "the payload must match the protocol registered for that port - DHCP, NTP, SNMP, Syslog, SSDP or mDNS"
+      },
+      "description": "Every well-known port registers a different dissector, each with its own payload format.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: destination ports 67, 123 and 514 selected the BOOTP, NTP and Syslog dissectors respectively, while 1900 fell through to plain UDP.",
+      "note": "The port is the free choice and the payload is derived from it; a generator that fixes the payload and picks a port to suit it collapses the dissector space."
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 6
+      },
+      "then": {
+        "field": "Layer_3.total_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "detail": "total_length must equal ip_hdr_len*4 + tcp_hdr_len*4 + the application data length, or line 162 computes a negative array size"
+      },
+      "description": "The IP total length must account for the IP header, the TCP header and the payload exactly.",
+      "source": "template",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "Layer_3.L4proto",
+        "equals": 17
+      },
+      "then": {
+        "field": "Layer_3.total_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "detail": "total_length must equal ip_hdr_len*4 + udp_hdr_len"
+      },
+      "description": "The IP total length must account for the IP header and the whole UDP datagram.",
+      "source": "template",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "Layer_4.tcp_hdr_len",
+        "min": 5
+      },
+      "then": {
+        "field": "Layer_4.Crap",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "Crap is tcp_hdr_len*4 - 13 bytes: seven fixed bytes of flags, window, checksum and urgent pointer, then tcp_hdr_len*4 - 20 bytes of options"
+      },
+      "description": "The TCP option list length is derived from the data offset, never the reverse.",
+      "source": "template",
+      "confidence": "high",
+      "measured_gate": "Measured: data offsets 5, 6, 8 and 15 all dissected; an offset of 4 produced 'bogus TCP header length' in Wireshark's info column because Crap is then too short to hold the mandatory fields."
+    },
+    {
+      "when": {
+        "field": "PCAPRECORD.incl_len",
+        "present": true
+      },
+      "then": {
+        "field": "PCAPRECORD.padding",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "padding exists only when len_before_l3 + Layer_3.total_length is less than incl_len, and its length is exactly the difference"
+      },
+      "description": "The trailing padding length is whatever the record length leaves over after the IP datagram.",
+      "source": "template",
+      "confidence": "high",
+      "note": "Lines 176-177. len_before_l3 is 0 for LINKTYPE_RAW, 14 for plain Ethernet and 18 when a Dot1q tag is present."
+    },
+    {
+      "when": {
+        "field": "PCAPHEADER.version_major",
+        "equals": 2
+      },
+      "then": {
+        "field": "PCAPHEADER.version_minor",
+        "tier": "A",
+        "type": "enumerated_values",
+        "valid_values": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "description": "libpcap accepts minor versions 0 through 4 under major version 2 and refuses anything higher.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: minors 0 through 4 decoded in all three readers; 5 and 10 were refused by tcpdump with 'unsupported pcap version' while Wireshark accepted them."
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "PCAPHEADER",
+      "detail": "The 24-byte file header must be the first thing in the file, beginning with the magic number.",
+      "description": "A libpcap capture opens with a fixed-size global header that declares the byte order, the timestamp resolution and the link type for every record that follows.",
+      "source": "both",
+      "measured_gate": "Measured: every reader refuses a file whose first four bytes are not one of the four PCAP magics. The template stops at line 27 with a Warning and return 1.",
+      "generation_note": "Emit the 24-byte header as a fixed head element; every field in it is known before any record is written, so nothing needs backfilling."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "PCAPRECORD",
+      "detail": "Zero or more packet records follow the header, each a 16-byte record header plus incl_len bytes of frame data.",
+      "description": "The records are the capture's payload and its only repeating structure.",
+      "source": "both",
+      "measured_gate": "Measured: a header-only file with zero records decoded in all three readers, and a three-record file decoded all three records.",
+      "output_budget": "Budget the record region to about 4 MB, as a running total the generator increments by 16 plus incl_len for each record and checks before starting another. When the budget is exhausted, stop adding records - the file simply ends. No frame length, payload length, snaplen or dimension field is capped to reach this figure; the generator stops adding records instead. A zero-record file is legal and worth emitting.",
+      "generation_note": "Emit the header, then a repeated array of records bounded by output_budget. The file must end exactly at a record boundary."
+    },
+    {
+      "rule": "contiguous",
+      "subject": "PCAPRECORD",
+      "detail": "Records follow one another with no separator, padding or alignment between them; each begins immediately after the previous record's incl_len bytes.",
+      "description": "PCAP has no inter-record framing at all - the chain is held together entirely by incl_len.",
+      "source": "both",
+      "measured_gate": "Measured: an incl_len wrong by one byte in either direction made all three readers refuse the whole file, because the next record header is then read from the wrong offset.",
+      "generation_note": "Compute each record's incl_len from the frame bytes actually emitted; there is nothing to resynchronise on if one is wrong."
+    },
+    {
+      "rule": "last_element",
+      "subject": "PCAPRECORD",
+      "detail": "The file must end exactly at the end of the last record's frame data.",
+      "description": "There is no trailer, index or terminator, so any trailing byte is read as the start of another record header.",
+      "source": "both",
+      "measured_gate": "Measured: three stray bytes appended after the last record made all three readers report a truncated dump file.",
+      "generation_note": "Emit nothing after the final record's data. This is stricter than most formats, which tolerate trailing junk."
+    },
+    {
+      "rule": "ordering",
+      "subject": "PCAPHEADER before every PCAPRECORD",
+      "detail": "The global header precedes all records and there is no other ordering freedom.",
+      "description": "PCAP is a flat header-then-records layout with no nesting.",
+      "source": "both",
+      "generation_note": "Lay the file out in order; nothing in the header depends on the records, so no backfilling is needed."
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "the Layer_3 instantiation branches",
+      "detail": "A record instantiates Layer_3 either directly, for LINKTYPE_RAW, or after a Layer_2 header, or after a Layer_2 header plus a Dot1q tag - never more than one.",
+      "description": "The link type and the EtherType together choose one of three framings.",
+      "source": "template",
+      "generation_note": "Choose PCAPHEADER.network first, then Layer_2.L3type, then emit the matching prefix before the IP header."
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "the Layer_4 branches",
+      "detail": "Exactly one of the UDP branch, the TCP branch and the generic packet branch applies per record, selected by Layer_3.L4proto.",
+      "description": "The transport header layout is a three-way branch on the IP protocol number.",
+      "source": "template",
+      "generation_note": "Choose L4proto first, then emit the matching header. Lines 95, 102 and 112."
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "the AppData branches",
+      "detail": "A record carries either the TCP application data or the UDP application data, never both, and neither when the computed length is zero.",
+      "description": "The application payload is declared in two mutually exclusive arms guarded by a positive length test.",
+      "source": "template",
+      "measured_gate": "Measured: a SYN segment with no payload dissected normally in all three readers, so the zero-length case is common and must remain reachable.",
+      "generation_note": "Lines 160-175. Emit no AppData field at all when the computed length is zero."
+    },
+    {
+      "rule": "requires",
+      "subject": "PCAPRECORD.incl_len and the frame bytes",
+      "detail": "incl_len must equal the exact byte count of everything the record emits after its 16-byte header.",
+      "description": "It is the only thing that says where one record ends and the next begins.",
+      "source": "both",
+      "measured_gate": "Measured: one byte short, one byte long, zero, and a value past the end of file all made all three readers refuse the entire file.",
+      "generation_note": "Emit the frame, count the bytes, then write incl_len. Never choose it independently."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "a Layer_2 header when PCAPHEADER.network is 101",
+      "detail": "LINKTYPE_RAW records begin directly with the network-layer header.",
+      "description": "A raw-IP capture has no link layer to describe.",
+      "source": "template",
+      "measured_gate": "Measured: network=101 with a bare IPv4 frame decoded as Raw IP in all three readers; the same link type with an Ethernet header prepended also decoded, but the first 14 bytes were then dissected as a malformed IP header.",
+      "generation_note": "Line 144. Set len_before_l3 to 0 in this branch, which changes the padding arithmetic."
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "PCAPHEADER.network",
+      "why": "The link-layer type, and by a wide margin the highest-leverage field in the format: one 32-bit value selects which of Wireshark's eighty-plus link-layer dissectors runs on every record in the file. Measured, eighteen values produced eighteen different encapsulations. Pinning it to 1 would delete every one of the others.",
+      "decoder_paths": "Selects the entire dissector chain: Ethernet, Token Ring, SLIP, PPP, FDDI, PPPoE, ATM, Raw IP, Cisco HDLC, 802.11, radiotap, Linux cooked v1 and v2 and the rest each have their own header parser, and several then hand off to completely different network-layer dissectors.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.incl_len",
+        "Layer_2.L3type",
+        "Layer_2.DstMac"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "Layer_2.L3type",
+      "why": "The EtherType. Measured, eight values produced eight different dissections including IPv6, ARP, MPLS and LLDP, and a value of 1500 or below is not an EtherType at all but an IEEE 802.3 length that routes to the LLC dissector. Narrowing it to 0x0800 would collapse the whole network layer to one protocol.",
+      "decoder_paths": "Selects the network-layer dissector; values at or below 1500 divert to the 802.3/LLC path instead, which is a different parser entirely.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Layer_3.version",
+        "Dot1q.id"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "Layer_3.L4proto",
+      "why": "The IP protocol number. Measured, nine values produced nine different transport dissectors - TCP, UDP, ICMP, IGMP, GRE, ESP, OSPF, SCTP and a fallback to bare IPv4. The template models only two of them, so the generic branch is the only route to the other twenty-odd and must be taken often.",
+      "decoder_paths": "Selects the transport dissector and, in the template, which of the three Layer_4 branches is emitted.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Layer_4.tcp_hdr_len",
+        "Layer_4.udp_hdr_len",
+        "Layer_4.packet",
+        "PCAPRECORD.AppData"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "Layer_4.DstPort",
+      "why": "The destination port, which is how Wireshark chooses an application dissector. Measured to select DNS, BOOTP, NTP, Syslog, HTTP and plain UDP across six values. THE PORT IS THE FREE CHOICE AND THE PAYLOAD IS DERIVED FROM IT - fixing the port so that one precomputed payload fits is the GIF mistake in its PCAP form, and it would collapse the entire application layer.",
+      "decoder_paths": "Keys Wireshark's dissector table; each well-known port opens a different protocol dissector, and an unregistered port leaves the payload as raw transport data.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.AppData",
+        "Layer_4.SrcPort"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "Layer_4.SrcPort",
+      "why": "The source port, which participates in the same dissector lookup as the destination port and which also keys the conversation tracking that pairs request with response.",
+      "decoder_paths": "Half of the four-tuple a dissector uses to group packets into conversations and streams; varying it is what makes a capture contain more than one flow.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.AppData",
+        "Layer_4.DstPort"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "Layer_3.total_length",
+      "why": "The IP datagram length. It is computed from the payload rather than chosen, but how large a payload a packet carries is free, and this field is what records it. Three arrays in the template are sized from it, so it is load-bearing in both directions.",
+      "decoder_paths": "Bounds the transport payload and, through the padding arithmetic, decides whether a link-layer trailer exists at all.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.AppData",
+        "Layer_4.packet",
+        "PCAPRECORD.padding",
+        "PCAPRECORD.incl_len"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a length that must be exact, but the payload SIZE it records is a completely free choice and must stay so. 'unconstrained' here means do not fix the packet size, not that the field may disagree with it."
+    },
+    {
+      "field": "Layer_3.ip_hdr_len",
+      "why": "The IP header length in words. Its legal span is 5 to 15, and values above 5 mean IP options are present - an entirely separate parser in every dissector that a 20-byte header never reaches.",
+      "decoder_paths": "Values above 5 open the IP options parser; the value also shifts where the transport header begins, which every downstream dissector depends on.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.AppData",
+        "Layer_3.total_length"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a length that must match the header emitted; which of the eleven legal values is used is free, and the option-carrying ones are the valuable ones."
+    },
+    {
+      "field": "Layer_4.tcp_hdr_len",
+      "why": "The TCP data offset. Its legal span is 5 to 15, and values above 5 mean TCP options are present, which is where SACK, window scaling, timestamps and MSS live - each its own parser.",
+      "decoder_paths": "Values above 5 open the TCP option-list parser; the value also sets the length of the Crap array and shifts the application payload boundary.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Layer_4.Crap",
+        "PCAPRECORD.AppData"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a length that must match the header emitted; the option-carrying values are free choices and are the productive ones."
+    },
+    {
+      "field": "Layer_4.udp_hdr_len",
+      "why": "The UDP datagram length. Computed from the payload, but the payload size it records is free, and it is the only thing bounding the application data in a UDP packet.",
+      "decoder_paths": "Bounds the application payload handed to the port's dissector; a value of exactly 8 means an empty datagram, which is a distinct path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.AppData"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a length that must be exact; the payload size it records is free."
+    },
+    {
+      "field": "PCAPRECORD.incl_len",
+      "why": "The captured frame length, and the strictest field in the format. Its VALUE must be exact, but how large a frame each record carries is entirely free, and that is what this field records. It is also the field a size-conscious author would reach for first.",
+      "decoder_paths": "Bounds the frame read and locates the next record; the value also feeds the padding arithmetic that decides whether a link-layer trailer exists.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.AppData",
+        "Layer_3.total_length",
+        "PCAPRECORD.padding"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A with no tolerance at all - one byte either way refuses the whole file - but the frame size it records is a free choice that must not be fixed."
+    },
+    {
+      "field": "PCAPRECORD.orig_len",
+      "why": "The on-the-wire length. Measured completely unvalidated, which makes it free in the strongest sense: setting it larger than incl_len marks a sliced capture and reaches a reader's truncation labelling that an equal value never does.",
+      "decoder_paths": "A value greater than incl_len makes a dissector treat the packet as sliced and annotate every layer as possibly incomplete, which is a distinct analysis path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.incl_len"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "PCAPHEADER.snaplen",
+      "why": "The declared capture length. Measured completely ignored - even values smaller than the records actually present - and it is the field most likely to be mistaken for a bound on the records. It is not one.",
+      "decoder_paths": "Advisory only in every reader tested; a snaplen smaller than the records present is what a truncated capture declares and is legal to emit.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.incl_len"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "PCAPRECORD.ts_sec",
+      "why": "The capture timestamp. Varying it across records is what produces the inter-packet deltas, the out-of-order detection and the time-reference handling that a constant timestamp never reaches.",
+      "decoder_paths": "Drives the delta computation between consecutive records; timestamps that go backwards reach a reader's negative-delta handling.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.ts_usec"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "Layer_3.Flags",
+      "why": "The IPv4 flags and fragment offset. Setting More Fragments or a non-zero offset puts a dissector into its fragment-reassembly engine, which is a large body of code that no unfragmented packet reaches.",
+      "decoder_paths": "The More Fragments bit and the offset together open the IP reassembly path; the Don't Fragment bit is labelled separately and the reserved bit reaches the RFC 3514 'evil bit' annotation.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Layer_3.Identification",
+        "Layer_3.total_length"
+      ],
+      "tier": "B"
+    },
+    {
+      "field": "Layer_4.Crap",
+      "why": "The TCP flags, window, checksum, urgent pointer and options. Measured, the flags byte alone produced nine different dissections and drives the whole conversation state machine.",
+      "decoder_paths": "SYN and SYN+ACK open a stream and enable relative sequence numbers; FIN and RST close it; PSH marks a segment for reassembly; a bare ACK is analysed for duplicates and window updates.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Layer_4.tcp_hdr_len",
+        "PCAPRECORD.AppData"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A for the seven-byte layout, but the flags byte spans all 256 combinations freely and the window, checksum and urgent pointer are free 16-bit numbers inside it."
+    },
+    {
+      "field": "Dot1q.id",
+      "why": "The VLAN identifier. Measured free across its whole 12-bit span, and the two reserved endpoints - 0 for priority-tagged and 4095 reserved - are labelled differently from an ordinary ID.",
+      "decoder_paths": "Keys the VLAN conversation tracking; 0 and 4095 reach the reserved-value labelling that a middle value never does.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Dot1q.L3type",
+        "PCAPRECORD.incl_len"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "PCAPRECORD.padding",
+      "why": "Link-layer trailer bytes. Measured never inspected, so this is the one region of a record where arbitrary bytes can vary without touching anything a dissector reasons about - which is why the file size budget lives on the record structure rule and not on any length field.",
+      "decoder_paths": "Skipped by every dissector, so it contributes no branches of its own, but its presence is what makes incl_len exceed the IP total length and reach the trailer-detection path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.incl_len",
+        "Layer_3.total_length"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "MACaddr.Byte",
+      "why": "The Ethernet addresses. Measured free, and the structurally interesting patterns - broadcast, the multicast bit, the locally-administered bit - are each labelled differently and are reachable only while the field stays free.",
+      "decoder_paths": "A dissector classifies each address as unicast, multicast, broadcast or locally administered before anything else, and each classification is a different label and a different conversation key.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Layer_2.L3type"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "IPv4addr.Byte",
+      "why": "The IP addresses. Free, and the special ranges - 0.0.0.0, 255.255.255.255, 127/8, 224/4 multicast and the RFC 1918 private blocks - each drive different labelling and different conversation handling.",
+      "decoder_paths": "Address classification runs before any transport dissection, and broadcast, multicast, loopback and private addresses each take a different path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "PCAPRECORD.AppData"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "Layer_3.HdrChecksum",
+      "why": "The IPv4 header checksum. Measured NOT validated by default in any reader, which is why it is Tier C - but a generator that emits a correct one reaches the validation path of a reader configured to check, and one that emits a wrong one reaches the error path. Both must stay reachable.",
+      "decoder_paths": "Unverified by default; when checksum validation is enabled a correct value takes the good path and a wrong one produces an expert-info error, which are two different branches.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "Layer_3.ip_hdr_len"
+      ],
+      "tier": "C"
+    }
+  ]
+}

@@ -42,6 +42,8 @@ genhtml (`brew install lcov` on macOS). Not all recipes need all of these;
 --list shows which format needs what implicitly via its build system.
 """
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import platform
@@ -120,6 +122,42 @@ def run(cmd, cwd=None, check=True, env=None):
 
 
 _LCOV_IGNORE_ERRORS_CACHE: dict = {}
+
+
+@contextlib.contextmanager
+def build_lock(stem: str):
+    """Serialize template builds that write the same files in build/.
+
+    One ./build.sh or ./build_new.sh invocation writes *all* of
+    build/<stem>.o, build/fuzzer-<stem>.o, build/<stem>-fuzzer,
+    build/<stem>.so and <stem>.cpp. Two scripts can legitimately want the
+    same stem at the same time - target_coverage{,_llm}.py guards on
+    build/<stem>-fuzzer while target_coverage_afl_ffmut{,_llm}.py guards on
+    build/<stem>.so, so each can decide "not built yet" while the other is
+    mid-build, and both then run g++ against the same output paths. The
+    result is a truncated or half-linked binary that fails much later and
+    very confusingly (an AFL forkserver handshake failure, typically). It
+    also bites when only one of the two artifacts was deleted - `--fresh`
+    removes the .so but leaves -fuzzer, so AFL rebuilds and overwrites a
+    -fuzzer that a generation run may be executing (ETXTBSY on Linux).
+
+    Callers must re-check whether the artifact exists *inside* the lock:
+    by the time the lock is acquired, the process that held it has usually
+    just built the very thing we were about to build.
+    """
+    lock_dir = REPO_ROOT / "build"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f".build-lock-{stem}"
+    with open(lock_path, "w") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log(f"waiting for another process to finish building '{stem}' ...")
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def run_lcov(cmd: List[str], categories: List[str], cache_key: str, check: bool = False) -> subprocess.CompletedProcess:
@@ -725,8 +763,12 @@ def run_format(fmt: str, args) -> dict:
             f"end-to-end. It may fail - if it does, please report the exact error.")
 
     if not fuzzer_bin.exists():
-        log(f"{fuzzer_bin.name} not found, building it via ./build.sh {fmt}")
-        run(["./build.sh", fmt], cwd=REPO_ROOT)
+        # Locked on the shared artifact stem: ./build.sh writes build/<fmt>.so
+        # too, which target_coverage_afl_ffmut.py guards on independently.
+        with build_lock(fmt):
+            if not fuzzer_bin.exists():
+                log(f"{fuzzer_bin.name} not found, building it via ./build.sh {fmt}")
+                run(["./build.sh", fmt], cwd=REPO_ROOT)
     if not fuzzer_bin.exists():
         raise RuntimeError(f"{fuzzer_bin} still missing after ./build.sh {fmt} - build it manually first")
 

@@ -1,0 +1,1266 @@
+{
+  "meta": {
+    "format": "bmp",
+    "source_template": "templates_originals/bmp-orig.bt",
+    "model": "claude-opus-5",
+    "strategy": "tiered",
+    "spec_reference": "Microsoft Windows Bitmap (BMP/DIB) file format, as specified by the Win32 BITMAPFILEHEADER, BITMAPINFOHEADER, BITMAPV4HEADER and BITMAPV5HEADER structures and the BI_RGB / BI_RLE8 / BI_RLE4 / BI_BITFIELDS / BI_JPEG / BI_PNG compression constants (MSDN wingdi.h); the RLE8 and RLE4 encodings as documented in the Windows GDI 'Bitmap Compression' reference; the OS/2 BITMAPCOREHEADER for the 12-byte variant. Decoder behaviour was measured against three independent implementations: ImageMagick 7.1.1 coders/bmp.c, Pillow 11.1.0 BmpImagePlugin, and ffmpeg's libavcodec bmp decoder.",
+    "schema_extensions": [
+      {
+        "name": "measured_gate",
+        "where": "constraints.<field>.measured_gate, dependencies[].measured_gate, structure[].measured_gate",
+        "why": "An object of {decoders, observed, conclusion} recording what real decoders did when a field was set wrongly. BMP has no checksums and almost no self-describing structure, so nearly every tier here had to be settled by experiment rather than by reading the specification. Three decoders were used rather than one because they disagree in ways that change the answer: biPlanes is enforced by ImageMagick and ffmpeg but ignored by Pillow, bfSize is enforced only by ImageMagick, and BI_JPEG/BI_PNG are supported only by ImageMagick. Recording all three keeps the tier honest for whichever one the coverage harness uses."
+      },
+      {
+        "name": "context_codecs",
+        "where": "constraints.rleData.context_codecs",
+        "why": "One field, five completely different payload contracts. rleData carries an RLE8 stream, an RLE4 stream, colour masks plus raw rows, a complete JPEG file or a complete PNG file depending on biCompression. A single codec string would have to name one and silently drop four, so each context carries its own codec, its required bit depths and its measured status."
+      },
+      {
+        "name": "toplevel_field_convention",
+        "where": "the keys aColors, rleData and lines",
+        "why": "Three of this template's declarations are at file scope rather than inside a typedef'd struct (lines 97/99, 108/110 and 137), so there is no enclosing typename to qualify them with. They are keyed by their bare declared name. Every other key uses the documented STRUCT.field form, and the BITMAPLINE.* keys use the name of the inline struct declared at line 121."
+      },
+      {
+        "name": "template_parse_requirement",
+        "where": "constraints.BITMAPINFOHEADER.biSize.template_parse_requirement, and dependency notes marked TEMPLATE GAP or TEMPLATE BUG",
+        "why": "Separates rules that come from this template's incompleteness from rules that come from the BMP format. Four matter here and all four change what a generator may emit: biSize must be 40 because BITMAPINFOHEADER is a fixed struct; there is no pixel declaration for 16 bits per pixel; the palette is emitted for every depth that is not 24 or 32, including 16; and the biClrUsed = 0 fallback shifts 1 << biBitCount, which overflows above 32 and requests 65536 entries at 16. None of these is a BMP rule and labelling them prevents them being mistaken for one."
+      },
+      {
+        "name": "cross_check",
+        "where": "constraints.<field>.cross_check",
+        "why": "A second evidence line, filled verbatim from the template like the first. Used where a field is declared in one place and constrained in another - bfType declared at line 25 and guarded at line 86, biBitCount declared at line 37 and branched on at line 93, rleData and aColors each having two mutually exclusive declarations."
+      },
+      {
+        "name": "tier on a diversity axis",
+        "where": "diversity_axes[].tier and diversity_axes[].tier_note",
+        "why": "Three of the ten axes are not Tier C. biBitCount and biCompression are Tier B - their legal sets are finite and measured - and biSizeImage and bfOffBits are Tier A size fields. Listing them as axes is not a contradiction: 'must_remain_unconstrained' there means emit the whole legal set, or vary the free part of an otherwise computed value, rather than always emitting the same convenient member. The tier_note says which reading applies."
+      },
+      {
+        "name": "unnamed_payload_substructure",
+        "where": "constraints.rleData.notes and the BI_BITFIELDS dependency",
+        "why": "The BI_BITFIELDS colour masks are a real, mandatory part of the file layout but have no field anywhere in the .bt - the template routes BI_BITFIELDS into the rleData branch, so the masks can only be emitted as that array's first twelve bytes. Rather than invent a field name, which the hard rules forbid, their contract is recorded inside the payload entry that physically carries them."
+      }
+    ],
+    "structure_note": "A BMP file is four fixed sections in a fixed order with no chunk framing, no markers, no terminators and no checksums: a 14-byte file header carrying the 'BM' signature and two offsets, a 40-byte information header carrying the geometry and the compression method, an optional colour table, and the pixel data. Because there is no framing, every size and offset field is load-bearing and there is nothing to resynchronise on if one is wrong. This format DOES have payload well-formedness, in one place: the single opaque rleData array, whose required contents are chosen by biCompression and range from a Microsoft RLE state machine to an entire embedded JPEG or PNG file.",
+    "no_checksum_note": "BMP has no checksum, CRC or Adler field of any kind, and no magic number beyond the two-byte 'BM' signature. Checklist items 1 and 2 were re-scanned specifically for these: the only Tier A fixed_values in the format are bfType, biSize and biPlanes, and the only calculated_values are bfSize, bfOffBits and biSizeImage. The absence is a property of the format, not an omission here.",
+    "decoder_disagreement_note": "The three decoders measured do not agree on what a valid BMP is, and the differences are large enough to change tier assignments. ImageMagick is the strictest: it alone enforces bfSize against the real file length, validates palette indices, and rejects top-down compressed images - but it alone also accepts the 'CI' signature and implements BI_JPEG and BI_PNG. ffmpeg enforces biPlanes and bfOffBits but not bfSize. Pillow is the most permissive on headers - it ignores bfSize, bfOffBits and biPlanes entirely - yet the strictest on the RLE payload, where it is the only one that reliably rejects a malformed stream. A field was assigned Tier A when any of the three refuses the file, since a generator cannot know which decoder the harness will use.",
+    "measurement_note": "Every gate marked measured_gate was established empirically. A parameterised BMP builder was written, a 102-byte 4x4 24-bit baseline was verified to decode in all three decoders, and roughly 110 single-field mutations were run across signature, header size, dimensions, depth, planes, compression, both size fields, both offsets, palette count, palette contents, pixel indices and row padding. The RLE8, RLE4, BI_BITFIELDS, BI_JPEG and BI_PNG constructions documented in rleData were each built and verified end to end.",
+    "uncovered_field_names": {
+      "why": "Two of the 29 distinct declarations in the .bt carry no constraints entry, and both are struct instances rather than fields. They are named here so the coverage audit is complete rather than merely silent.",
+      "struct_instances": {
+        "names": [
+          "bmfh [82]",
+          "bmih [83]"
+        ],
+        "reason": "The two top-level instances of BITMAPFILEHEADER and BITMAPINFOHEADER. Every one of their sixteen members is keyed individually under BITMAPFILEHEADER.* and BITMAPINFOHEADER.*, so the instances themselves carry no constraint of their own. Their mandatory presence and their order are recorded in the structure section instead."
+      },
+      "note": "Every other declaration in the template is keyed, including the three file-scope arrays aColors, rleData and lines, the four members of the inline BITMAPLINE struct, and both colour structs. The two inline struct types RGBQUAD and RGBTRIPLE share three field names between them; they are distinguished by their key prefixes, and aColors, rleData and BITMAPLINE.colors each have two mutually exclusive declarations recorded through cross_check."
+    },
+    "tier_counts": {
+      "A": 7,
+      "B": 2,
+      "C": 21
+    }
+  },
+  "constraints": {
+    "BITMAPFILEHEADER.bfType": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The file's magic number and the only value the template itself guards: line 86 compares it against \"BM\" and, on a mismatch, issues a Warning and returns -1, abandoning the parse. Measured, all three decoders refuse anything else - ffmpeg with 'bad magic number', ImageMagick and Pillow with a header error - before reading a further byte.",
+      "description": "Two-character bitmap signature; the ASCII letters 'BM' identifying a single-image Windows bitmap.",
+      "field_type": "CHAR[2]",
+      "source": "both",
+      "evidence": {
+        "line": 25,
+        "snippet": "CHAR    bfType[2];"
+      },
+      "confidence": "high",
+      "required_value": "BM",
+      "required_value_hex": "0x424D",
+      "required_value_ascii": "BM",
+      "cross_check": {
+        "line": 86,
+        "snippet": "if( bmfh.bfType != \"BM\" )"
+      },
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1 identify, Pillow 11.1.0, ffmpeg bmp decoder",
+        "observed": "'BM' decodes in all three. 'BA', 'CP', 'IC', 'PT', 'MB', 'XX' and 0x0000 are refused by all three ('bad magic number' in ffmpeg, 'improper image header' in ImageMagick, 'cannot identify image file' in Pillow). 'CI' is an interesting outlier: ImageMagick accepts it as the OS/2 colour-icon variant, but Pillow and ffmpeg still refuse it.",
+        "conclusion": "'BM' is the only signature that works everywhere and the only one this template accepts. The OS/2 multi-image variants BA, CI, CP, IC and PT exist in the format family but each carries a different header layout that this template does not model, so they are not alternatives here."
+      },
+      "notes": "The template's file-mask comment at line 10 records the ID bytes as 42 4D, which is 'BM'."
+    },
+    "BITMAPFILEHEADER.bfSize": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The declared total size of the file. The template uses it arithmetically at line 110 to size the compressed payload as bfSize - FTell(), so a wrong value directly produces a wrong-length array or, if it is smaller than the current offset, a negative one. Measured, ImageMagick rejects a file whose length disagrees by even one byte with 'length and filesize do not match'.",
+      "description": "Total size of the BMP file in bytes, counting the 14-byte file header itself.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 26,
+        "snippet": "DWORD   bfSize;"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the entire file",
+      "covers": "everything from the first byte of bfType to the last byte of the file: the 14-byte BITMAPFILEHEADER, the 40-byte BITMAPINFOHEADER, any BI_BITFIELDS masks, the aColors palette, any gap before bfOffBits, and all of rleData or all of lines[]",
+      "includes_self": true,
+      "endianness": "little",
+      "depends_on": [
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biSizeImage",
+        "BITMAPFILEHEADER.bfOffBits"
+      ],
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "Correct value: all three decode. bfSize one byte short => ImageMagick 'length and filesize do not match'; one byte long => ImageMagick 'improper image header'; 0 or 10 => ImageMagick fails and ffmpeg reports 'file size is less than header size'; 999999 => ImageMagick fails, ffmpeg tolerates. Pillow ignores the field entirely in every case.",
+        "conclusion": "Exact agreement with the real file length is required for ImageMagick, and a too-small value additionally breaks ffmpeg. Compute it; never guess it."
+      },
+      "notes": "This is also the fallback length source for the compressed payload: when biSizeImage is 0 the template sizes rleData as bfSize - FTell() (line 110), which makes bfSize the only thing standing between the generator and a negative array length. A generator must therefore emit bfSize last, after every other size is known."
+    },
+    "BITMAPFILEHEADER.bfReserved1": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Reserved and unchecked. The BMP specification says it should be zero, but measured, all three decoders ignore it completely - 0, 1 and 0xFFFF all decode identically - so pinning it to zero would remove the only bytes in the file header that can legitimately carry an unexpected pattern.",
+      "description": "First reserved word of the file header; nominally zero.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 27,
+        "snippet": "WORD    bfReserved1;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "Values 0, 1 and 65535 in both reserved words: all three decoders produced the same image.",
+        "conclusion": "Completely ignored. In some OS/2 icon variants these two words carry hotspot coordinates, which is why they exist at all."
+      }
+    },
+    "BITMAPFILEHEADER.bfReserved2": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The second reserved word, with exactly the same measured standing as bfReserved1.",
+      "description": "Second reserved word of the file header; nominally zero.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 28,
+        "snippet": "WORD    bfReserved2;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "BITMAPFILEHEADER.bfOffBits": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "The byte offset at which the pixel data starts. Every decoder seeks to it rather than assuming the data follows the palette, so a wrong value makes the decoder read pixels from the wrong place. Measured, a value of 0 or one that points back into the header is refused outright by ImageMagick and by ffmpeg with 'invalid header size'.",
+      "description": "Offset in bytes from the beginning of the file to the first byte of pixel data.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 29,
+        "snippet": "DWORD   bfOffBits;"
+      },
+      "confidence": "high",
+      "algorithm": "14 + biSize + (BI_BITFIELDS mask bytes, if any) + 4 * (number of aColors entries), plus any deliberate gap",
+      "covers": "the BITMAPFILEHEADER, the BITMAPINFOHEADER, any colour masks and the whole palette - everything before the pixel data",
+      "includes_self": true,
+      "endianness": "little",
+      "depends_on": [
+        "BITMAPINFOHEADER.biSize",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biCompression"
+      ],
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "54 (the exact end of a 40-byte header with no palette): all three decode. 0 and 14 (pointing into the header): ImageMagick 'improper image header', ffmpeg 'invalid header size'. 70 (a 16-byte gap between the palette and the pixels): all three decode normally. 999999 (past the end of file): all three still reported the image. Pillow ignores the field.",
+        "conclusion": "The value must be at least 14 + biSize + palette bytes. A GAP IS LEGAL and is worth emitting: it is the only way to put unreferenced bytes between the palette and the pixels, and every decoder handles it by seeking. TEMPLATE LIMITATION: the template has no gap concept - it places the pixel data immediately after the palette - so a generator using this template must set bfOffBits to exactly the end of the palette."
+      },
+      "notes": "Because the template reads the palette and then the pixel data contiguously, bfOffBits is not used by the template's own parse at all; it is a pure output obligation, derived from the layout the template produces."
+    },
+    "BITMAPINFOHEADER.biSize": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The header-variant selector. Every decoder reads this value and then consumes exactly that many header bytes before looking for the masks and the palette. This template declares a fixed 40-byte BITMAPINFOHEADER and never uses biSize to size anything, so any other value makes the decoder consume a different number of bytes than the file actually contains. Measured: claiming 52 or 108 while emitting 40 bytes fails in ffmpeg with 'invalid header size' and in ImageMagick.",
+      "description": "Size of the bitmap information header in bytes, which also identifies which header variant follows.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 33,
+        "snippet": "DWORD   biSize;"
+      },
+      "confidence": "high",
+      "required_value": 40,
+      "required_value_hex": "0x00000028",
+      "required_value_ascii": "\\x28\\x00\\x00\\x00",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "With a header whose real length matches the declared value: 40 decodes in all three; 52 decodes in ImageMagick and Pillow but ffmpeg reports 'Not yet implemented'; 56, 64, 108 (BITMAPV4HEADER) and 124 (BITMAPV5HEADER) decode in all three; a correctly built 12-byte BITMAPCOREHEADER decodes in all three. Values 0, 16, 39, 41 and 200 are refused everywhere. With this template's fixed 40 emitted bytes but a larger declared value: biSize=108 fails in all three, biSize=52 fails in ImageMagick and ffmpeg.",
+        "conclusion": "The FORMAT has a rich set of legal header sizes - 12, 40, 52, 56, 64, 108 and 124 - and several were measured to work. THIS TEMPLATE can express only 40, because BITMAPINFOHEADER is a fixed eleven-field struct and biSize is declared but never used. Pinning it to 40 is therefore a statement about the template, not about the format, and it is recorded here so the rewrite step knows that widening it requires adding real header bytes, not just changing this number."
+      },
+      "template_parse_requirement": "biSize is declared at line 33 and never read again. The struct that contains it is a fixed 40-byte layout, and the top-level parse goes straight from bmih to the palette at line 97 with no seek. So the only self-consistent value this template can emit is 40. Emitting a BITMAPCOREHEADER (12), a BITMAPV4HEADER (108) or a BITMAPV5HEADER (124) - all of which real decoders handle and which reach distinct parsing code, including colour-space and gamma handling in the V4/V5 paths - requires changing the struct, not this field.",
+      "notes": "Legal values in the format and what they select: 12 = BITMAPCOREHEADER (OS/2 1.x, WORD dimensions and an RGBTRIPLE palette), 40 = BITMAPINFOHEADER, 52 = BITMAPV2INFOHEADER (adds RGB masks), 56 = BITMAPV3INFOHEADER (adds an alpha mask), 64 = OS/2 2.x BITMAPCOREHEADER2, 108 = BITMAPV4HEADER (adds colour space and gamma), 124 = BITMAPV5HEADER (adds ICC profile fields)."
+    },
+    "BITMAPINFOHEADER.biWidth": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The image width in pixels. It multiplies into bytesPerLine at line 115, sizes colorIndex and colors at lines 127, 129 and 131, and therefore decides the size of the entire pixel payload. This is precisely the field whose GIF counterpart was narrowed to powers of two and cost 1.7 points: the payload must be computed from the width, and the width must never be shrunk so that a fixed payload fits.",
+      "description": "Width of the bitmap in pixels.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 34,
+        "snippet": "LONG    biWidth;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "Widths 1, 3, 4, 7, 9, 17, 33, 255, 300 and 640 all decoded cleanly in all three decoders with a derived payload. Width 0 is refused by all three ('negative or zero image size' in ImageMagick). A negative width is refused by all three (ffmpeg reports 'Picture size 4294967292x4 is invalid', showing it reads the field as unsigned).",
+        "conclusion": "Free across the positive span. NO MINIMUM AND NO MAXIMUM IS RECORDED and none may be added: a width of 0 is a legitimate file that exercises each decoder's rejection path, and the large end is where the row-padding and row-stride code actually differs. Total file size is bounded by the output_budget on the pixel-data structure rules, never by capping this field."
+      },
+      "notes": "The row stride derived from it is ((biWidth * biBitCount + 31) / 32) * 4, which the template computes in two steps as bytesPerLine at line 115 plus padding at lines 116-118. Verified against all three decoders at 1, 4 and 8 bits per pixel for widths 1, 3, 7, 9 and 33, where the padding is 3, 3, 3, 3 and 4 bytes respectively."
+    },
+    "BITMAPINFOHEADER.biHeight": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The image height, and uniquely in this format a SIGNED one: line 137 takes its absolute value to count rows, and the sign selects the row order. It sizes the lines[] array and so the whole pixel payload. Constraining it would cost both the payload-size diversity and the bottom-up/top-down split, which is a real branch in every decoder.",
+      "description": "Height of the bitmap in pixels; a positive value means the rows are stored bottom-up, a negative value means top-down.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 35,
+        "snippet": "LONG    biHeight;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "Heights 1, 3, 4, 5, 7, 19, 480 all decoded in all three. Height 0 is refused by all three. NEGATIVE HEIGHTS DECODE CORRECTLY in all three: -4 and -1 both produced the expected image, flipped. Combining a negative height with RLE compression is refused by ImageMagick ('compression not supported') but accepted by Pillow and ffmpeg.",
+        "conclusion": "Free across both signs. The template's own history records this: version 2.3, line 12, 'Allow negative heights', and line 137 implements it with a conditional negation. Emitting both signs is worth doing - top-down and bottom-up are different row-ordering loops in every decoder - and the one combination to avoid is negative height with a compressed payload, recorded as a dependency."
+      },
+      "notes": "Line 137 reads (bmih.biHeight < 0) ? -bmih.biHeight : bmih.biHeight, so the row count is the magnitude and the sign is pure metadata as far as the template's array sizing is concerned."
+    },
+    "BITMAPINFOHEADER.biPlanes": {
+      "tier": "A",
+      "type": "fixed_value",
+      "tier_rationale": "The number of colour planes, which the specification fixes at 1. This looks like an ignorable legacy field and is not: measured, ImageMagick refuses any other value with 'static planes value not equal to 1' and ffmpeg refuses it with 'invalid BMP header', both before decoding anything.",
+      "description": "Number of colour planes for the target device; always 1 in every BMP variant.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 36,
+        "snippet": "WORD    biPlanes;"
+      },
+      "confidence": "high",
+      "required_value": 1,
+      "required_value_hex": "0x0001",
+      "required_value_ascii": "\\x01\\x00",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "biPlanes = 1: all three decode. biPlanes = 0, 2, 3, 255 and 65535: ImageMagick fails with 'static planes value not equal to 1' and ffmpeg with 'invalid BMP header' in every case, while Pillow decodes regardless.",
+        "conclusion": "A genuine front gate in two of three decoders, and exactly the sort of field a reader would dismiss as vestigial. Two decoders out of three refusing the file is enough for Tier A."
+      }
+    },
+    "BITMAPINFOHEADER.biBitCount": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "A finite enumeration of pixel depths. Each value selects a different branch of the template's own pixel declaration at lines 124-131, a different palette rule, a different row stride and a different unpacking loop in every decoder. Values outside the set are rejected rather than mis-decoded, but the set is genuinely finite and every member reaches real code, so this is the full legal set and not a single pinned value.",
+      "description": "Number of bits per pixel, which selects the pixel storage format and whether a palette is required.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 37,
+        "snippet": "WORD    biBitCount;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        4,
+        8,
+        16,
+        24,
+        32
+      ],
+      "value_names": [
+        "implied_by_embedded_codec",
+        "monochrome",
+        "2bpp_windows_ce",
+        "16_colour",
+        "256_colour",
+        "16bit_rgb555_or_bitfields",
+        "24bit_rgb",
+        "32bit_rgb_or_bitfields"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        1,
+        4,
+        8,
+        24,
+        32
+      ],
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "1, 4, 8, 16, 24 and 32 decode in all three. 2 is refused by all three (ImageMagick 'unsupported bits per pixel', ffmpeg 'depth 2 not supported') even though it is legal in Windows CE bitmaps. 0 is refused unless the compression is BI_JPEG or BI_PNG, where the depth comes from the embedded stream. 3, 12, 48 and 255 are refused by all three. 64 is accepted only by ImageMagick.",
+        "conclusion": "Six values are universally supported, 0 is conditionally valid and 2 is legal-but-rejected. All eight stay in the set: 2 and 0 each reach a distinct rejection or special-case path, and deleting them would remove exactly the awkward values this tier exists to preserve."
+      },
+      "cross_check": {
+        "line": 93,
+        "snippet": "if( (bmih.biBitCount != 24) && (bmih.biBitCount != 32) )"
+      },
+      "notes": "TEMPLATE GAP, important for generation: lines 124-131 declare pixel data only for biBitCount < 8, == 8, == 24 and == 32. A value of 16 - which every decoder supports and which is common in the wild - falls through all four branches, so the template emits NO pixel data at all for a 16bpp image, only the padding bytes. Measured, a 16bpp BMP with zero pixel bytes is refused by all three decoders. The same gap applies to the 2bpp case. A second consequence of line 93: because the palette is emitted for every depth that is not 24 or 32, a 16bpp image gets a palette it should not have, and with biClrUsed = 0 the else branch at line 99 asks for 1 << 16 = 65536 RGBQUAD entries, a 262144-byte palette. Both behaviours are template artefacts, not format rules."
+    },
+    "BITMAPINFOHEADER.biCompression": {
+      "tier": "B",
+      "type": "enumerated_values",
+      "tier_rationale": "The compression method, and the field that decides what the opaque rleData array must contain - raw rows, an RLE stream, colour masks, or an entire embedded JPEG or PNG file. The set is finite and each member selects a completely different payload contract, so every value belongs in it; narrowing to 0 would delete the RLE decoder, the bitfield decoder and the embedded-codec decoders from the reachable set in one stroke.",
+      "description": "Compression method applied to the pixel data, which also determines the layout of everything after the header.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 38,
+        "snippet": "DWORD   biCompression;"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        11,
+        12,
+        13
+      ],
+      "value_names": [
+        "BI_RGB",
+        "BI_RLE8",
+        "BI_RLE4",
+        "BI_BITFIELDS",
+        "BI_JPEG",
+        "BI_PNG",
+        "BI_ALPHABITFIELDS",
+        "BI_CMYK",
+        "BI_CMYKRLE8",
+        "BI_CMYKRLE4"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "BI_RGB (0) decodes everywhere. BI_RLE8 (1) and BI_RLE4 (2) decode in all three when the payload is a real RLE stream. BI_BITFIELDS (3) decodes in all three at 16 and 32 bits per pixel when three mask DWORDs precede the pixels, and is refused at 24bpp. BI_JPEG (4) and BI_PNG (5) decode IN IMAGEMAGICK when the payload is a real JPEG or PNG file - with random bytes ImageMagick reports 'Not a JPEG file: starts with...' - while Pillow and ffmpeg refuse both codes outright. BI_ALPHABITFIELDS (6), BI_CMYK (11), BI_CMYKRLE8 (12) and BI_CMYKRLE4 (13) are refused by all three, as are undefined values such as 7 and 99.",
+        "conclusion": "Four values reach real decoding in more than one decoder, two more reach a whole embedded codec in ImageMagick, and the remainder reach distinct rejection paths. All ten are recorded. The payload contract for each is in the rleData entry's context_codecs."
+      },
+      "cross_check": {
+        "line": 104,
+        "snippet": "if( bmih.biCompression > 0 )"
+      },
+      "notes": "TEMPLATE CONSEQUENCE: line 104 tests biCompression > 0, so every non-zero value - including BI_BITFIELDS, which is not a compression at all - routes to the rleData branch rather than to the row-structured lines[] branch. That is what makes BI_BITFIELDS expressible: at 32bpp no palette is emitted, so rleData begins exactly where the three mask DWORDs belong, and the masks followed by raw rows is a valid file. At 16bpp the template would insert a palette first and the layout breaks."
+    },
+    "BITMAPINFOHEADER.biSizeImage": {
+      "tier": "A",
+      "type": "calculated_value",
+      "tier_rationale": "A size field, and the primary length source for the compressed payload: line 107 tests it and line 108 sizes rleData from it directly. A wrong non-zero value produces a wrong-length payload array, which truncates the stream or runs it into whatever follows.",
+      "description": "Size in bytes of the pixel data; may be zero when the compression is BI_RGB, in which case the size is implied by the dimensions.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 39,
+        "snippet": "DWORD   biSizeImage;"
+      },
+      "confidence": "high",
+      "algorithm": "for a compressed payload, the exact byte count of the encoded stream; for BI_RGB, either 0 or ((biWidth * biBitCount + 31) / 32) * 4 * abs(biHeight)",
+      "covers": "all the bytes of rleData, or all the bytes of lines[] including every row's padBytes",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPFILEHEADER.bfSize"
+      ],
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "With BI_RGB the field is ignored: 0, the correct 48, a far-too-small 1 and a far-too-large 999999 all produced the same image in all three decoders. With BI_RLE8 both 0 and the exact payload length decoded correctly, because the template then falls back to bfSize - FTell() and bfSize was correct.",
+        "conclusion": "Not a decoder gate for BI_RGB - the decoders derive the size from the dimensions - but a hard TEMPLATE requirement whenever biCompression is non-zero, because it is what sizes the payload array. Recorded as Tier A because checklist item 2 covers every size field and because the compressed case genuinely depends on it."
+      },
+      "notes": "The two branches at lines 107-110 mean a generator has two correct options for a compressed image: set biSizeImage to the exact encoded length, or set it to 0 and let bfSize - FTell() supply the length. Both were measured to work. The second option makes bfSize load-bearing and is the more fragile of the two."
+    },
+    "BITMAPINFOHEADER.biXPelsPerMeter": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A recorded physical resolution that feeds no allocation and no loop. Measured free across the entire signed span including 0 and negative values; pinning it to a 'standard' 2835 would make every generated file report the same resolution and would never be tested.",
+      "description": "Horizontal resolution of the target device in pixels per metre.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 40,
+        "snippet": "LONG    biXPelsPerMeter;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "Values 0, -1, 2835 and 2147483647 all decoded identically in all three decoders.",
+        "conclusion": "Entirely free, including negative values, which the signed LONG declaration permits and no decoder rejects."
+      }
+    },
+    "BITMAPINFOHEADER.biYPelsPerMeter": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "As for biXPelsPerMeter: recorded metadata, measured free across the whole signed span.",
+      "description": "Vertical resolution of the target device in pixels per metre.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 41,
+        "snippet": "LONG    biYPelsPerMeter;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "BITMAPINFOHEADER.biClrUsed": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The palette entry count, and the bound of the aColors array at line 97. It is a count, so it stays free: how many palette entries a file carries is exactly the kind of variation that changes how much of a decoder's colormap code runs. Its one real restriction - that it cannot exceed 2^biBitCount - comes from another field's value and is recorded as a dependency, which is a format rule, not an arbitrary narrowing.",
+      "description": "Number of colour table entries actually used; zero means the full 2^biBitCount entries are present.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 42,
+        "snippet": "DWORD   biClrUsed;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "At 8 bits per pixel: 16, 255 and 256 all decoded in all three. 257 and 1000 are refused by ImageMagick ('unrecognized number of colors') and Pillow ('invalid palette size'). 1 and 2 decoded in Pillow and ffmpeg but ImageMagick reported 'invalid colormap index' because the pixel bytes referenced entries the short palette does not have. At 24 bits per pixel a non-zero value is harmless: the palette is simply present and skipped via bfOffBits.",
+        "conclusion": "Two distinct rules, both recorded as dependencies rather than as bounds here: the count may not exceed 2^biBitCount, and every pixel index must be less than the count. The second is the derive-the-payload-from-the-value rule in its purest form - the indices are computed from the palette size, not the palette shrunk to fit the indices."
+      },
+      "cross_check": {
+        "line": 96,
+        "snippet": "if( bmih.biClrUsed > 0 )"
+      },
+      "notes": "The zero case is special and is the one most files use: line 96 tests biClrUsed > 0 and line 99 falls back to 1 << biBitCount entries. That fallback is safe for depths 1, 4 and 8 (2, 16 and 256 entries) but for 16bpp it asks for 65536 entries and for 32bpp it would ask for 2^32 - the latter is unreachable because line 93 excludes 24 and 32, but 16 is reachable and is a template bug."
+    },
+    "BITMAPINFOHEADER.biClrImportant": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "An advisory count of the palette entries that matter for rendering. It sizes nothing, bounds nothing, and measured, no decoder validates it - a value far larger than the palette decoded normally.",
+      "description": "Number of colour table entries considered important for displaying the bitmap; zero means all of them.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 43,
+        "snippet": "DWORD   biClrImportant;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "biClrImportant = 9999 on an image with a 256-entry palette: all three decoders produced the image normally.",
+        "conclusion": "Advisory only and completely unvalidated, even when it exceeds biClrUsed."
+      }
+    },
+    "RGBQUAD.rgbBlue": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A palette colour component. Every byte value is a legal colour and no decoder validates one; constraining it would make every generated palette look the same while changing nothing the decoder tests.",
+      "description": "Blue component of a colour table entry.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 47,
+        "snippet": "UBYTE   rgbBlue;"
+      },
+      "confidence": "high"
+    },
+    "RGBQUAD.rgbGreen": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "As for rgbBlue: a free colour component.",
+      "description": "Green component of a colour table entry.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 48,
+        "snippet": "UBYTE   rgbGreen;"
+      },
+      "confidence": "high"
+    },
+    "RGBQUAD.rgbRed": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "As for rgbBlue: a free colour component.",
+      "description": "Red component of a colour table entry.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 49,
+        "snippet": "UBYTE   rgbRed;"
+      },
+      "confidence": "high"
+    },
+    "RGBQUAD.rgbReserved": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The specification says this byte must be zero, which makes it the classic candidate for a Tier A fixed_value. Measurement says otherwise: all three decoders ignore it entirely, so it fails the Tier A test, and pinning it to zero would remove the only unchecked byte in the palette - the one place a palette entry can carry an unexpected pattern.",
+      "description": "Fourth byte of a colour table entry; reserved and nominally zero, used as alpha by some writers.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 50,
+        "snippet": "UBYTE   rgbReserved;"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "A 256-entry palette with rgbReserved set to 0x00, 0x7F and 0xFF in every entry: all three decoders produced identical images.",
+        "conclusion": "Completely unvalidated despite the specification's 'must be zero'. A documented case where the spec is stricter than every implementation."
+      },
+      "notes": "The template's own read function at line 66 formats this byte as the leading pair of the colour string, which is how an alpha-carrying palette is usually displayed."
+    },
+    "RGBTRIPLE.rgbBlue": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "A pixel colour component in a 24-bit image. Every value is legal; this is the bulk of the pixel payload and the single largest source of byte-level variety in an uncompressed BMP.",
+      "description": "Blue component of a 24-bit pixel.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 54,
+        "snippet": "UBYTE   rgbBlue;"
+      },
+      "confidence": "high",
+      "notes": "Note the channel order: BMP stores pixels as blue, green, red, which is the reverse of the name RGBTRIPLE and a common source of decoder bugs worth exercising."
+    },
+    "RGBTRIPLE.rgbGreen": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "As for RGBTRIPLE.rgbBlue: a free pixel component.",
+      "description": "Green component of a 24-bit pixel.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 55,
+        "snippet": "UBYTE   rgbGreen;"
+      },
+      "confidence": "high"
+    },
+    "RGBTRIPLE.rgbRed": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "As for RGBTRIPLE.rgbBlue: a free pixel component.",
+      "description": "Red component of a 24-bit pixel.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 56,
+        "snippet": "UBYTE   rgbRed;"
+      },
+      "confidence": "high"
+    },
+    "aColors": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The colour table array. Its length is a count, and how many palette entries a file carries is exactly the sort of variation that changes how much of a decoder's colormap setup and index-validation code runs. Its contents are free colours. Both the count and the contents stay unconstrained; the one real rule, the ceiling at 2^biBitCount, is a dependency on another field.",
+      "description": "Colour table: an array of RGBQUAD entries present whenever biBitCount is neither 24 nor 32.",
+      "field_type": "RGBQUAD[biClrUsed] | RGBQUAD[1 << biBitCount]",
+      "source": "both",
+      "evidence": {
+        "line": 97,
+        "snippet": "RGBQUAD aColors[ bmih.biClrUsed ];"
+      },
+      "confidence": "high",
+      "cross_check": {
+        "line": 99,
+        "snippet": "RGBQUAD aColors[ 1 << bmih.biBitCount ];"
+      },
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "At 8bpp, palettes of 16, 255 and 256 entries all decoded in all three decoders. A palette whose entry count is smaller than the largest pixel index used is refused by ImageMagick with 'invalid colormap index'. At 24bpp a palette is simply skipped via bfOffBits and is harmless.",
+        "conclusion": "The array length is free within the 2^biBitCount ceiling, and the pixel indices are derived from it. Emitting short palettes is valuable - it is the only way to reach a decoder's index-validation code - provided the indices are computed to match."
+      },
+      "notes": "TEMPLATE BEHAVIOUR worth knowing: line 93 emits this array for EVERY depth that is not 24 or 32, which includes 16 and 0. For 16bpp with biClrUsed = 0 the else branch at line 99 requests 1 << 16 = 65536 entries, a 262144-byte palette that the BMP specification does not call for; for biBitCount values above 32 the shift is undefined behaviour in C. A generator should set biClrUsed explicitly rather than relying on the zero fallback whenever biBitCount is not 1, 4 or 8."
+    },
+    "rleData": {
+      "tier": "A",
+      "type": "payload_wellformedness",
+      "tier_rationale": "The template declares this as a bare UBYTE array sized by a length field and says nothing whatever about its contents - exactly the situation checklist item 3 exists for. Its bytes must be a run-length encoded stream, a set of colour masks, or a complete embedded JPEG or PNG file, depending on biCompression. Measured, random bytes are refused outright by Pillow under BI_RLE8 and by ImageMagick under BI_JPEG, before any pixel is produced.",
+      "description": "Pixel data for every compression method other than BI_RGB; its required contents are selected by biCompression.",
+      "field_type": "UBYTE[biSizeImage] | UBYTE[bfSize - FTell()]",
+      "source": "both",
+      "evidence": {
+        "line": 108,
+        "snippet": "UBYTE rleData[ bmih.biSizeImage ];"
+      },
+      "confidence": "high",
+      "codec": "selected by BITMAPINFOHEADER.biCompression - see context_codecs; the primary case is Microsoft RLE8/RLE4 (Windows BMP, MSDN BITMAPINFOHEADER)",
+      "context_codecs": [
+        {
+          "when": "BITMAPINFOHEADER.biCompression == 1 (BI_RLE8)",
+          "requires_bitcount": [
+            8
+          ],
+          "codec": "Microsoft RLE8 run-length encoding",
+          "note": "Two-byte pairs with four escape sequences; see must_produce. Verified in all three decoders."
+        },
+        {
+          "when": "BITMAPINFOHEADER.biCompression == 2 (BI_RLE4)",
+          "requires_bitcount": [
+            4
+          ],
+          "codec": "Microsoft RLE4 run-length encoding, two 4-bit indices per data byte",
+          "note": "Verified in all three decoders at 4x4, 17x5 and 64x8."
+        },
+        {
+          "when": "BITMAPINFOHEADER.biCompression == 3 (BI_BITFIELDS)",
+          "requires_bitcount": [
+            16,
+            32
+          ],
+          "codec": "three little-endian DWORD colour masks followed by raw uncompressed rows",
+          "note": "Expressible from this template only at biBitCount 32, because line 93 inserts a palette at 16. All-zero masks are refused by ffmpeg and Pillow."
+        },
+        {
+          "when": "BITMAPINFOHEADER.biCompression == 4 (BI_JPEG)",
+          "requires_bitcount": [
+            0,
+            24
+          ],
+          "codec": "a complete JPEG file (ITU-T T.81 / JFIF)",
+          "note": "Decoded by ImageMagick through its BMP coder; refused outright by Pillow and ffmpeg. Random bytes give libjpeg's 'Not a JPEG file' error."
+        },
+        {
+          "when": "BITMAPINFOHEADER.biCompression == 5 (BI_PNG)",
+          "requires_bitcount": [
+            0,
+            24
+          ],
+          "codec": "a complete PNG file (RFC 2083 / W3C PNG)",
+          "note": "Decoded by ImageMagick through its BMP coder; refused outright by Pillow and ffmpeg."
+        },
+        {
+          "when": "BITMAPINFOHEADER.biCompression in (6, 11, 12, 13)",
+          "requires_bitcount": [],
+          "codec": "BI_ALPHABITFIELDS (four masks), BI_CMYK, BI_CMYKRLE8, BI_CMYKRLE4",
+          "note": "Refused by all three decoders tested; recorded for completeness because the values are legal in the format and reach each decoder's rejection path."
+        }
+      ],
+      "must_produce": "What must be inside rleData depends entirely on biCompression. The five contracts are given in context_codecs; this is the common frame.\\n\\nBI_RLE8 (biCompression = 1, requires biBitCount = 8). A sequence of two-byte pairs:\\n  ENCODED MODE   [n][index]   with n from 1 to 255: emit n pixels of that palette index.\\n  ABSOLUTE MODE  [00][n]      with n from 3 to 255, followed by n literal index bytes, then one\\n                              pad byte if n is odd, so the run always occupies an even number of bytes.\\n  END OF LINE    [00][00]     the current row is finished; any remaining pixels in it are untouched.\\n  END OF BITMAP  [00][01]     the image is finished.\\n  DELTA          [00][02][dx][dy]  advance the current position by dx pixels and dy rows.\\nThe runs for one row must account for biWidth pixels before the end-of-line marker, and there must be abs(biHeight) rows.\\n\\nBI_RLE4 (biCompression = 2, requires biBitCount = 4). The same five escapes, but in encoded mode the single byte after the count holds TWO 4-bit indices and the run alternates between the high and the low nibble. In absolute mode the n literal indices are packed two per byte, ceil(n/2) bytes, padded to an even byte count.\\n\\nBI_BITFIELDS (biCompression = 3, requires biBitCount = 16 or 32). Not a compression at all: three little-endian DWORD colour masks - red, green, blue in that order - followed immediately by the raw pixel rows in the same bottom-up, 4-byte-padded layout BI_RGB uses. The masks must be non-zero and should not overlap.\\n\\nBI_JPEG (biCompression = 4) and BI_PNG (biCompression = 5). The bytes are a COMPLETE, self-contained JPEG or PNG file - its own signature, headers and terminator - carrying the image. biBitCount is conventionally 0 because the depth comes from the embedded stream.",
+      "decoder_gate": "Measured against ImageMagick 7.1.1, Pillow 11.1.0 and ffmpeg's bmp decoder.\\n  RANDOM BYTES under BI_RLE8: Pillow refuses every time with 'not enough image data', because the stream ends before the declared row count has been filled. ImageMagick's behaviour depends on where the garbage happens to terminate - a 4x4 image whose payload was 16 bytes of raw pixel data failed with 'unable to runlength decode image', while five different 40-byte random payloads all happened to satisfy it. ffmpeg tolerated all of them. So the gate is real but decoder-dependent, and it is Pillow that enforces it strictly.\\n  MISSING END-OF-LINE markers under BI_RLE8: Pillow fails with 'not enough image data'; ImageMagick and ffmpeg recover. Missing the final end-of-bitmap pair is tolerated by all three.\\n  RANDOM BYTES under BI_JPEG: ImageMagick aborts with 'Not a JPEG file: starts with...', which is libjpeg's own front gate reached through the BMP coder - nothing is decoded at all.\\n  ALL-ZERO MASKS under BI_BITFIELDS: ffmpeg refuses with 'Unknown bitfields 0 0 0' and Pillow with 'Unsupported BMP bitfields layout'; ImageMagick tolerates them.\\n  A CORRECT stream, by contrast, decoded in all three decoders at every size tested.",
+      "generation_strategy": "The simplest correct construction for each contract. All of these were built and verified.\\n\\nBI_RLE8, the recommended default - the BMP analogue of a deflate stored block:\\n  for each of the abs(biHeight) rows:\\n      let n = biWidth\\n      while n > 0:  emit [min(n,255)][any index < palette entry count];  n -= min(n,255)\\n      emit 00 00                     (end of line)\\n  emit 00 01                         (end of bitmap)\\n  Worked example, 4x4: 04 07  00 00  04 0E  00 00  04 15  00 00  04 1C  00 00  00 01\\n  - 18 bytes. Verified to decode in all three decoders. Sizes verified: 1x1, 4x4, 7x3, 17x19, 255x2 and\\n    300x2, the last two exercising the 255-pixel run split.\\n\\nBI_RLE8 absolute mode, worth emitting for variety because it reaches a different branch:\\n  per row: 00 [biWidth] followed by biWidth literal index bytes, then a pad byte if biWidth is odd,\\n           then 00 00.  End with 00 01.  Verified at 4x4 and 17x5.\\n\\nBI_RLE4: identical to the BI_RLE8 encoded-mode loop but the index byte packs two nibbles, e.g. 0x12 for\\n  alternating indices 1 and 2.  Worked example, 4x4: 04 12 00 00 (x4) then 00 01.  Verified at 4x4,\\n  17x5 and 64x8.\\n\\nBI_BITFIELDS at 32bpp - the only depth at which this template can express it, because line 93 emits no\\n  palette at 32bpp and so rleData starts exactly where the masks belong:\\n  00 00 FF 00   red mask   0x00FF0000\\n  00 FF 00 00   green mask 0x0000FF00\\n  FF 00 00 00   blue mask  0x000000FF\\n  followed by abs(biHeight) rows of biWidth 4-byte pixels.  Verified; RGB565 and RGB555 at 16bpp were\\n  also verified as file layouts, though the template cannot emit them because it inserts a palette.\\n\\nBI_JPEG / BI_PNG: emit a complete JPEG or PNG file. The minimal JPEG from the sibling JPEG extraction\\n  (176 bytes) and a minimal PNG both work; verified with a 286-byte JPEG and a 312-byte PNG, both of\\n  which ImageMagick decoded through the BMP coder.\\n\\nIn every case set biSizeImage to the exact byte count produced, and set bfSize afterwards from the real\\nfile length. The payload is computed from biWidth, biHeight and biBitCount - never the reverse.",
+      "derives_from": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biClrUsed"
+      ],
+      "content_is_free": true,
+      "endianness": "little",
+      "cross_check": {
+        "line": 110,
+        "snippet": "UBYTE rleData[ bmfh.bfSize - FTell() ];"
+      },
+      "notes": "THE CENTRAL RULE FOR THIS FORMAT: the run lengths, the row count and the mask-plus-rows layout are all computed from biWidth, biHeight and biBitCount. None of those three may be narrowed so that a precomputed payload fits - that is the mistake that cost 1.7 points on GIF, and BMP poses it in the same shape, because the RLE stream's length is a direct function of the dimensions. All three appear in diversity_axes.\\nUNNAMED SUB-STRUCTURE: the BI_BITFIELDS colour masks have no field of their own anywhere in the .bt - they can only be emitted as the first twelve bytes of this array - so their contract is recorded here rather than being dropped for lack of a name."
+    },
+    "BITMAPLINE.imageData": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "One row of sub-byte packed palette indices for a 1, 2 or 4 bit image. The bytes themselves are free - every bit pattern is a legal set of indices - and its length is fully determined by biWidth and biBitCount. Its one real obligation, that an index must exist in the palette, comes from another field's value and is recorded as a dependency.",
+      "description": "Packed pixel indices for one row when biBitCount is less than 8, most significant bits first.",
+      "field_type": "UBYTE[bytesPerLine]",
+      "source": "both",
+      "evidence": {
+        "line": 125,
+        "snippet": "UBYTE     imageData[ bytesPerLine ];"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "1bpp and 4bpp rows of 0xA5 at widths 1, 3, 7, 9 and 33 all decoded in all three decoders, with row strides of 4, 4, 4, 4 and 8 bytes respectively.",
+        "conclusion": "Free. The array length is bytesPerLine = (biWidth * biBitCount + 7) / 8, computed at line 115, and any trailing bits in the final byte are ignored by every decoder."
+      },
+      "notes": "The template covers biBitCount < 8, which is 1, 2 and 4 - but 2 is refused by all three decoders, so in practice this branch serves 1bpp and 4bpp. The padding to a 4-byte boundary is a separate field, padBytes."
+    },
+    "BITMAPLINE.colorIndex": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "One row of 8-bit palette indices. The values are free in themselves, and this is where the bulk of a palettised image's byte variety lives. The one restriction - that an index must be smaller than the number of palette entries - is a relationship with biClrUsed and is recorded as a dependency, not as a bound here.",
+      "description": "One row of palette indices for an 8-bit-per-pixel image, one byte per pixel.",
+      "field_type": "UBYTE[biWidth]",
+      "source": "both",
+      "evidence": {
+        "line": 127,
+        "snippet": "UBYTE     colorIndex[ bmih.biWidth ];"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "With a 256-entry palette, index 255 decoded everywhere. With a 16-entry palette, index 15 decoded everywhere but index 200 was refused by ImageMagick with 'invalid colormap index' while Pillow and ffmpeg tolerated it. With a 4-entry palette the same split appeared at index 99.",
+        "conclusion": "The indices must be derived from the palette size. This is the derive-the-payload-from-the-value rule at its smallest scale: compute the index range from biClrUsed, do not shrink biClrUsed to cover a fixed set of indices."
+      },
+      "notes": "The array is sized biWidth, which equals bytesPerLine at 8 bits per pixel, so the padding computation at lines 115-118 is correct for this branch."
+    },
+    "BITMAPLINE.colors": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "One row of direct-colour pixels, as RGBTRIPLE at 24bpp or RGBQUAD at 32bpp. Every byte is a free colour component; this is the largest unconstrained payload in an uncompressed BMP and the natural place for byte-level variety.",
+      "description": "One row of true-colour pixels; the element type is RGBTRIPLE for a 24-bit image and RGBQUAD for a 32-bit one.",
+      "field_type": "RGBTRIPLE[biWidth] | RGBQUAD[biWidth]",
+      "source": "both",
+      "evidence": {
+        "line": 129,
+        "snippet": "RGBTRIPLE colors[ bmih.biWidth ];"
+      },
+      "confidence": "high",
+      "cross_check": {
+        "line": 131,
+        "snippet": "RGBQUAD   colors[ bmih.biWidth ];"
+      },
+      "notes": "Two declarations share this name, at line 129 for biBitCount == 24 and line 131 for biBitCount == 32; they are mutually exclusive branches of the same if/else chain. At 24bpp the row is 3*biWidth bytes and usually needs padding; at 32bpp it is 4*biWidth bytes and the padding is always zero. In a 32-bit BI_RGB image the fourth byte of each pixel is undefined and unvalidated - measured free - which makes it the one free byte per pixel in an otherwise fully-used row."
+    },
+    "BITMAPLINE.padBytes": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "Row padding whose values no decoder inspects. Measured: random padding bytes and zero padding bytes produce identical images in all three decoders. Pinning them to zero would remove the only unchecked bytes in the pixel area of an uncompressed image.",
+      "description": "Bytes appended to a pixel row so that each row starts on a 4-byte boundary.",
+      "field_type": "UBYTE[padding]",
+      "source": "both",
+      "evidence": {
+        "line": 135,
+        "snippet": "UBYTE padBytes[ padding ];"
+      },
+      "confidence": "high",
+      "measured_gate": {
+        "decoders": "ImageMagick 7.1.1, Pillow 11.1.0, ffmpeg",
+        "observed": "A 3x4 24-bit image with three random padding bytes per row, and the same image with zero padding bytes: all three decoders produced the same image in both cases.",
+        "conclusion": "Contents entirely free. Only the COUNT is fixed, by the formula at lines 115-118."
+      },
+      "notes": "The count is padding = 4 - (bytesPerLine % 4), reset to 0 when that yields 4 (lines 116-118), so a row occupies ((biWidth * biBitCount + 31) / 32) * 4 bytes in total. Verified against all three decoders at 1, 4, 8 and 24 bits per pixel across widths 1, 3, 7, 9 and 33. The field is emitted only when padding is non-zero (line 134), so a generator must reproduce that conditional exactly - at 32bpp, and at 24bpp when biWidth is a multiple of 4, no padding field exists at all."
+    },
+    "lines": {
+      "tier": "C",
+      "type": "unconstrained",
+      "tier_rationale": "The array of pixel rows, and the only repeating structure in an uncompressed BMP. Its element count is abs(biHeight), so it is the repeat-controlling field of the format; capping it would cap the image height, which is the diversity this extraction exists to protect. Total size is bounded by the output_budget on the pixel-data structure rule instead.",
+      "description": "The pixel rows of an uncompressed image, one BITMAPLINE per row, stored bottom-up unless biHeight is negative.",
+      "field_type": "struct BITMAPLINE[abs(biHeight)]",
+      "source": "both",
+      "evidence": {
+        "line": 137,
+        "snippet": "} lines[ (bmih.biHeight < 0) ? -bmih.biHeight : bmih.biHeight] <optimize=true>;"
+      },
+      "confidence": "high",
+      "notes": "The count expression at line 137 is (bmih.biHeight < 0) ? -bmih.biHeight : bmih.biHeight, which is how the template supports top-down bitmaps. Each element is bytesPerLine + padding bytes, so the array's total size is ((biWidth * biBitCount + 31) / 32) * 4 * abs(biHeight) - a product of three free fields, which is why the budget belongs on the structure rule and not on any of them."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 1
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "tier": "A",
+        "type": "fixed_value",
+        "required_value": 8
+      },
+      "description": "BI_RLE8 is defined only for 8-bit-per-pixel images.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: BI_RLE8 with a correct RLE stream at biBitCount 8 decodes in all three decoders. The RLE8 escape sequences are defined in terms of whole-byte indices, so no other depth can express them."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 2
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "tier": "A",
+        "type": "fixed_value",
+        "required_value": 4
+      },
+      "description": "BI_RLE4 is defined only for 4-bit-per-pixel images.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: BI_RLE4 with a correct nibble-packed stream at biBitCount 4 decodes in all three decoders at 4x4, 17x5 and 64x8."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 3
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "tier": "A",
+        "type": "enumerated_values",
+        "valid_values": [
+          16,
+          32
+        ],
+        "preferred_value": [
+          32
+        ]
+      },
+      "description": "BI_BITFIELDS applies only to 16- and 32-bit images, where the masks say how the bits map to colour channels.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: BITFIELDS at 16bpp with RGB565 or RGB555 masks and at 32bpp with RGB888 masks decodes in all three decoders. At 24bpp it is refused by ImageMagick ('unsupported bits per pixel') and Pillow ('Unsupported BMP bitfields layout'). Only 32bpp is expressible from this template - see the note on rleData - because line 93 inserts a palette at 16bpp and displaces the masks.",
+      "preferred_note": "Prefer 32 when generating from this template; 16 requires the palette emission at line 93 to be suppressed."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 3
+      },
+      "then": {
+        "field": "rleData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "the first twelve bytes of rleData must be three non-zero little-endian DWORD colour masks, red then green then blue, followed by the raw pixel rows"
+      },
+      "description": "The BI_BITFIELDS colour masks have no field of their own in this template and must be emitted as the leading bytes of the payload array.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: all-zero masks are refused by ffmpeg ('Unknown bitfields 0 0 0') and by Pillow ('Unsupported BMP bitfields layout'), though ImageMagick tolerates them. A BGR-ordered mask triple was refused by Pillow but accepted by ImageMagick and ffmpeg, so unusual channel orders are worth emitting and are not universally supported."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "in": [
+          4,
+          5
+        ]
+      },
+      "then": {
+        "field": "rleData",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "rleData must be a complete, self-contained JPEG file (for BI_JPEG) or PNG file (for BI_PNG), including its own signature and terminator"
+      },
+      "description": "BI_JPEG and BI_PNG do not compress the pixels themselves; they embed a whole image file in the payload.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: ImageMagick decoded a 286-byte JPEG under BI_JPEG and a 312-byte PNG under BI_PNG, reporting the correct dimensions in both cases. With random bytes under BI_JPEG it aborted with libjpeg's own 'Not a JPEG file: starts with...'. Pillow and ffmpeg refuse compression codes 4 and 5 outright, so this branch reaches ImageMagick only.",
+      "note": "biBitCount is conventionally 0 for these codes because the real depth comes from the embedded stream; measured, ImageMagick also accepts 24."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 0
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biSizeImage",
+        "tier": "C",
+        "type": "unconstrained"
+      },
+      "description": "With BI_RGB the pixel-data size is implied by the dimensions, so the declared size is advisory.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: with BI_RGB, biSizeImage values of 0, the correct 48, 1 and 999999 all produced the same image in all three decoders. The conventional value is 0."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "min": 1
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biSizeImage",
+        "tier": "A",
+        "type": "calculated_value",
+        "detail": "must be either the exact byte count of the encoded payload, or 0 so that the template falls back to bfSize - FTell()"
+      },
+      "description": "For any compressed payload the declared size is what sizes the array the template reads.",
+      "source": "template",
+      "confidence": "high",
+      "note": "Lines 107-110. Both options were measured to work; setting the exact length is the safer of the two because the fallback makes bfSize load-bearing and, if bfSize is smaller than the current offset, produces a negative array length."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "in": [
+          1,
+          2,
+          4,
+          8
+        ]
+      },
+      "then": {
+        "field": "aColors",
+        "required": true,
+        "detail": "a colour table must be present, with at most 2^biBitCount entries"
+      },
+      "description": "Palettised depths require a colour table; the table cannot have more entries than the depth can index.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured at 8bpp: 16, 255 and 256 entries all decode; 257 and 1000 are refused by ImageMagick ('unrecognized number of colors') and Pillow ('invalid palette size'). This is a real format rule tying a count to another field's value, which is why it lives here rather than as a bound on biClrUsed."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biClrUsed",
+        "min": 1
+      },
+      "then": {
+        "field": "BITMAPLINE.colorIndex",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "every pixel index must be strictly less than the number of palette entries actually present"
+      },
+      "description": "Pixel indices are derived from the palette size; the palette is never shrunk to fit a fixed set of indices.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: a 16-entry palette with pixel index 200, and a 4-entry palette with index 99, are both refused by ImageMagick with 'invalid colormap index', while Pillow and ffmpeg tolerate them. Indices within the palette decode everywhere.",
+      "note": "Applies equally to BITMAPLINE.imageData at 1, 2 and 4 bits per pixel, and to the index bytes inside an RLE8 or RLE4 stream."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biClrUsed",
+        "equals": 0
+      },
+      "then": {
+        "field": "aColors",
+        "tier": "C",
+        "type": "unconstrained",
+        "detail": "the template falls back to 1 << biBitCount entries (line 99), which is correct for depths 1, 4 and 8 but requests 65536 entries at 16bpp"
+      },
+      "description": "A zero colour count means the default full palette, which the template computes by shifting.",
+      "source": "template",
+      "confidence": "high",
+      "note": "TEMPLATE BUG. At biBitCount 16 the fallback asks for a 262144-byte palette the format does not define, and for biBitCount above 32 the shift is undefined. A generator should set biClrUsed explicitly whenever biBitCount is not 1, 4 or 8."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "in": [
+          24,
+          32
+        ]
+      },
+      "then": {
+        "field": "aColors",
+        "forbidden": true,
+        "detail": "the template emits no colour table at these depths (line 93), so bfOffBits must equal 14 + biSize"
+      },
+      "description": "True-colour images carry no palette in this template, which is what makes the BI_BITFIELDS masks land in the right place at 32bpp.",
+      "source": "template",
+      "confidence": "high",
+      "note": "The format itself permits an optional palette at 24 and 32 bpp as a rendering hint, and measured, all three decoders skip it harmlessly via bfOffBits - but this template cannot emit one."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biHeight",
+        "max": -1
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "tier": "A",
+        "type": "fixed_value",
+        "required_value": 0
+      },
+      "description": "A top-down bitmap (negative height) cannot be compressed.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: a correct RLE8 stream with biHeight = -4 is refused by ImageMagick with 'compression not supported', while Pillow and ffmpeg accept it. The BMP specification states that top-down bitmaps cannot be compressed, and ImageMagick enforces it.",
+      "note": "This is the one combination of two otherwise free choices that a generator should avoid; both fields remain unconstrained individually."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "equals": 16
+      },
+      "then": {
+        "field": "BITMAPLINE",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "detail": "the template declares no pixel field for this depth, so a 16bpp uncompressed image emits only padBytes and carries no pixel data at all"
+      },
+      "description": "The template's pixel declaration chain has no branch for 16 bits per pixel.",
+      "source": "template",
+      "confidence": "high",
+      "measured_gate": "Measured: a 16bpp BMP with zero pixel bytes is refused by all three decoders ('insufficient image data' in ImageMagick, 'image file is truncated' in Pillow, 'file size is less than header size' in ffmpeg). The same file with a correct 16bpp pixel array decodes in all three.",
+      "note": "TEMPLATE GAP at lines 124-131, which cover only biBitCount < 8, == 8, == 24 and == 32. A generator emitting 16bpp uncompressed images through this template produces files no decoder accepts; routing 16bpp through BI_BITFIELDS instead is the workable path."
+    },
+    {
+      "when": {
+        "field": "BITMAPFILEHEADER.bfType",
+        "equals": "BM"
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biSize",
+        "tier": "A",
+        "type": "fixed_value",
+        "required_value": 40
+      },
+      "description": "The number of header bytes actually emitted must equal the declared header size.",
+      "source": "both",
+      "confidence": "high",
+      "measured_gate": "Measured: declaring biSize = 52 or 108 while emitting the template's fixed 40-byte header fails in ffmpeg with 'invalid header size' and in ImageMagick. Correctly built headers of 12, 40, 52, 56, 64, 108 and 124 bytes all decode, so the constraint is agreement, not the value 40 - but 40 is the only size this template's fixed struct can produce."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 0
+      },
+      "then": {
+        "field": "BITMAPFILEHEADER.bfOffBits",
+        "tier": "A",
+        "type": "calculated_value",
+        "detail": "must equal 14 + biSize + 4 * (palette entries emitted), since the template writes the pixel rows immediately after the palette"
+      },
+      "description": "With no gap mechanism in the template, the pixel offset is fully determined by the header and palette sizes.",
+      "source": "template",
+      "confidence": "high",
+      "note": "The format permits a gap and all three decoders honour one - measured with a 16-byte gap - but this template cannot emit the filler bytes, so the offset must be exact."
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "BITMAPFILEHEADER",
+      "detail": "The 14-byte file header must be the first thing in the file, beginning with the two bytes 'BM'.",
+      "description": "A BMP file opens with a fixed-size file header whose signature is checked before anything else.",
+      "source": "both",
+      "measured_gate": "Measured: all three decoders refuse a file that does not begin with 0x42 0x4D. The template itself stops at line 86 with a Warning and return -1.",
+      "generation_note": "Emit BITMAPFILEHEADER as a fixed head element, but fill bfSize and bfOffBits last, once the rest of the file has been laid out and their values are known."
+    },
+    {
+      "rule": "required",
+      "subject": "BITMAPINFOHEADER",
+      "detail": "Exactly one 40-byte bitmap information header follows the file header, with no gap.",
+      "description": "The information header carries the geometry and the compression method and is mandatory.",
+      "source": "template",
+      "generation_note": "Emit it immediately after the file header. biSize must be 40 to match the fixed struct; see the dependency."
+    },
+    {
+      "rule": "ordering",
+      "subject": "BITMAPFILEHEADER, BITMAPINFOHEADER, aColors, pixel data",
+      "detail": "The four sections appear in exactly this order and the format has no mechanism for reordering them.",
+      "description": "BMP is a fixed-layout format: header, header, optional palette, pixels.",
+      "source": "both",
+      "generation_note": "Lay the file out in order, tracking the running offset, so that bfOffBits and bfSize can be computed from it."
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "rleData versus lines[]",
+      "detail": "A file carries either the compressed payload array or the row-structured pixel array, never both; the choice is made by testing biCompression > 0 at line 104.",
+      "description": "The two pixel representations are alternative branches of one if/else.",
+      "source": "template",
+      "generation_note": "Decide biCompression first, then emit the matching payload. Note that this test routes BI_BITFIELDS - which is not a compression - into the rleData branch, which is what makes the colour masks expressible."
+    },
+    {
+      "rule": "required",
+      "subject": "aColors",
+      "detail": "A colour table is present whenever biBitCount is neither 24 nor 32.",
+      "description": "The palette's presence is decided by the pixel depth, not by a flag.",
+      "source": "template",
+      "condition": "biBitCount not in (24, 32)",
+      "measured_gate": "Measured: at 8bpp a file whose palette is absent or too short is refused by ImageMagick ('insufficient image data' or 'invalid colormap index') and by Pillow.",
+      "output_budget": "Budget the colour table to at most 1024 bytes, which is the format's own ceiling of 256 RGBQUAD entries at 8 bits per pixel. The generator picks the entry count freely up to 2^biBitCount and stops there; neither biClrUsed nor biBitCount is narrowed to reach this figure, because the ceiling is already a format rule rather than a size-control device.",
+      "generation_note": "Emit biClrUsed entries when biClrUsed > 0, otherwise 1 << biBitCount entries, matching the branches at lines 96-99."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "lines[]",
+      "detail": "The row array repeats abs(biHeight) times, each element being bytesPerLine + padding bytes.",
+      "description": "The pixel rows are the only repeating structure in an uncompressed BMP.",
+      "source": "template",
+      "condition": "biCompression == 0",
+      "output_budget": "Budget the whole pixel area to about 4 MB, as a running total the generator computes as ((biWidth * biBitCount + 31) / 32) * 4 * abs(biHeight) BEFORE emitting anything, and checks against the budget. When the product would exceed it, the generator redraws the dimension pair rather than clamping either field - clamping is what turns a free dimension into a narrowed one. This is the only size-control mechanism for uncompressed images: biWidth, biHeight and biBitCount are never capped.",
+      "generation_note": "Emit abs(biHeight) rows; each row is the depth-appropriate pixel field followed by padBytes when the padding is non-zero."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "rleData",
+      "detail": "The compressed payload is a single variable-length array whose internal structure repeats per row.",
+      "description": "An RLE payload repeats internally - one run sequence and an end-of-line marker per row - rather than as a template-level array.",
+      "source": "both",
+      "condition": "biCompression > 0",
+      "output_budget": "Budget the payload to about 4 MB, computed from the dimensions before encoding: an RLE8 stream costs roughly 2 * ceil(biWidth / 255) + 2 bytes per row plus a 2-byte terminator, and an absolute-mode stream costs biWidth + 2 or 3 bytes per row. As with the uncompressed case, the generator redraws the dimensions if the estimate exceeds the budget rather than shrinking them to fit a payload.",
+      "generation_note": "Encode the stream from the dimensions, set biSizeImage to its exact length, then set bfSize from the finished file."
+    },
+    {
+      "rule": "contiguous",
+      "subject": "pixel data",
+      "detail": "The pixel data runs contiguously from bfOffBits to the end of the file, with no markers or separators inside it.",
+      "description": "BMP has no chunk framing: once the pixel data starts it runs to the end.",
+      "source": "both",
+      "generation_note": "Nothing may be inserted between rows except the per-row padding the format defines."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "trailing structures after the pixel data",
+      "detail": "The format defines nothing after the pixel data; bfSize must account for every byte in the file.",
+      "description": "There is no trailer, terminator or index at the end of a BMP.",
+      "source": "both",
+      "measured_gate": "Measured: extra bytes after the pixel data make the real file longer than bfSize, which ImageMagick rejects with 'length and filesize do not match'.",
+      "generation_note": "If trailing bytes are wanted for variety, include them in bfSize; ImageMagick checks the total, not the pixel extent."
+    },
+    {
+      "rule": "requires",
+      "subject": "bfOffBits consistency",
+      "detail": "bfOffBits must point at or beyond the end of the palette and must not point back into the headers.",
+      "description": "Every decoder seeks to this offset rather than assuming the data follows the palette.",
+      "source": "both",
+      "measured_gate": "Measured: bfOffBits of 0 or 14 is refused by ImageMagick and ffmpeg ('invalid header size'); a 16-byte gap is accepted by all three; a value past the end of file was tolerated by all three.",
+      "generation_note": "Compute it as 14 + biSize + mask bytes + palette bytes. A deliberate gap is legal in the format but this template cannot emit the filler."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "zero dimensions",
+      "detail": "Neither biWidth nor abs(biHeight) may be zero.",
+      "description": "A zero-sized image has no pixel data and every decoder rejects it.",
+      "source": "both",
+      "measured_gate": "Measured: width 0, height 0 and both zero are refused by all three decoders ('negative or zero image size' in ImageMagick). A negative WIDTH is also refused everywhere, though a negative HEIGHT is legal and means top-down.",
+      "generation_note": "Recorded as a structure rule rather than as a bound on the fields, so that biWidth and biHeight keep their full unconstrained span in the constraints section. A generator that does emit a zero dimension simply produces a file that exercises each decoder's rejection path, which is legitimate coverage."
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "BITMAPINFOHEADER.biWidth",
+      "why": "The image width. It multiplies into the row stride and therefore into the size of every pixel row and of the whole RLE stream, which makes it the field a size-conscious author will reach for first. It is the exact counterpart of the GIF dimension that was narrowed to powers of two and cost 1.7 points. The payload is computed from the width; the width is drawn freely.",
+      "decoder_paths": "Width decides the row stride ((W*bpp+31)/32)*4 and therefore how many padding bytes each row carries - 0 to 3 - which is a different branch of every decoder's row-copy loop. Widths that are not a multiple of 8/bpp leave unused bits in the final byte of a sub-byte row. In an RLE stream a width above 255 forces the run to be split across several encoded pairs, which is a loop a narrow image never enters.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "rleData",
+        "BITMAPLINE.imageData",
+        "BITMAPLINE.colorIndex",
+        "BITMAPLINE.colors",
+        "BITMAPLINE.padBytes"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "BITMAPINFOHEADER.biHeight",
+      "why": "The image height, and the only signed dimension in the format. Its magnitude sets the row count and its SIGN selects bottom-up or top-down storage - two different row-ordering paths in every decoder, and a distinction the template gained deliberately in version 2.3. Narrowing it would cost both the payload size variation and the row-order split.",
+      "decoder_paths": "The magnitude drives the row loop count. The sign selects the row-order branch: bottom-up is the default and top-down requires the decoder to invert its row indexing. ImageMagick additionally refuses top-down together with compression, so the sign also gates a rejection path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "rleData",
+        "lines",
+        "BITMAPINFOHEADER.biCompression"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "BITMAPINFOHEADER.biBitCount",
+      "why": "The pixel depth. Its six universally supported values select six different unpacking loops, three different palette rules and two different row-stride regimes; emitting only 24 - the obvious safe choice - would delete the entire palettised path, the sub-byte unpackers and the bitfield decoder in one go.",
+      "decoder_paths": "1 and 4 drive sub-byte unpacking with bit masking and shifting; 8 drives a direct palette lookup per byte; 16 drives the bitfield extraction path; 24 drives the three-byte BGR path; 32 drives the four-byte path where the fourth byte is either ignored or taken as alpha. Each also changes whether a palette is read at all.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "rleData",
+        "aColors",
+        "BITMAPLINE.imageData",
+        "BITMAPLINE.colorIndex",
+        "BITMAPLINE.colors"
+      ],
+      "tier": "B",
+      "tier_note": "Tier B rather than C because the legal set is finite and measured, but every member must be emitted - including 2 and 0, which reach rejection and special-case paths respectively."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biCompression",
+      "why": "The compression method, and the highest-leverage single choice in a BMP file. It decides what the payload array must contain, and measured, its values reach four genuinely different decoders: the raw row reader, the RLE state machine, the bitfield extractor, and - in ImageMagick - complete JPEG and PNG decoders embedded inside the BMP coder.",
+      "decoder_paths": "0 drives the raw row reader. 1 and 2 drive the RLE state machine with its four escape sequences, including the delta and absolute-mode branches that nothing else reaches. 3 drives mask extraction and per-channel shift computation. 4 and 5 hand the payload to libjpeg and libpng respectively. 6, 11, 12 and 13 drive the rejection paths.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "rleData",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biSizeImage"
+      ],
+      "tier": "B",
+      "tier_note": "Tier B because the set is finite; all ten values belong in it, and narrowing to 0 would be the single most expensive narrowing available in this format."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biClrUsed",
+      "why": "The palette entry count. How many colours a file declares decides how much of a decoder's colormap setup runs, and a short palette is the only way to reach the index-validation code that ImageMagick calls 'invalid colormap index'. The pixel indices are derived from this count, never the reverse.",
+      "decoder_paths": "Drives the palette read loop and the size of the colormap allocation. A count below 2^biBitCount makes index validation meaningful; a count of 0 takes the default-palette fallback branch instead.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "aColors",
+        "BITMAPLINE.colorIndex",
+        "BITMAPLINE.imageData",
+        "rleData"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "BITMAPINFOHEADER.biSizeImage",
+      "why": "The declared payload size. With BI_RGB it is measured to be advisory and every value decodes, so it is free there; with a compressed payload it is the array length. Which of the two branches at lines 107-110 a file takes is itself a free choice worth varying.",
+      "decoder_paths": "Selects between the biSizeImage-sized array and the bfSize-FTell()-sized fallback in the template, and in decoders decides whether the declared or the derived size is used.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "rleData",
+        "BITMAPFILEHEADER.bfSize"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A as a size field, but the choice between an exact length and the 0 fallback is free and both were measured to work - 'unconstrained' here means do not always emit the same one of the two."
+    },
+    {
+      "field": "BITMAPFILEHEADER.bfOffBits",
+      "why": "The pixel offset. Beyond its arithmetic obligation it carries one genuinely free choice: whether to leave a gap between the palette and the pixel data. Measured, all three decoders honour a gap, and it is the only way to place unreferenced bytes in the middle of a BMP.",
+      "decoder_paths": "Decides whether the decoder's seek is a no-op or a real skip, and a gap exercises the seek-and-discard path that a tightly packed file never enters.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "aColors",
+        "rleData",
+        "lines"
+      ],
+      "tier": "A",
+      "tier_note": "Tier A because a value pointing into the headers is refused, but the size of any gap beyond the minimum is free."
+    },
+    {
+      "field": "BITMAPLINE.colorIndex",
+      "why": "The palette indices of an 8-bit image - the bulk of its pixel bytes. Their range must be derived from the palette size, which is the derive-the-payload-from-the-value rule at its smallest scale.",
+      "decoder_paths": "Indices within the palette take the normal lookup path; indices beyond it reach ImageMagick's colormap validation and rejection.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "aColors",
+        "BITMAPINFOHEADER.biClrUsed"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "BITMAPLINE.padBytes",
+      "why": "Row padding. Measured completely unchecked in all three decoders, which makes it the one place in an uncompressed BMP where arbitrary bytes can sit inside the pixel area without affecting the image.",
+      "decoder_paths": "Skipped by every decoder, so it contributes no branches of its own, but it lets a file's byte content vary without touching anything validated.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount"
+      ],
+      "tier": "C"
+    },
+    {
+      "field": "RGBQUAD.rgbReserved",
+      "why": "The palette byte the specification says must be zero and that no decoder checks. Emitting non-zero values is free and is the kind of spec-violating-but-accepted variation that finds bugs.",
+      "decoder_paths": "Ignored by all three decoders; some writers use it as alpha, so a consumer that does read it takes a different path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "aColors"
+      ],
+      "tier": "C"
+    }
+  ]
+}

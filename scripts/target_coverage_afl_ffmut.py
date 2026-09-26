@@ -181,8 +181,13 @@ def available_llm_models() -> List[str]:
 def _build_so_optimized(fmt: str) -> None:
     so = tc.REPO_ROOT / "build" / f"{fmt}.so"
     if not so.exists():
-        tc.log(f"{so.name} not found, building it via ./build.sh {fmt}")
-        tc.run(["./build.sh", fmt], cwd=tc.REPO_ROOT)
+        # Locked on the shared artifact stem: ./build.sh also writes
+        # build/<fmt>-fuzzer, which target_coverage.py guards on
+        # independently. See build_lock() in target_coverage.py.
+        with tc.build_lock(fmt):
+            if not so.exists():
+                tc.log(f"{so.name} not found, building it via ./build.sh {fmt}")
+                tc.run(["./build.sh", fmt], cwd=tc.REPO_ROOT)
     if not so.exists():
         tc.die(f"{so} still missing after ./build.sh {fmt} - build it manually first")
 
@@ -197,12 +202,18 @@ def _build_so_llm(fmt: str, model: str) -> None:
     stem = _llm_stem(fmt, model)
     so = tc.REPO_ROOT / "build" / f"{stem}.so"
     if not so.exists():
-        tc.log(f"{so.name} not found, building it via "
-               f"LLM_MODEL={model} ./build_new.sh {fmt}-llm")
-        # build_new.sh takes the format as its argument and the model from the
-        # environment, appending the model tag to everything it writes.
-        tc.run(["./build_new.sh", f"{fmt}-llm"], cwd=tc.REPO_ROOT,
-               env={"LLM_MODEL": model})
+        # Locked on the shared artifact stem: build_new.sh also writes
+        # build/<stem>-fuzzer, which target_coverage_llm.py guards on
+        # independently. See build_lock() in target_coverage.py.
+        with tc.build_lock(stem):
+            if not so.exists():
+                tc.log(f"{so.name} not found, building it via "
+                       f"LLM_MODEL={model} ./build_new.sh {fmt}-llm")
+                # build_new.sh takes the format as its argument and the model
+                # from the environment, appending the model tag to everything
+                # it writes.
+                tc.run(["./build_new.sh", f"{fmt}-llm"], cwd=tc.REPO_ROOT,
+                       env={"LLM_MODEL": model})
     if not so.exists():
         tc.die(f"{so} still missing after LLM_MODEL={model} ./build_new.sh {fmt}-llm "
                f"- build it manually first")

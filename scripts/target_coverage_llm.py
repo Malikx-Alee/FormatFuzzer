@@ -74,6 +74,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
 
+# This module is otherwise a standalone copy of target_coverage.py, but
+# build_lock must be THE SAME lock object as the one the other scripts take -
+# two independent definitions would still serialize correctly (they lock the
+# same path), but keeping one definition makes that guarantee obvious.
+from target_coverage import build_lock
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
@@ -270,7 +276,20 @@ def build_gif(work_dir: Path, force: bool) -> BuildResult:
 
 
 def drive_gif(build: BuildResult, f: Path) -> str:
-    return f"./gif2rgb -o /dev/null '{f}' >/dev/null 2>&1"
+    # -1 ("one file") is required, not cosmetic. Without it gif2rgb writes
+    # three separate planes by appending ".R"/".G"/".B" to the -o name
+    # (DumpScreen2RGB, gif2rgb.c), so "-o /dev/null" becomes "/dev/null.R" -
+    # an unopenable path that trips GIF_EXIT *after* decoding but *before*
+    # the RGB dump, making every single run exit non-zero (253) regardless
+    # of whether the GIF was valid. That silently cost ~2.5 points of line
+    # coverage for every variant and made the exit code useless as a
+    # validity signal. With -1, FileName is opened as-is and /dev/null works.
+    #
+    # target_coverage.py already carried this fix; this script did not, so a
+    # baseline measured there and an LLM variant measured here were not
+    # comparable - the variant was driven without -1 and lost DumpScreen2RGB's
+    # output loop and DGifCloseFile outright.
+    return f"./gif2rgb -1 -o /dev/null '{f}' >/dev/null 2>&1"
 
 
 # ---------------------------------------------------------------------------
@@ -616,10 +635,16 @@ def run_format(fmt: str, args, model: str) -> dict:
             f"end-to-end. It may fail - if it does, please report the exact error.")
 
     if not fuzzer_bin.exists():
-        log(f"{fuzzer_bin.name} not found, building it via LLM_MODEL={model} ./build_new.sh {fmt}-llm")
-        # build_new.sh takes the format as its argument and the model from the
-        # environment, appending the model tag to everything it writes.
-        run(["./build_new.sh", f"{fmt}-llm"], cwd=REPO_ROOT, env={"LLM_MODEL": model})
+        # Locked on the shared artifact stem: build_new.sh writes
+        # build/<stem>.so too, which target_coverage_afl_ffmut_llm.py guards
+        # on independently. See build_lock() in target_coverage.py.
+        with build_lock(stem):
+            if not fuzzer_bin.exists():
+                log(f"{fuzzer_bin.name} not found, building it via LLM_MODEL={model} ./build_new.sh {fmt}-llm")
+                # build_new.sh takes the format as its argument and the model
+                # from the environment, appending the model tag to everything
+                # it writes.
+                run(["./build_new.sh", f"{fmt}-llm"], cwd=REPO_ROOT, env={"LLM_MODEL": model})
     if not fuzzer_bin.exists():
         raise RuntimeError(f"{fuzzer_bin} still missing after LLM_MODEL={model} "
                            f"./build_new.sh {fmt}-llm - build it manually first")

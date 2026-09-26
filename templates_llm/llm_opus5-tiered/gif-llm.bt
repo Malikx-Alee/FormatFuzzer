@@ -1,0 +1,306 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: GIF.bt
+//   Authors: Berend-Jan "SkyLined" Wever
+//   Version: 1.3
+//   Purpose: Defines a template for
+//	          parsing GIF image files.
+//  Category: Image
+// File Mask: *.gif
+//  ID Bytes: 47 49 46 //GIF 
+//   History: 
+//   1.3   2016-01-28 SweetScape: Updated header for repository submission.
+//   1.2   2007-09-25 SweetScape: Added bug fixes for reading local color table and
+//                                changed ReadShort to ReadUShort.
+//   1.1   2007-05-02 SweetScape: Added bug fixes for reading global color table.
+//   1.0   BJ Wever:  Initial release.
+//   1.4   FormatFuzzer generative rewrite from llm_reterived_constraints_gif-llm_opus5-
+//         tiered.json: Tier A pinned behind SetEvilBit(false), Tier B whole, Tier C bare.
+//------------------------------------------------
+
+// From GIF89a Specification:
+
+//<GIF Data Stream> ::=     Header <Logical Screen> <Data>* Trailer
+//<Logical Screen> ::=      Logical Screen Descriptor [Global Color Table]
+//<Data> ::=                <Graphic Block> | <Special-Purpose Block>
+//<Graphic Block> ::=       [Graphic Control Extension] <Graphic-Rendering Block>
+//<Graphic-Rendering Block> ::=  <Table-Based Image> | Plain Text Extension
+//<Table-Based Image> ::=   Image Descriptor [Local Color Table] Image Data
+//<Special-Purpose Block> ::=    Application Extension | Comment Extension
+
+LittleEndian(); 
+
+// ffcompile mines { 0x3B, 0x2C } from the block dispatch; those globals would also drive
+// the sub-block length lookahead, where 0x2C is a length and 0 -- the chain terminator --
+// is never offered. Cleared so each call site decides with its own set. A marker written
+// by a SetEvilBit(false) lookahead pins the field on that byte, so those Tier A
+// declarations need no guard of their own.
+const local UBYTE  ReadUByteInitValues[0]; const local ushort ReadUShortInitValues[0];
+// dataSizes is every legal sub-block length 1..255; subSizes adds the weighted terminator.
+// Both span every byte the format allows, so a real GIF still parses and the splits stay
+// free [diversity_axes: DATASUBBLOCK.Size].
+local UBYTE subSizes[0]; local UBYTE dataSizes[0]; local UBYTE zeroSize[] = { 0 }; local int _k;
+for (_k = 0; _k < 256; _k++) { if (_k < 32) subSizes += 0;
+	if (_k > 0) { subSizes += (UBYTE)_k; dataSizes += (UBYTE)_k; } }
+// 0x2C opens an image, 0x21 an extension, 0x3B ends the stream, weighted to keep the
+// zero-image case reachable. disposalMethods is Tier B's full eight; extTypes is every
+// label, giving UNDEFINEDDATA.Label its 252-value Tier B pattern.
+local UBYTE blockTypes[] = { 0x2C, 0x2C, 0x2C, 0x21, 0x21, 0x3B }; local UBYTE imageOnly[] = { 0x2C };
+local UBYTE disposalMethods[] = { 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7 }; local ushort extTypes[0];
+for (_k = 0; _k < 256; _k++) { extTypes += (ushort)((_k << 8) | 0x21); }
+for (_k = 0; _k < 60; _k++) { extTypes += 0xF921; extTypes += 0xFE21; extTypes += 0x0121; extTypes += 0xFF21; }
+// structure output_budget: 1 MiB of blocks and 768 KiB of LZW data, clamped to
+// FormatFuzzer's MAX_FILE_SIZE of 65536. A spent budget stops the generator opening
+// further blocks; it never shrinks a dimension or a count.
+local int64 gifBlockBudget = 40960; local int64 gifLzwBudget = 20480; local int64 gifLzwUsed = 0;
+typedef struct {
+	UBYTE	R;                                              // Tier C
+	UBYTE	G;                                              // Tier C
+	UBYTE	B;                                              // Tier C
+} RGB <read=ReadRGB>;
+string ReadRGB( RGB &color )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X", color.R, color.G, color.B );
+    return s;
+}
+// One sub-block chain: with nPix >= 0 an image's GIF LZW code stream (GIF89a Appendix F)
+// sized from the free dimensions, otherwise free bytes for the extensions.
+// DATASUBBLOCK.Size is exact by construction -- the same lookahead byte is both the loop
+// control and the field. Each group is Clear, one literal, then repeats of ClearCode + 2:
+// the first is the KwKwK case and the rest trace the dictionary, two pixels per code. A
+// group is capped at 2^N-2 codes, holding the table below 2^(N+1).
+typedef struct (int64 nPix, int codeSize) {
+	local int evil_lzw = SetEvilBit(false);
+	local int64 clearCode = 1 << codeSize; local int64 runLen = clearCode - 2; local int64 nPx = nPix;
+	local int codeWidth = codeSize + 1; local int64 nGroups = 0; local int64 outLeft = 0; local int64 maxPx = 0;
+	local uint64 acc = 0; local int nbits = 0; local int64 pi = 0; local int64 pxLeft = 0; local int64 gcLeft = 0;
+	local int64 code = 0; local int64 gpix = 0; local int64 nFull = 0; local int64 rem = 0; local int64 ex = 0;
+	local int64 lastCodes = 0; local int justCleared = 0; local int64 j = 0; local UBYTE one[1];
+	local UBYTE size = 0; local int more = 1;
+	if (nPx >= 0) {
+		// The budget ends the stream, never the dimensions: the longest prefix it affords.
+		maxPx = ((((gifLzwBudget - gifLzwUsed) * 8) / codeWidth) - 2) * runLen / (runLen + 1);
+		if (maxPx < 0) maxPx = 0;
+		if (nPx > maxPx) nPx = maxPx;
+		gpix = 2 * runLen - 1; nFull = nPx / gpix; rem = nPx - nFull * gpix;
+		if (rem > 0) { ex = (rem - 1) % 2; lastCodes = 1 + (rem - 1 - ex) / 2 + ex; }
+		nGroups = nFull; if (rem > 0) nGroups++;
+		outLeft = ((nGroups + nFull * runLen + lastCodes + 1) * codeWidth + 7) / 8;
+		gifLzwUsed += outLeft; pxLeft = nPx;
+	}
+	while (more) {
+		if (outLeft > 0)                   size = ReadUByte(FTell(), dataSizes);
+		else if (FTell() > gifBlockBudget) size = ReadUByte(FTell(), zeroSize);
+		else                               size = ReadUByte(FTell(), subSizes);
+		if (size == 0) more = 0;
+		else {
+			struct DATASUBBLOCK {
+				UBYTE	Size;
+				// Pre-write the stream bytes; Data is forced to them. Past EOI the rest is free.
+				for (j = 0; j < size; j++) if (outLeft > 0) {
+					while (nbits < 8) {
+						if (pxLeft <= 0) code = clearCode + 1;              // EndOfInformation
+						else if (gcLeft == 0) { code = clearCode; gcLeft = runLen; justCleared = 1; }
+						else if (justCleared) { code = pi % clearCode; pi++; pxLeft--; justCleared = 0; gcLeft--; }
+						else if (pxLeft >= 2) { code = clearCode + 2; pxLeft -= 2; gcLeft--; }
+						else { code = pi % clearCode; pi++; pxLeft--; gcLeft--; }
+						acc = acc | (code << nbits); nbits += codeWidth;
+					}
+					one[0] = (UBYTE)(acc & 0xFF); acc = acc >> 8; nbits -= 8;
+					ReadUByte(FTell() + j, one); outLeft--;
+				}
+				char	Data[size];
+			} DataSubBlock;
+		}
+	}
+	UBYTE	BlockTerminator = { 0x00 }; SetEvilBit(evil_lzw);       // Tier A
+} DATASUBBLOCKS;
+typedef struct {
+	local int evil_sig = SetEvilBit(false); char Signature[3] = { "GIF" }; SetEvilBit(evil_sig);
+	char	Version[3] = { "89a", "87a" };                  // Tier B: the complete set
+} GIFHEADER;
+typedef struct {
+	ushort	Width;                                          // Tier C - DO NOT NARROW
+	ushort	Height;                                         // Tier C - DO NOT NARROW
+        BitfieldLeftToRight();
+	// Each field spans its full bit width, so bare already emits Tier B's {0,1} sets.
+	struct	LOGICALSCREENDESCRIPTOR_PACKEDFIELDS {
+		UBYTE	GlobalColorTableFlag : 1;               // Tier B {0,1}
+		UBYTE	ColorResolution : 3;                    // Tier C
+		UBYTE	SortFlag : 1;                           // Tier B {0,1}
+		UBYTE	SizeOfGlobalColorTable : 3;             // Tier C - DO NOT NARROW
+	} PackedFields;
+	UBYTE	BackgroundColorIndex;                           // Tier C - DO NOT NARROW
+	UBYTE	PixelAspectRatio;                               // Tier C
+} LOGICALSCREENDESCRIPTOR;
+
+//<GIF Data Stream> ::=     Header <Logical Screen> <Data>* Trailer
+// Header
+SetBackColor( 0xFFFFFF );
+GIFHEADER GifHeader;
+if( GifHeader.Signature != "GIF" )
+{
+	Warning( "File is not a valid GIF. Template stopped." );
+	return -1;
+}
+//<Logical Screen> ::=      Logical Screen Descriptor [Global Color Table]
+// Logical Screen Descriptor
+SetBackColor( 0xE0E0E0 );
+LOGICALSCREENDESCRIPTOR LogicalScreenDescriptor;
+// [Global Color Table]
+if (LogicalScreenDescriptor.PackedFields.GlobalColorTableFlag == 1) {
+	SetBackColor( 0xC0C0C0 );
+	// calculated_value: exactly 2^(SizeOfGlobalColorTable + 1) entries, no length prefix
+	// and no terminator. The count is pinned by the exponent, the exponent by nothing.
+	struct GLOBALCOLORTABLE {
+		local int i;
+		local int size = 1;
+		for (i = 0; i <= LogicalScreenDescriptor.PackedFields.SizeOfGlobalColorTable; i++) {
+			size *= 2;
+		}
+		RGB rgb[size];
+	} GlobalColorTable <optimize=false>;;
+}
+//<Data> ::=                <Graphic Block> | <Special-Purpose Block>
+SetBackColor( 0xFFFFFF );
+struct DATA {
+	local UBYTE intro = 0; local ushort ext = 0; local int more = 1; local int afterGce = 0;
+	while (more) {
+		// Tier A markers pinned here for every block type; structure.ordering forces an image after a GCE.
+		local int evil_blk = SetEvilBit(false);
+		if (afterGce) intro = ReadUByte(FTell(), imageOnly); else intro = ReadUByte(FTell(), blockTypes);
+		if (intro == 0x21) ext = ReadUShort(FTell(), extTypes);
+		SetEvilBit(evil_blk); afterGce = 0;
+		if (intro == 0x3B) more = 0;
+		// <Graphic Block> ::=       [Graphic Control Extension] <Graphic-Rendering Block>
+		else if (intro == 0x2C) {
+			SetBackColor( 0xE0FFE0 );
+			struct IMAGEDESCRIPTOR {
+				UBYTE	ImageSeperator = { 0x2C };      // Tier A
+				// dependencies: a conforming frame lies inside the logical screen, and
+				// gif2rgb aborts the file when it does not; the placement is derived from
+				// the upcoming free dimensions, which are themselves untouched.
+				local ushort iw = ReadUShort(FTell() + 4); local ushort ih = ReadUShort(FTell() + 6);
+				local int64 slackX = (int64)LogicalScreenDescriptor.Width - (int64)iw;
+				local int64 slackY = (int64)LogicalScreenDescriptor.Height - (int64)ih;
+				local ushort leftVal = 0; local ushort topVal = 0;
+				if (slackX > 0) leftVal = (ushort)(ih % (slackX + 1)); if (slackY > 0) topVal = (ushort)(iw % (slackY + 1));
+				ushort	ImageLeftPosition = { leftVal };
+				ushort	ImageTopPosition = { topVal };
+				ushort	ImageWidth;                     // Tier C - DO NOT NARROW
+				ushort	ImageHeight;                    // Tier C - DO NOT NARROW
+				struct IMAGEDESCRIPTOR_PACKEDFIELDS {
+					UBYTE	LocalColorTableFlag : 1;        // Tier B {0,1}
+					UBYTE	InterlaceFlag : 1;              // Tier B {0,1}
+					UBYTE	SortFlag : 1;                   // Tier B {0,1}
+					UBYTE	Reserved : 2;                   // Tier C
+					UBYTE	SizeOfLocalColorTable : 3;      // Tier C - DO NOT NARROW
+				} PackedFields;
+			} ImageDescriptor;
+			if (ImageDescriptor.PackedFields.LocalColorTableFlag == 1) {
+				SetBackColor( 0xC0FFC0 );
+				// calculated_value: 2^(SizeOfLocalColorTable + 1) entries exactly.
+				struct LOCALCOLORTABLE {
+					local int i;
+					local int size = 1;
+					for (i = 0; i <= ImageDescriptor.PackedFields.SizeOfLocalColorTable; i++) {
+						size *= 2;
+					}
+					RGB rgb[size];
+				} LocalColorTable <optimize=false>;;
+			}
+			SetBackColor( 0xA0FFA0 );
+			struct IMAGEDATA {
+				// Tier B: all seven legal code widths, each a different bit packing.
+				UBYTE	LZWMinimumCodeSize = { 2, 3, 4, 5, 6, 7, 8 };
+				// payload_wellformedness: the stream decodes to exactly ImageWidth *
+				// ImageHeight indices at the width above, computed FROM the dimensions.
+				local int cs = LZWMinimumCodeSize; if (cs < 2 || cs > 8) cs = 8;  // guard the shift
+				local int64 nPix = (int64)ImageDescriptor.ImageWidth * (int64)ImageDescriptor.ImageHeight;
+				DATASUBBLOCKS DataSubBlocks(nPix, cs);
+			} ImageData;
+		} else if (ext == 0xF921) {
+			SetBackColor( 0xC0FFFF );
+			struct GRAPHICCONTROLEXTENSION {
+				UBYTE ExtensionIntroducer = { 0x21 };           // Tier A
+				UBYTE GraphicControlLabel = { 0xF9 };           // Tier A
+				struct GRAPHICCONTROLSUBBLOCK {
+					local int evil_gcs = SetEvilBit(false); UBYTE BlockSize = { 0x04 }; SetEvilBit(evil_gcs);
+					struct GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS {
+						UBYTE	Reserved : 3;           // Tier C
+						UBYTE	DisposalMethod : 3 <values=disposalMethods>;
+						UBYTE	UserInputFlag : 1;              // Tier B {0,1}
+						UBYTE	TransparentColorFlag : 1;       // Tier B {0,1}
+					} PackedFields;
+					ushort	DelayTime;                      // Tier C
+					UBYTE	TransparentColorIndex;          // Tier C - DO NOT NARROW
+				} GraphicControlSubBlock;
+				local int evil_gct = SetEvilBit(false); UBYTE BlockTerminator = { 0x00 }; SetEvilBit(evil_gct);
+			} GraphicControlExtension;
+			afterGce = 1;
+		} else if (ext == 0xFE21) {
+			SetBackColor( 0xFFFFC0 );
+			struct COMMENTEXTENSION {
+				UBYTE ExtensionIntroducer = { 0x21 };           // Tier A
+				UBYTE CommentLabel = { 0xFE };                  // Tier A
+				DATASUBBLOCKS CommentData(-1, 0);               // free bytes
+			} CommentExtension;
+		} else if (ext == 0x0121) {
+			SetBackColor( 0xC0C0C0 );
+			struct PLAINTEXTEXTENTION {
+				UBYTE ExtensionIntroducer = { 0x21 };           // Tier A
+				UBYTE PlainTextLabel = { 0x01 };                // Tier A
+				struct PLAINTEXTSUBBLOCK {
+					local int evil_pts = SetEvilBit(false); UBYTE BlockSize = { 0x0C }; SetEvilBit(evil_pts);
+					ushort	TextGridLeftPosition;           // Tier C
+					ushort	TextGridTopPosition;            // Tier C
+					ushort	TextGridWidth;                  // Tier C
+					ushort	TextGridHeight;                 // Tier C
+					UBYTE	CharacterCellWidth;             // Tier C
+					UBYTE	CharacterCellHeight;            // Tier C
+					UBYTE	TextForegroundColorIndex;       // Tier C
+					UBYTE	TextBackgroundColorIndex;       // Tier C
+				} PlainTextSubBlock;
+				DATASUBBLOCKS PlainTextData(-1, 0);             // free bytes
+			} PlainTextExtension;
+		} else if (ext == 0xFF21) {
+			SetBackColor( 0xC0C0FF );
+			struct APPLICATIONEXTENTION {
+				UBYTE ExtensionIntroducer = { 0x21 };           // Tier A
+				UBYTE ApplicationLabel = { 0xFF };              // Tier A
+				struct APPLICATIONSUBBLOCK {
+					local int evil_aps = SetEvilBit(false); UBYTE BlockSize = { 0x0B }; SetEvilBit(evil_aps);
+					// Tier B: the seven registered identifiers; the evil bit also emits
+					// unregistered ones, reaching the unknown-application skip.
+					char	ApplicationIdentifier[8] = { "NETSCAPE", "ANIMEXTS",
+						"XMP Data", "ICCRGBG1", "GIFPLAY0", "MGK8BIM0", "MGKIPTC0" };
+					// dependencies: NETSCAPE/ANIMEXTS pair "2.0", XMP Data "XMP", ICCRGBG1 "012".
+					local string appId = ApplicationIdentifier;
+					if (appId == "XMP Data")
+						char ApplicationAuthenticationCode[3] = { "XMP" };
+					else if (appId == "ICCRGBG1")
+						char ApplicationAuthenticationCode[3] = { "012" };
+					else
+						char ApplicationAuthenticationCode[3] = { "2.0", "1.0" };
+				} ApplicationSubBlock;
+				DATASUBBLOCKS ApplicationData(-1, 0);           // free bytes
+			} ApplicationExtension;
+		} else {
+			SetBackColor( 0xFF8080 );
+			struct UNDEFINEDDATA {
+				UBYTE	ExtensionIntroducer = { 0x21 };         // Tier A
+				// Tier B pattern: any label but the four claimed above; bare.
+				UBYTE	Label;
+				DATASUBBLOCKS DataSubBlocks(-1, 0);             // free bytes
+			} UndefinedData;
+		}
+		// output_budget: a spent block budget weights the dispatch toward the trailer.
+		if (FTell() > gifBlockBudget) { blockTypes += 0x3B; }
+	}
+} Data;
+SetBackColor( 0xFFFFFF );
+struct TRAILER {
+	UBYTE GIFTrailer = { 0x3B };                                // Tier A
+} Trailer;
