@@ -93,3 +93,5 @@ coverage_targets_afl/
 # scripts/target_coverage_afl_ffmut.py / _llm.py: raw afl-fuzz output
 # (queue/, crashes/, hangs/, fuzzer_stats, mutations.log - machine-specific)
 afl_runs/
+# Archived pre-driver-fix campaign results (see that dir README.md)
+coverage_results_pre_driver_fix/
