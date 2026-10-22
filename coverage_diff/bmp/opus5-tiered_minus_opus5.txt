@@ -1,0 +1,17 @@
+bmp: lines opus5-tiered reached that opus5 did not
+==================================================
+77 lines in 3 files
+
+io-bmp.c  (68 lines)
+    OneLine32                                  26   824-827, 829-832, 834-837, 839-840, 842, 844-847, 849-853, 855, 857
+    OneLine16                                  19   909-911, 913-915, 917-919, 921-922, 924, 926-928, 930-932, 934
+    decode_bitmasks                            18   661-663, 668-673, 675, 692-693, 696-697, 700-701, 704-705
+    DecodeHeader                                5   295-298, 549
+
+gdk-pixbuf-io.c  (8 lines)
+    _gdk_pixbuf_get_module                      6   920, 927, 956, 958-959, 964
+    gdk_pixbuf_new_from_file                    2   1138-1139
+
+harness.c  (1 lines)
+    main                                        1   10
+

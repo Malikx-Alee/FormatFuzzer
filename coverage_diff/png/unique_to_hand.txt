@@ -1,0 +1,11 @@
+png: lines only hand reached
+============================
+6 lines in 2 files
+
+pngtest.c  (5 lines)
+    read_user_chunk_callback                    3   732, 741-742
+    set_chunk_location                          2   670, 676
+
+pngwutil.c  (1 lines)
+    png_write_iCCP                              1   1154
+

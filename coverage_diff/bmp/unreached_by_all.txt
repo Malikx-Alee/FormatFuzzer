@@ -1,0 +1,292 @@
+bmp: instrumented lines no variant reached
+==========================================
+3586 lines in 16 files
+
+gdk-pixbuf-io.c  (910 lines)
+    gdk_pixbuf_io_init_modules                 91   411, 413-414, 416, 418, 420, 422-424, 427, 430, 433, 435-436, 438-439, 441, 443, 445-448, 450, 452-453, 455-457, 459, 461, 463-464, 466, 468-469, 471-472, 474, 476, 478-479, 482-491, 495-504, 509-517, 519, 521, 523-524, 526, 528, 533-537, 539, 541-542, 544-545, 547-549, 554-555
+    gdk_pixbuf_new_from_file_at_scale          55   1374, 1381-1389, 1391-1393, 1395-1399, 1401, 1405-1406, 1409, 1411-1413, 1415, 1418-1426, 1429-1433, 1435, 1439, 1441-1443, 1446, 1448-1451, 1456-1457, 1460, 1462, 1464
+    save_to_callback_with_tmp_file             43   2297, 2305-2310, 2312-2314, 2318, 2321-2327, 2329, 2331, 2334-2336, 2338-2343, 2345, 2348-2350, 2352, 2354, 2358, 2360-2364, 2366, 2368
+    gdk_pixbuf_savev                           31   2549, 2556-2557, 2559-2565, 2567, 2569-2572, 2574, 2578-2579, 2583, 2588-2592, 2595-2598, 2600, 2604-2605
+    load_from_stream_async_cb                  27   1606, 1610-1614, 1616, 1618, 1620-1625, 1628-1630, 1632, 1640-1642, 1645-1646, 1649-1652
+    gdk_pixbuf_get_file_info                   27   1978, 1982-1986, 1992, 1994-1995, 1998, 2000-2002, 2004, 2006-2009, 2012, 2016-2018, 2020-2023, 2025
+    format_check                               26   115, 117-122, 124-128, 135-139, 142-143, 146-147, 150-151, 156-157, 159
+    at_scale_size_prepared_cb                  24   1295, 1300, 1302, 1304-1306, 1308-1309, 1311, 1313-1314, 1316-1319, 1321-1322, 1325-1328, 1331-1332, 1334
+    scan_string                                22   246, 248-250, 252-253, 255, 257-261, 263, 266-271, 274-275, 277
+    scan_int                                   22   281, 283-285, 287-288, 290, 293-296, 299, 302, 304, 306, 308, 314, 316-317, 319, 321, 354
+    collect_save_options                       21   2194, 2198-2201, 2203-2205, 2207-2208, 2210-2211, 2213, 2216-2217, 2219-2220, 2222-2223, 2225, 2227
+    gdk_pixbuf_save_to_streamv_async           21   3110, 3119-3120, 3122-3129, 3131-3135, 3137-3141
+    gdk_pixbuf_new_from_xpm_data               20   2160, 2162-2165, 2167, 2169-2173, 2176-2179, 2182-2184, 2186-2187
+    gdk_pixbuf_load_module_unlocked            19   795-797, 799-800, 802-804, 809-810, 813, 815-818, 820-821, 826-827
+    gdk_pixbuf_new_from_stream_at_scale_async   18   1676, 1684-1686, 1688-1690, 1692-1695, 1697-1698, 1700, 1705-1707, 1709
+    _gdk_pixbuf_new_from_resource_try_pixdata   18   1756, 1758-1759, 1766-1772, 1774-1777, 1780, 1782-1783, 1785
+    gdk_pixbuf_save_to_stream_async            18   3167, 3175-3177, 3179-3186, 3188-3190, 3192, 3195-3196
+    load_from_stream                           17   1500, 1505-1507, 1509-1510, 1515-1517, 1520, 1523, 1527-1528, 1532, 1535-1536, 1539
+    gdk_pixbuf_save_to_bufferv                 17   2869, 2877-2878, 2880-2881, 2883-2887, 2891, 2894, 2898-2899, 2902-2904
+    save_to_stream                             16   2913, 2918-2921, 2923-2928, 2932-2934, 2939, 2941
+    save_to_buffer_callback                    15   2819, 2824-2826, 2828-2832, 2836, 2838-2839, 2841-2843
+    gdk_pixbuf_new_from_file                   14   1123-1126, 1128, 1132-1133, 1143-1144, 1159-1162, 1167
+    gdk_pixbuf_get_file_info_async             14   2082, 2087-2088, 2090-2092, 2094-2095, 2097-2102
+    gdk_pixbuf_get_file_info_finish            14   2121, 2126-2127, 2129, 2131, 2133-2134, 2136, 2138-2142, 2145
+    gdk_pixbuf_save                            13   2499, 2505-2508, 2510, 2512, 2514, 2516, 2518, 2522-2523, 2525
+    gdk_pixbuf_save_to_callback                13   2667, 2674-2677, 2679, 2681, 2683, 2685, 2687, 2691-2692, 2694
+    gdk_pixbuf_save_to_buffer                  13   2783, 2790-2793, 2795, 2797, 2799, 2801, 2803, 2807-2808, 2810
+    save_to_stream_thread                      13   3062, 3067-3069, 3071-3072, 3074-3076, 3079-3080, 3082, 3084
+    gdk_pixbuf_new_from_stream_at_scale        12   1579, 1586-1588, 1590-1593, 1595, 1598-1599, 1601
+    gdk_pixbuf_real_save                       12   2252, 2259-2260, 2262, 2264, 2267, 2270, 2272, 2275, 2277, 2283, 2288
+    gdk_pixbuf_real_save_to_callback           12   2372, 2380-2381, 2383, 2385, 2388, 2391, 2393, 2396, 2398, 2404, 2409
+    gdk_pixbuf_save_to_callbackv               12   2722, 2730, 2732-2738, 2740, 2745-2746
+    gdk_pixbuf_save_to_stream                  12   3017, 3024-3027, 3029-3031, 3033, 3037-3038, 3040
+    gdk_pixbuf_new_from_resource               10   1808, 1811-1812, 1814-1815, 1818-1819, 1822-1824
+    _gdk_pixbuf_get_named_module                9   859, 862, 864-865, 867, 870-871, 874, 880
+    gdk_pixbuf_new_from_stream_async            9   1891, 1896, 1898-1900, 1902-1904, 1906
+    save_to_file_callback                       9   2230, 2235-2236, 2238-2241, 2243, 2246
+    gdk_pixbuf_format_is_save_option_supported    9   3503, 3506, 3508-3509, 3511-3512, 3515, 3518, 3521
+    gdk_pixbuf_init_modules                     8   583, 586-587, 589-593
+    _gdk_pixbuf_generic_image_load              8   1071, 1074-1075, 1077-1079, 1081-1082
+    gdk_pixbuf_new_from_resource_at_scale       8   1854, 1860-1861, 1863-1864, 1867-1869
+    info_cb                                     8   1944, 1949, 1953, 1955, 1957-1959, 1961
+    get_file_info_thread                        8   2042, 2047, 2049-2051, 2056-2057, 2060
+    save_to_stream_async_data_free              8   3051, 3053-3059
+    gdk_pixbuf_format_get_description           8   3260, 3262-3264, 3266-3267, 3270, 3272
+    gdk_pixbuf_get_formats                      8   3438, 3440-3441, 3443-3446, 3449
+    gdk_pixbuf_new_from_stream                  7   1741, 1745-1746, 1748-1750, 1752
+    gdk_pixbuf_new_from_stream_finish           7   1927, 1930, 1932-1933, 1935, 1937, 1940
+    gdk_pixbuf_save_to_stream_finish            7   3212, 3215, 3220, 3222, 3224-3225, 3228
+    _gdk_pixbuf_get_module_for_file             5   985-987, 992-993
+    gdk_pixbuf_save_to_streamv                  5   2971, 2979, 2981-2982, 2984
+    get_file_info_async_data_free               4   2035, 2037-2039
+    gdk_pixbuf_format_free                      4   3482, 3484-3486
+    at_scale_data_async_data_free               3   1289, 1291-1292
+    gdk_pixbuf_format_get_name                  3   3242, 3244, 3246
+    gdk_pixbuf_format_get_mime_types            3   3286, 3288, 3290
+    gdk_pixbuf_format_get_extensions            3   3306, 3308, 3310
+    gdk_pixbuf_format_is_writable               3   3324, 3326, 3328
+    gdk_pixbuf_format_is_scalable               3   3346, 3348, 3350
+    gdk_pixbuf_format_is_disabled               3   3366, 3368, 3370
+    gdk_pixbuf_format_set_disabled              3   3389, 3392, 3394
+    gdk_pixbuf_format_get_license               3   3411, 3413, 3415
+    _gdk_pixbuf_get_format                      3   3419, 3421, 3423
+    gdk_pixbuf_format_copy                      3   3464, 3466-3467
+    _gdk_pixbuf_get_module                      2   928, 967
+    gdk_pixbuf_new_from_file_at_size            2   1242, 1247
+    get_file_formats                            1   178
+    gdk_pixbuf_format_get_type_once             1   3524
+
+pixops.c  (756 lines)
+    pixops_process                             68   1268, 1293-1294, 1296-1297, 1299-1300, 1302-1303, 1305-1306, 1308-1309, 1311, 1314-1315, 1318, 1320, 1322, 1337-1339, 1341-1342, 1344-1351, 1353-1354, 1356, 1363-1364, 1367, 1369-1372, 1374, 1376, 1379-1381, 1383, 1385, 1388, 1391-1394, 1397, 1399, 1405, 1407-1408, 1410, 1412, 1415, 1418-1420, 1423, 1426-1427
+    scale_line                                 53   995, 1001-1003, 1005, 1007-1008, 1010-1011, 1013, 1016, 1018-1019, 1021, 1023, 1025-1029, 1031, 1035, 1038-1041, 1043, 1045-1049, 1053-1056, 1062, 1064-1065, 1067, 1069, 1071-1073, 1075, 1079-1081, 1083-1084, 1087, 1089, 1092
+    composite_line_22_4a4                      45   772, 778-780, 782-783, 785, 787-791, 793-794, 796-797, 799-802, 804-807, 809-813, 815-819, 821-825, 827-830, 832-833
+    composite_line_color                       45   872, 879-883, 885, 887-889, 891-893, 895, 897-899, 901, 903, 905-906, 908, 910, 912-913, 915, 917-920, 922, 926, 928-930, 934-936, 939-942, 944-946
+    composite_line                             40   696, 702-703, 705, 707-709, 711, 713, 715-716, 718, 720, 722-723, 725, 727-730, 732, 736, 738-740, 742, 744-747, 751-754, 759-761, 764-765, 768
+    bilinear_magnify_make_weights              39   1482, 1485-1488, 1490, 1492-1493, 1497-1498, 1501-1503, 1508, 1510, 1512, 1514-1515, 1519, 1525, 1527, 1529-1530, 1532, 1536-1537, 1539, 1559-1560, 1562-1563, 1565, 1567, 1569-1570, 1577, 1579-1580, 1586
+    scale_line_22_33                           36   1097, 1103-1105, 1107, 1109-1113, 1115-1116, 1118-1119, 1121-1124, 1126-1128, 1130-1132, 1134-1136, 1138-1140, 1142-1144, 1146-1147, 1150
+    pixops_composite_color_nearest             35   533, 556-564, 566, 568-573, 575, 578, 580-582, 584-586, 590-592, 594-596, 599-600, 656, 658
+    prescale                                   30   1734, 1745-1750, 1753, 1756-1760, 1766-1767, 1772-1773, 1777-1781, 1785, 1793-1796, 1799-1800, 1802
+    pixops_scale_nearest                       25   250, 267-272, 301, 303-308, 310, 312, 314, 316, 320, 323, 325, 327, 331-332, 336
+    _pixops_composite_real                     24   1962, 1981-1983, 1985-1986, 1988, 1991, 1993-1994, 1999, 2003, 2006-2007, 2011-2012, 2015-2016, 2019, 2021, 2027-2030
+    scale_pixel                                23   953, 957, 959, 962-965, 967, 969-973, 977-980, 985-987, 989-990, 992
+    make_filter_table                          23   1222, 1224-1227, 1230, 1234, 1237-1238, 1241-1242, 1244-1247, 1249-1250, 1252-1254, 1256, 1258, 1261
+    process_pixel                              22   1154, 1160-1161, 1163, 1165, 1167, 1169-1170, 1172-1175, 1177, 1179-1180, 1182, 1184-1187, 1191, 1193
+    _pixops_scale_real                         22   2372, 2390-2392, 2394-2396, 2398, 2401, 2403, 2408, 2411-2412, 2416-2417, 2420, 2423, 2425, 2431-2434
+    tile_make_weights                          21   1434, 1437-1440, 1442-1443, 1446-1448, 1450, 1452-1453, 1455, 1457, 1459-1460, 1462, 1466-1467, 1469
+    _pixops_composite_color_real               20   1807, 1831-1833, 1835-1836, 1838, 1841, 1843, 1850, 1853-1854, 1858-1859, 1862, 1864, 1870-1873
+    pixops_composite_nearest                   19   339, 357-363, 365, 367-372, 374, 376, 419, 421
+    make_weights                               19   1627, 1632, 1634, 1636, 1639-1640, 1642, 1644-1645, 1649-1650, 1652, 1654-1655, 1659-1660, 1662, 1664-1665
+    composite_pixel                            18   662, 666, 668-670, 672, 674-677, 681-684, 689-691, 693
+    composite_pixel_color                      18   840, 845-846, 848, 850-852, 856-858, 861-863, 865-869
+    pixops_composite_nearest_noscale           17   424, 440-444, 473, 475-480, 482, 484, 527, 529
+    bilinear_box_make_weights                  17   1593, 1596-1599, 1601-1602, 1605-1607, 1609, 1611-1612, 1614, 1616-1617, 1619
+    need_to_prescale                           15   1695, 1699, 1702, 1706-1711, 1713-1715, 1719-1720, 1724
+    _pixops_composite_color                    15   1877, 1905-1909, 1911, 1913, 1918, 1921, 1923-1926, 1928
+    _pixops_composite                          15   2034, 2057-2061, 2063, 2065, 2070, 2084-2088, 2090
+    correct_total                              13   1196, 1202-1203, 1205, 1208-1210, 1212-1216, 1219
+    _pixops_scale                              13   2438, 2460-2464, 2476-2480, 2482, 2487
+    get_check_shift                             6   235, 237-238, 240, 242-243
+
+gdk-pixdata.c  (434 lines)
+    gdk_pixdata_to_csource                    128   729, 733-740, 743-744, 746-750, 752-753, 755, 757-759, 761-762, 764-769, 771-774, 776-781, 783, 785, 787, 790, 794, 801-802, 805, 810, 812, 814, 816, 818, 821, 823, 825, 827, 829-830, 832, 834, 836, 838, 840, 842, 845-847, 849-851, 853-854, 856, 858-859, 861, 863, 865, 867-870, 873-876, 878-881, 883-894, 899, 901, 905-906, 908, 910-911, 913, 915-916, 921-923, 927-932, 936-937, 940, 945-946, 948
+    gdk_pixbuf_from_pixdata                    80   456, 460-461, 463-467, 469-470, 472, 474-475, 477-481, 483-484, 487, 495-497, 499, 502, 505, 507-508, 510, 516-517, 520, 522-526, 528-529, 531-532, 534, 536, 542, 544, 546-550, 555-556, 558-559, 561, 563, 565-566, 568-569, 574, 578-582, 587-589, 592, 594-595, 598, 601-602, 604, 606-608
+    gdk_pixdata_from_pixbuf                    47   356, 360-363, 365-368, 370, 372-375, 377, 379-381, 383, 385-388, 390, 395, 401-407, 410-412, 416-417, 420-428, 430
+    gdk_pixdata_serialize                      31   127, 130-132, 135-136, 138-142, 144-145, 147, 149, 152, 154-155, 158-163, 166-168, 170-171, 195-196
+    rl_encode_rgbx                             30   281, 286-287, 289, 291, 293, 295-296, 298-305, 309, 311-317, 319, 321-324, 328
+    save_uchar                                 30   628, 631, 633, 635, 637-639, 641, 643-645, 648, 650-653, 655, 657-658, 660, 662-663, 665, 667-669, 673-674, 676-677
+    gdk_pixdata_deserialize                    29   225, 230, 232-235, 239-247, 249-258, 261-263, 265
+    pixdata_get_length                         27   58, 60, 62, 64, 68, 70-75, 77-80, 82, 84, 86-87, 89-90, 94, 96-98, 101-102
+    save_rle_decoder                           18   681, 687, 689-690, 692, 694-698, 700, 702-706, 708-709
+    gdk_pixbuf_new_from_inline                  7   1000, 1005, 1007-1009, 1011, 1014
+    free_buffer                                 3   333, 335-336
+    diff2_rgb                                   2   269, 271
+    diff2_rgba                                  2   275, 277
+
+gdk-pixbuf.c  (307 lines)
+    gdk_pixbuf_get_property                    34   1440, 1445, 1447-1477, 1479
+    gdk_pixbuf_remove_option                   31   1203, 1206-1210, 1212-1213, 1215, 1217-1218, 1221, 1224, 1226-1230, 1236-1239, 1242-1244, 1246, 1249-1252, 1254
+    gdk_pixbuf_fill                            29   1056, 1059-1062, 1064, 1066, 1070, 1072-1075, 1077, 1079-1081, 1083, 1085-1089, 1093-1098, 1105
+    gdk_pixbuf_set_option                      20   1273, 1277-1279, 1281-1283, 1285, 1287, 1289-1291, 1295-1296, 1298, 1301-1303, 1305, 1308
+    gdk_pixbuf_constructed                     16   1509, 1519-1520, 1526-1529, 1531, 1533-1536, 1539-1540, 1545-1546
+    gdk_pixbuf_new_subpixbuf                   14   706, 712-713, 715-717, 720-722, 724, 726, 733, 735, 740
+    make_storage_invalid                       14   1482, 1484-1485, 1487, 1489-1490, 1492-1499
+    gdk_pixbuf_serialize                       12   458, 460-462, 464-465, 467-469, 471-472, 474
+    downgrade_to_pixels                        12   838-841, 843-845, 847-849, 852-853
+    gdk_pixbuf_copy                            10   656, 658-659, 661, 668, 670-671, 674, 676-677
+    gdk_pixbuf_read_pixels                     10   904, 906, 908-910, 912-913, 915, 918-919
+    gdk_pixbuf_get_option                      10   1135, 1138-1139, 1141-1142, 1144, 1146-1149
+    gdk_pixbuf_copy_options                    10   1328, 1331-1332, 1334-1335, 1337, 1339, 1344, 1347, 1350
+    gdk_pixbuf_load                             9   478, 484-485, 487-488, 491-492, 494-495
+    gdk_pixbuf_read_pixel_bytes                 9   942, 944, 946-948, 951-952, 954-955
+    gdk_pixbuf_get_options                      9   1170, 1172-1173, 1175, 1177, 1179, 1181, 1184-1185
+    gdk_pixbuf_load_async                       6   501, 507, 509-512
+    gdk_pixbuf_set_property                     6   1419, 1421-1422, 1430-1432
+    gdk_pixbuf_finalize                         5   402-404, 406-407
+    gdk_pixbuf_make_bytes                       5   445, 448-449, 451, 454
+    free_bytes                                  4   385, 387, 389-390
+    gdk_pixbuf_load_finish                      4   515, 520, 522, 525
+    gdk_pixbuf_get_byte_length                  4   1019, 1021, 1023-1024
+    gdk_pixbuf_unref                            3   439, 441-442
+    gdk_pixbuf_get_colorspace                   3   756, 758, 760
+    gdk_pixbuf_get_n_channels                   3   772, 774, 776
+    gdk_pixbuf_get_has_alpha                    3   788, 790, 792
+    gdk_pixbuf_get_bits_per_sample              3   804, 806, 808
+    gdk_pixbuf_get_width                        3   968, 970, 972
+    gdk_pixbuf_get_height                       3   984, 986, 988
+    gdk_pixbuf_ref                              2   425, 427
+    gdk_pixbuf_get_pixels_with_length           1   885
+
+gdk-pixbuf-animation.c  (282 lines)
+    gdk_pixbuf_animation_new_from_file         80   165, 168-173, 175-176, 178-182, 184, 188-189, 192, 194-195, 200-202, 205-209, 212-216, 219-221, 223, 231, 233, 240-245, 247-249, 251-252, 255-258, 267-269, 271-272, 274, 276, 278-280, 284, 288-290, 292, 299, 301, 308-311, 314, 316, 319, 321-322
+    gdk_pixbuf_animation_new_from_stream       23   370, 374-378, 380-382, 384, 386-389, 395, 398, 405, 410-413, 418, 420
+    gdk_pixbuf_animation_new_from_resource     14   519, 522-524, 526-530, 533-534, 537-539
+    gdk_pixbuf_non_anim_iter_class_init        10   973, 975-977, 979, 981-985
+    animation_new_from_stream_thread            9   424, 429-431, 433, 436-437, 439, 441
+    gdk_pixbuf_animation_new_from_stream_async    9   462, 467, 469-471, 473-476
+    gdk_pixbuf_non_anim_class_init              9   871, 873-874, 876, 878-882
+    gdk_pixbuf_animation_iter_advance           8   843, 846, 848-849, 851-852, 854, 856
+    gdk_pixbuf_non_anim_get_size                8   933, 937, 939, 941-942, 944-946
+    gdk_pixbuf_animation_get_iter               7   707, 710, 712, 715-716, 718, 720
+    gdk_pixbuf_non_anim_new                     7   901, 903, 905, 907, 909-910, 912
+    prepared_notify                             6   125, 129-130, 132, 134-135
+    gdk_pixbuf_animation_new_from_stream_finish    6   492, 495, 497-499, 501
+    gdk_pixbuf_animation_get_width              6   628, 630, 632, 634-635, 638
+    gdk_pixbuf_animation_get_height             6   650, 652, 654, 656-657, 660
+    gdk_pixbuf_non_anim_finalize                6   890, 892, 894-895, 897-898
+    gdk_pixbuf_non_anim_get_iter                6   949, 952, 954, 956, 958, 960
+    gdk_pixbuf_non_anim_iter_finalize           5   993, 995, 997, 999-1000
+    gdk_pixbuf_animation_iter_get_delay_time    4   752, 754-755, 757
+    gdk_pixbuf_animation_iter_get_pixbuf        4   783, 785-786, 788
+    gdk_pixbuf_animation_iter_on_currently_loading_frame    4   805, 807-808, 810
+    gdk_pixbuf_non_anim_get_static_image        4   923, 925, 927, 929
+    gdk_pixbuf_animation_unref                  3   567, 569-570
+    gdk_pixbuf_animation_is_static_image        3   586, 588, 590
+    gdk_pixbuf_animation_get_static_image       3   612, 614, 616
+    gdk_pixbuf_animation_class_init             2   108, 110
+    gdk_pixbuf_animation_init                   2   113, 115
+    noop_size_notify                            2   118, 122
+    noop_updated_notify                         2   138, 145
+    gdk_pixbuf_animation_ref                    2   553, 555
+    gdk_pixbuf_animation_iter_class_init        2   726, 728
+    gdk_pixbuf_animation_iter_init              2   731, 733
+    gdk_pixbuf_non_anim_init                    2   885, 887
+    gdk_pixbuf_non_anim_is_static_image         2   916, 919
+    gdk_pixbuf_non_anim_iter_init               2   988, 990
+    gdk_pixbuf_non_anim_iter_get_delay_time     2   1003, 1005
+    gdk_pixbuf_non_anim_iter_get_pixbuf         2   1009, 1011
+    gdk_pixbuf_non_anim_iter_on_currently_loading_frame    2   1016, 1018
+    gdk_pixbuf_non_anim_iter_advance            2   1022, 1027
+    gdk_pixbuf_animation_get_type_once          1   105
+    gdk_pixbuf_animation_iter_get_type_once     1   723
+    gdk_pixbuf_non_anim_get_type_once           1   868
+    gdk_pixbuf_non_anim_iter_get_type_once      1   970
+
+gdk-pixbuf-loader.c  (251 lines)
+    gdk_pixbuf_loader_prepare                  35   319, 323-325, 327-330, 332, 334-335, 337, 340-343, 345-346, 348-349, 351-353, 356-357, 359-361, 364, 367-368, 372, 375, 377-378
+    gdk_pixbuf_loader_new_with_mime_type       26   680, 683-684, 686-687, 689-691, 693-694, 696-698, 700-703, 707, 709, 711-713, 715-718
+    gdk_pixbuf_loader_close                    26   828, 831-832, 834-835, 837, 839, 845, 847-849, 851-852, 856, 858-859, 865-867, 869, 875, 877, 880-881, 886, 888
+    gdk_pixbuf_loader_load_module              22   423, 427, 429, 431, 436-438, 442, 445, 448, 451-453, 455, 461, 464, 470, 472-473, 476-478
+    gdk_pixbuf_loader_write                    20   519, 524, 526, 528-529, 531, 534, 536, 538, 540-541, 544-545, 549, 551, 553, 560-562, 564
+    gdk_pixbuf_loader_class_init               13   121, 123, 125, 127, 143-144, 165-166, 191-192, 214-215, 222
+    gdk_pixbuf_loader_finalize                 13   239, 241-242, 244-245, 247-248, 250-251, 253, 255, 257-258
+    gdk_pixbuf_loader_size_func                12   297, 299, 301-302, 305, 307-308, 311-312, 314-316
+    gdk_pixbuf_loader_new_with_type            12   632, 635-637, 639, 641-643, 645-648
+    gdk_pixbuf_loader_init                      9   225, 227, 229-233, 235-236
+    gdk_pixbuf_loader_eat_header_write          9   484, 489-490, 492-493, 495, 497, 499-500
+    gdk_pixbuf_loader_set_size                  8   278, 282, 284-285, 287, 289, 291-292
+    gdk_pixbuf_loader_update                    7   382, 389, 391-392, 397-399
+    _gdk_pixbuf_loader_new_with_filename        7   725, 727-728, 730-732, 734
+    gdk_pixbuf_loader_ensure_error              6   403, 406, 408, 411, 413, 419
+    gdk_pixbuf_loader_write_bytes               6   581, 585, 587-588, 590-591
+    gdk_pixbuf_loader_get_pixbuf                6   761, 763, 765, 767, 769-770
+    gdk_pixbuf_loader_get_format                6   903, 905, 907, 909, 911-912
+    gdk_pixbuf_loader_get_animation             5   792, 794, 796, 798, 800
+    gdk_pixbuf_loader_new                       2   604, 606
+    gdk_pixbuf_loader_get_type_once             1   117
+
+io-bmp.c  (188 lines)
+    DoCompressed                              103   1091, 1093-1096, 1106-1108, 1113-1119, 1122, 1125-1129, 1131-1137, 1140-1164, 1167-1186, 1188, 1190-1192, 1194, 1198-1200, 1202-1208, 1210, 1212-1215, 1217, 1223-1225, 1227, 1229-1231, 1239-1240
+    gdk_pixbuf__bmp_image_save_to_callback     50   1353, 1360-1363, 1365-1369, 1372-1374, 1377, 1380, 1384-1386, 1389, 1393-1398, 1401-1411, 1413, 1416-1418, 1422, 1426-1427, 1430-1433, 1436-1437, 1439
+    DecodeHeader                               11   449-451, 495, 499-500, 550-551, 560, 564-565
+    save_to_file_cb                            10   1443, 1448, 1450-1452, 1454-1455, 1458-1459, 1463
+    DecodeColormap                              4   589-590, 592, 619
+    grow_buffer                                 3   239, 243-244
+    gdk_pixbuf__bmp_image_load_increment        3   1332, 1334-1335
+    gdk_pixbuf__bmp_image_save                  2   1470, 1476
+    decode_bitmasks                             1   712
+    OneLine                                     1   1063
+
+gdk-pixbuf-scale.c  (139 lines)
+    gdk_pixbuf_rotate_simple                   47   355, 358-363, 365-366, 368, 370-375, 379, 382, 384, 386, 388-390, 394-396, 400, 403, 405, 407, 409-411, 415-417, 421, 424, 426, 428, 430-432, 436-438, 440
+    gdk_pixbuf_flip                            23   459, 462-467, 469-471, 475, 478-479, 481, 483, 485-487, 492, 494, 496-498
+    gdk_pixbuf_composite                       15   121, 134-135, 137-141, 143-144, 147-148, 150-151, 153
+    gdk_pixbuf_composite_color                 15   192, 210-211, 213-217, 219-220, 223-224, 226-227, 229
+    gdk_pixbuf_scale                           14   57, 69-70, 72-75, 77-78, 81-82, 84-86
+    gdk_pixbuf_scale_simple                    13   265, 270, 272-274, 277-278, 280-281, 284-286, 289
+    gdk_pixbuf_composite_color_simple          12   310, 319, 321-324, 326-327, 330-332, 335
+
+gdk-pixbuf-util.c  (139 lines)
+    gdk_pixbuf_saturate_and_pixelate           47   196, 203-208, 210-212, 217-223, 225-230, 232-233, 240-244, 246-255, 257-259, 262-263, 265-266
+    gdk_pixbuf_apply_embedded_orientation      43   293, 295-298, 300, 303, 305, 308, 314-344, 346-348
+    gdk_pixbuf_add_alpha                       36   54, 60-65, 67-70, 72, 74-76, 79, 82, 85, 88, 90-91, 93-94, 96, 98-102, 105-108, 110-111, 113
+    gdk_pixbuf_copy_area                       11   141, 147-148, 150-151, 153-154, 156, 160, 164-165
+    gdk_pixbuf_gettext                          2   398, 400
+
+gdk-pixbuf-scaled-anim.c  (109 lines)
+    get_scaled_pixbuf                          14   118, 121-122, 124-125, 134-135, 138-140, 144-146, 148
+    gdk_pixbuf_scaled_anim_class_init          11   193, 195-196, 198-199, 201, 203-207
+    gdk_pixbuf_scaled_anim_iter_class_init     11   270, 272-273, 275-276, 278, 280-284
+    gdk_pixbuf_scaled_anim_finalize            10   92, 94, 96-98, 101-103, 106-107
+    _gdk_pixbuf_scaled_anim_new                 8   64, 69, 71, 73-76, 78
+    get_size                                    8   162, 166, 168-173
+    get_iter                                    7   177, 180-181, 183, 185-186, 188
+    get_delay_time                              6   218, 220-221, 223-224, 226
+    gdk_pixbuf_scaled_anim_iter_finalize        6   259, 261, 263-264, 266-267
+    gdk_pixbuf_scaled_anim_init                 5   84, 86-89
+    get_static_image                            5   152, 154-155, 157-158
+    get_pixbuf                                  5   230, 232-233, 235-236
+    is_static_image                             3   110, 112, 114
+    on_currently_loading_frame                  3   240, 242, 244
+    advance                                     3   249, 252, 254
+    gdk_pixbuf_scaled_anim_iter_init            2   213, 215
+    gdk_pixbuf_scaled_anim_get_type_once        1   81
+    gdk_pixbuf_scaled_anim_iter_get_type_once    1   210
+
+gdk-pixbuf-enum-types.c  (28 lines)
+    gdk_pixbuf_alpha_mode_get_type              7   9, 11, 13-14, 19, 21, 23
+    gdk_pixbuf_error_get_type                   7   42, 44, 46-47, 57, 59, 61
+    gdk_interp_type_get_type                    7   65, 67, 69-70, 77, 79, 81
+    gdk_pixbuf_rotation_get_type                7   84, 86, 88-89, 96, 98, 100
+
+gdk-pixbuf-marshal.c  (26 lines)
+    _gdk_pixbuf_marshal_VOID__INT_INT          13   54, 61, 65-67, 69, 71, 73-74, 78-79, 81, 83
+    _gdk_pixbuf_marshal_VOID__INT_INT_INT_INT   13   91, 98, 104-106, 108, 110, 112-113, 117-118, 120, 122
+
+gdk-pixbuf-data.c  (8 lines)
+    gdk_pixbuf_new_from_bytes                   8   116, 124-129, 131
+
+gstring.h  (6 lines)
+    g_string_append_c_inline                    6   161, 164, 166-167, 170-171
+
+gtypes.h  (2 lines)
+    <file scope>                                2   419, 421
+
+stdlib.h  (1 lines)
+    <file scope>                                1   363
+

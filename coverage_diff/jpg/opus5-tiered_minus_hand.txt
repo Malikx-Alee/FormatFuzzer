@@ -1,0 +1,79 @@
+jpg: lines opus5-tiered reached that hand did not
+=================================================
+501 lines in 14 files
+
+jddiffct.c  (99 lines)
+    decompress_data                            39   163, 165-172, 175-176, 179-180, 185, 187-191, 199-200, 203, 211-220, 222-223, 234-236, 239-240
+    output_data                                21   295, 297-301, 304-306, 312-313, 315, 317-318, 320-321, 324-325, 328-330
+    consume_data                               12   265, 267-270, 273-276, 278-279, 282
+    jinit_d_diff_controller                    10   386, 388-391, 393-395, 399-400
+    <file scope>                                8   68, 74-75, 77-78, 80, 83-84
+    start_input_pass                            6   107-108, 112, 114-116
+    start_output_pass                           3   146, 148-149
+
+jdarith.c  (82 lines)
+    decode_mcu_AC_refine                       25   436, 438-443, 446, 452, 455-456, 458-459, 462-463, 465-471, 480-482
+    process_restart                            18   199, 201-203, 206, 210-213, 215-216, 218-219, 224-226, 229-230
+    decode_mcu                                 12   516-518, 550-552, 587-589, 604-606
+    decode_mcu_DC_refine                       11   403, 405-407, 410, 416-417, 421, 423-424, 427
+    decode_mcu_AC_first                        10   371-378, 380, 388
+    start_pass                                  6   653, 681, 692-693, 695, 703
+
+jdlossls.c  (67 lines)
+    jpeg_undifference_first_row                26   174, 178, 180, 187-208, 213
+    start_pass_lossless                         8   258-259, 264-265, 268-269, 271-272
+    simple_upscale                              5   219, 222-225
+    noscale                                     5   228, 231-234
+    jpeg_undifference2                          4   116, 120-122
+    jpeg_undifference7                          4   157, 161-163
+    jpeg_undifference1                          3   108, 112-113
+    jpeg_undifference3                          3   125, 129-130
+    jpeg_undifference4                          3   133, 137-138
+    jpeg_undifference5                          3   141, 145-146
+    jpeg_undifference6                          3   149, 153-154
+
+jmemmgr.c  (53 lines)
+    access_virt_sarray                         22   919, 925-928, 930-932, 936-937, 941-942, 978-979, 986-988, 997-998, 1002-1003, 1005
+    realize_virt_arrays                        16   719-721, 723-725, 727, 768-770, 772, 782, 784-787
+    request_virt_sarray                        14   636, 641-642, 645, 649, 652-659, 661
+    free_pool                                   1   1119
+
+jdcolor.c  (44 lines)
+    ycck_cmyk_convert                          30   411, 415-420, 422-426, 429-439, 441-443, 445, 447-448, 454
+    null_convert                               10   344-353
+    jinit_color_deconverter                     4   860-861, 865-866
+
+jdphuff.c  (42 lines)
+    decode_mcu_DC_refine                       14   452, 454-458, 461, 472, 476-477, 480-481, 487, 490
+    process_restart                            12   232, 234-235, 239-240, 243, 247-248, 250, 253, 260-261
+    decode_mcu_DC_first                         7   304-305, 331-333, 339, 354
+    decode_mcu_AC_first                         5   415, 418-419, 424-425
+    start_pass_phuff_decoder                    4   141, 153-154, 156
+
+jdlhuff.c  (29 lines)
+    decode_mcus                                29   207, 210-213, 216-221, 231-234, 237, 242, 246, 249-251, 254-256, 259-261, 266, 270
+
+jdapimin.c  (27 lines)
+    default_decompress_parms                   27   152-162, 177, 180, 182-183, 186, 195-205
+
+jdmarker.c  (26 lines)
+    examine_app14                              11   690-693, 695-701
+    read_restart_marker                         9   1138, 1142-1143, 1147-1148, 1150-1151, 1161, 1163
+    examine_app0                                6   661-666
+
+jdhuff.c  (14 lines)
+    process_restart                            11   512, 514-515, 519-520, 523, 527-528, 531, 538-539
+    decode_mcu                                  3   777-778, 803
+
+jdcoefct.c  (12 lines)
+    decompress_smooth_data                     12   525-526, 538-539, 541, 543, 761-762, 764, 806-807, 809
+
+djpeg.c  (3 lines)
+    main                                        3   945-946, 948
+
+jdapistd.c  (2 lines)
+    jpeg_read_scanlines                         2   331, 333
+
+jdpostct.c  (1 lines)
+    start_pass_dpost                            1   111
+

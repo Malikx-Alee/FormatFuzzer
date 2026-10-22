@@ -1,0 +1,48 @@
+jpg: lines hand reached that opus4.7 did not
+============================================
+171 lines in 13 files
+
+jdcoefct.c  (47 lines)
+    decompress_smooth_data                     47   528-529, 545-546, 550, 594-595, 600-601, 606-607, 612-613, 634-638, 641-645, 670-671, 673, 690-691, 693, 708-709, 711, 727-728, 730, 745-746, 748, 776-777, 779, 791-792, 794, 825-826, 856
+
+jdcolor.c  (41 lines)
+    null_convert                               21   334, 337-341, 343, 356-368, 385
+    jinit_color_deconverter                    20   664, 666, 670-671, 755, 782-785, 787, 857, 859, 863-864, 867-868, 873, 875-877
+
+jdarith.c  (18 lines)
+    decode_mcu_DC_first                        17   285-286, 288-291, 296, 300, 302-303, 305-306, 308-312
+    decode_mcu_AC_first                         1   370
+
+wrppm.c  (18 lines)
+    put_cmyk                                   15   161, 164-167, 169-176, 178-179
+    start_output_ppm                            2   268-269
+    jinit_write_ppm                             1   370
+
+jdsample.c  (16 lines)
+    h2v1_upsample                              15   225, 228-232, 234-241, 244
+    jinit_upsampler                             1   519
+
+jdapimin.c  (10 lines)
+    default_decompress_parms                   10   173, 193-194, 209, 211-212, 214-217
+
+jdmaster.c  (6 lines)
+    jpeg_calc_output_dimensions                 6   358, 360-364
+
+jdmarker.c  (5 lines)
+    get_dri                                     5   582, 584, 586, 588-589
+
+jerror.c  (4 lines)
+    format_message                              4   166-169
+
+cmyk.h  (3 lines)
+    <file scope>                                3   55-57
+
+jdinput.c  (1 lines)
+    initial_setup                               1   75
+
+jdphuff.c  (1 lines)
+    start_pass_phuff_decoder                    1   104
+
+jmemmgr.c  (1 lines)
+    alloc_barray                                1   572
+

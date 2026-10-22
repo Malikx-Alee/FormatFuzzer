@@ -1,0 +1,11 @@
+png: lines opus5 reached that opus5-tiered did not
+==================================================
+8 lines in 1 files
+
+pngrutil.c  (8 lines)
+    png_handle_sPLT                             2   1612-1613
+    png_handle_zTXt                             2   2505, 2550
+    png_handle_iTXt                             2   2623, 2670
+    png_inflate                                 1   655
+    png_decompress_chunk                        1   808
+

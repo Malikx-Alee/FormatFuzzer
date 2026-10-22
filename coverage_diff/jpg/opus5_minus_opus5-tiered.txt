@@ -1,0 +1,10 @@
+jpg: lines opus5 reached that opus5-tiered did not
+==================================================
+2 lines in 2 files
+
+jdinput.c  (1 lines)
+    initial_setup                               1   75
+
+jdphuff.c  (1 lines)
+    start_pass_phuff_decoder                    1   104
+

@@ -1,0 +1,11 @@
+bmp: lines opus5-tiered reached that hand did not
+=================================================
+9 lines in 2 files
+
+gdk-pixbuf-io.c  (8 lines)
+    _gdk_pixbuf_get_module                      6   920, 927, 956, 958-959, 964
+    gdk_pixbuf_new_from_file                    2   1138-1139
+
+harness.c  (1 lines)
+    main                                        1   10
+

@@ -1,0 +1,36 @@
+png: lines opus4.7 reached that opus5 did not
+=============================================
+57 lines in 7 files
+
+pngrutil.c  (26 lines)
+    png_handle_eXIf                            11   1999, 2001, 2005, 2007, 2014, 2016-2017, 2024, 2027, 2029-2030
+    png_handle_sPLT                             3   1587, 1626-1627
+    png_handle_iTXt                             3   2655, 2661, 2666
+    png_handle_tIME                             2   2350, 2355
+    png_handle_chunk                            2   3177-3178
+    png_handle_PLTE                             1   1064
+    png_handle_sRGB                             1   1291
+    png_handle_pCAL                             1   2160
+    png_handle_zTXt                             1   2508
+    png_handle_unknown                          1   2957
+
+png.c  (13 lines)
+    png_check_IHDR                             10   2054-2055, 2075-2076, 2095, 2101-2102, 2105, 2107-2108
+    png_zstream_error                           3   1046, 1050-1051
+
+pngtest.c  (6 lines)
+    test_one_file                               6   1615, 1617-1618, 1622-1623, 1626
+
+pngtrans.c  (6 lines)
+    png_do_check_palette_indexes                6   746, 751, 753-755, 758
+
+pngwrite.c  (3 lines)
+    png_write_end                               2   417-418
+    write_unknown_chunks                        1   64
+
+pngset.c  (2 lines)
+    png_set_PLTE                                2   780, 784
+
+pngwutil.c  (1 lines)
+    png_write_pHYs                              1   1887
+

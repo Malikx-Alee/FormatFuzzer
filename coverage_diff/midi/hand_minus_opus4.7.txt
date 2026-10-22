@@ -1,0 +1,25 @@
+midi: lines hand reached that opus4.7 did not
+=============================================
+102 lines in 3 files
+
+readmidi.c  (86 lines)
+    read_smf_track                             42   3483, 3488, 3491, 3519-3521, 3526-3527, 3529-3530, 3534-3537, 3540, 3549, 3553, 3555, 3557, 3559, 3566, 3592-3601, 3616, 3621-3622, 3634-3635, 3643, 3645, 3687-3688, 3691-3692
+    readmidi_make_string_event                 15   281, 289-290, 296-297, 299-300, 302-303, 312-313, 315-318
+    groom_list                                  7   4288-4290, 4292, 4298, 4300, 4302
+    parse_sysex_event_multi                     4   2755-2756, 2760, 2801
+    free_readmidi                               4   6408-6411
+    dumpstring                                  3   466-467, 473
+    parse_sysex_event                           3   3201-3202, 3205
+    fix_string                                  3   3302, 3304, 3311
+    read_midi_file                              3   4867-4869
+    read_smf_file                               2   4498-4499
+
+common.c  (11 lines)
+    safe_exit                                   7   620, 622, 624-625, 627-629
+    safe_malloc                                 3   643-644, 664
+    safe_strdup                                 1   743
+
+list_a.c  (5 lines)
+    do_event                                    3   175-177
+    acntl                                       2   197-198
+

@@ -1,0 +1,13 @@
+wav: lines opus4.7 reached that opus5-tiered did not
+====================================================
+3 lines in 3 files
+
+entropy_utils.c  (1 lines)
+    store_weight                                1   362
+
+extra1.c  (1 lines)
+    decorr_mono_pass                            1   77
+
+pack_utils.c  (1 lines)
+    WavpackPackInit                             1   555
+

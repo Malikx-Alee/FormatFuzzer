@@ -1,0 +1,14 @@
+zip: lines hand reached that opus5-tiered did not
+=================================================
+12 lines in 3 files
+
+process.c  (6 lines)
+    find_ecrec64                                6   1345, 1347, 1349, 1355, 1357, 1359
+
+extract.c  (5 lines)
+    extract_or_test_files                       4   494, 497-498, 805
+    extract_or_test_entrylist                   1   1268
+
+fileio.c  (1 lines)
+    do_string                                   1   2237
+

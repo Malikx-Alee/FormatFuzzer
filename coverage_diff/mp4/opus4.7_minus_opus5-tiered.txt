@@ -1,0 +1,207 @@
+mp4: lines opus4.7 reached that opus5-tiered did not
+====================================================
+972 lines in 49 files
+
+mpeg4videodec.c  (112 lines)
+    mpeg4_update_thread_context                34   3697, 3700-3702, 3704, 3706, 3710-3734, 3736-3737, 3739
+    ff_mpeg4_decode_picture_header             27   3488, 3491-3494, 3497, 3502-3503, 3505, 3512-3515, 3518, 3521, 3525-3526, 3528, 3531, 3591, 3599, 3601, 3603, 3617, 3623, 3627-3628
+    mpeg4_init_static                          23   3758, 3760, 3762, 3767, 3772-3773, 3775-3777, 3779-3780, 3782, 3785-3791, 3794, 3797, 3800, 3803
+    decode_init                                22   3805, 3807-3810, 3812-3815, 3817, 3820-3823, 3825, 3827-3828, 3830, 3833-3834, 3836-3837
+    mpeg4_update_thread_context_for_user        6   3745, 3748-3749, 3751-3752, 3754
+
+mpeg12dec.c  (75 lines)
+    decode_chunks                              34   2406, 2409-2415, 2417, 2419-2427, 2429-2430, 2432, 2436-2439, 2445, 2447, 2450, 2453, 2455, 2460, 2585-2586, 2614
+    mpeg_decode_frame                          19   2745, 2748-2752, 2754, 2756, 2765, 2768-2769, 2773, 2775-2776, 2778, 2783-2784, 2790-2791
+    mpeg_decode_init                           13   1050, 1052-1053, 1055-1058, 1060, 1062-1066
+    mpeg_decode_end                             5   2824, 2826, 2828, 2830-2831
+    slice_end                                   4   1979, 1981-1982, 1984
+
+h264_loopfilter.c  (69 lines)
+    ff_h264_filter_mb                          44   734, 738-744, 746, 750, 759-763, 765, 768, 771-772, 777-789, 792-798, 803, 809-812
+    <file scope>                               22   150-153, 155-161, 173-176, 178-184
+    check_mv                                    3   495, 558-559
+
+mpegvideo_dec.c  (55 lines)
+    ff_mpeg_update_thread_context              44   62, 65-67, 69, 72, 76-79, 81-86, 88, 94, 101, 103-104, 106-107, 126-128, 135-137, 140-141, 144-146, 149-151, 154, 156, 170-171, 179, 184, 187
+    ff_mpv_decode_init                         11   45, 47, 49-53, 56, 58-60
+
+h263dec.c  (45 lines)
+    ff_h263_decode_end                         32   141, 143, 145-146, 402, 405-409, 412, 414, 420, 434, 437-438, 451, 455, 457-458, 462, 464, 466-468, 477-479, 485, 489-491
+    ff_h263_decode_init                        13   69, 72, 77, 79-81, 84, 122, 127-128, 135-136, 138
+
+h2645_sei.c  (40 lines)
+    ff_h2645_sei_to_frame                      26   709-715, 718-723, 725-728, 730-735, 737-738, 747
+    decode_nal_sei_mastering_display_info      12   396, 399, 401, 405-407, 410-411, 414-415, 420, 422
+    ff_h2645_sei_message_decode                 2   462-463
+
+mpegvideo_parser.c  (37 lines)
+    mpegvideo_extract_headers                  22   102, 106-113, 117, 120, 123, 246-247, 250, 253, 258, 266-269, 271
+    mpegvideo_parse                            12   273, 278-280, 282, 285, 287, 297-298, 301-303
+    mpegvideo_parse_init                        3   306, 308-309
+
+codec_par.c  (35 lines)
+    avcodec_parameters_to_context              18   256-257, 261-263, 273-274, 279-281, 284-291
+    avcodec_parameters_from_context            17   169-170, 174-176, 186-187, 192-194, 197-203
+
+mpeg12.c  (35 lines)
+    ff_init_2d_vlc_rl                          20   67, 71-75, 77-80, 82, 85, 89, 92, 96-97, 100-102, 104
+    mpeg12_init_vlcs                           11   131, 133, 136, 139, 142, 145, 149, 152, 156, 159, 162
+    ff_mpeg12_init_vlcs                         4   164, 166-168
+
+mpeg4video_parser.c  (31 lines)
+    mpeg4_decode_header                        15   82, 85-89, 91, 93, 100-102, 108, 115-117
+    mpeg4video_parse                            9   131, 136-137, 139-140, 150, 152-154
+    mpeg4video_parse_init                       7   120, 122, 124-128
+
+ffmpeg_mux_init.c  (30 lines)
+    map_auto_audio                             11   1541-1546, 1550-1553, 1558
+    ost_add                                    10   1180, 1188, 1316, 1318, 1411, 1439-1441, 1449-1450
+    init_output_stream_nofilter                 5   2578, 2580, 2582, 2587-2588
+    of_open                                     3   2783-2785
+    ost_get_filters                             1   454
+
+eacdata.c  (29 lines)
+    cdata_read_header                          22   51, 53-57, 59-60, 74-75, 77-78, 80-81, 83-88, 90-91
+    cdata_read_packet                           7   94, 96-97, 99-100, 102-103
+
+demux.c  (27 lines)
+    estimate_timings_from_bit_rate             13   1704, 1708, 1722-1726, 1728-1730, 1733, 1738-1739
+    has_codec_parameters                        8   1975-1976, 1978-1981, 1983, 1985
+    avformat_find_stream_info                   6   2493, 2495, 2892-2894, 2896
+
+h264dsp_template.c  (27 lines)
+    h264_h_loop_filter_chroma422_mbaff_intra_9_c   27   353-361, 365-369, 371-373, 375, 377-378, 380, 432, 434-435, 452, 454-455
+
+rl.c  (27 lines)
+    ff_rl_init_vlc                             27   79, 81-85, 89-91, 93-94, 96-98, 100-103, 105, 108, 112, 116-118, 121-123
+
+channel_layout.c  (25 lines)
+    av_channel_layout_describe_bprint           9   740, 743, 745, 747-750, 777-778
+    av_channel_layout_describe                  9   786, 789-790, 792, 795-797, 800, 802
+    av_channel_layout_default                   6   972, 974-978
+    av_channel_layout_check                     1   921
+
+mov.c  (23 lines)
+    mov_read_custom                            17   4838-4839, 4841-4843, 4845, 4848-4850, 4852, 4883, 4897, 4901-4905
+    mov_read_trak                               4   4741, 4749-4751
+    mov_read_udta_string                        1   397
+    ff_mov_read_stsd_entries                    1   2782
+
+adpcm.c  (22 lines)
+    adpcm_decode_init                          15   251, 253-255, 257, 259, 267, 273-274, 295, 301, 319-320, 340-341
+    adpcm_flush                                 7   2279, 2281, 2284, 2286, 2311, 2313-2314
+
+avcodec.c  (20 lines)
+    avcodec_string                             13   653-654, 656-657, 660-663, 665-667, 669, 672
+    get_bit_rate                                4   110-112, 119
+    avcodec_open2                               3   309-311
+
+ffmpeg_demux.c  (20 lines)
+    guess_input_channel_layout                  9   938, 940, 942-943, 945, 947-948, 950-951
+    ist_output_add                              8   853, 855, 857-858, 861-862, 865, 867
+    ist_add                                     3   1221-1223
+
+avformat.c  (19 lines)
+    avformat_transfer_internal_stream_timing_info   15   677, 681-683, 685-687, 689, 695, 726-727, 742, 749-750, 752
+    av_stream_get_codec_timebase                2   755, 758
+    ff_find_decoder                             2   794-795
+
+hscale.c  (19 lines)
+    ff_init_desc_fmt_convert                   10   127, 129-130, 132-133, 135-138, 140
+    ff_init_desc_cfmt_convert                   9   235, 237-238, 240-241, 243-245, 247
+
+extract_extradata_bsf.c  (15 lines)
+    extract_extradata_mpeg12                    8   303, 306-308, 310-312, 314
+    extract_extradata_mpeg4                     7   332, 335-337, 339-341
+
+ituh263dec.c  (15 lines)
+    h263_decode_init_vlc                       11   111, 113, 116, 119, 122, 125-128, 131, 134
+    ff_h263_decode_init_vlc                     4   136, 138-140
+
+utils.c  (15 lines)
+    av_codec_get_id                             4   229, 231-233
+    fill_rgb2yuv_table                          3   800, 804, 809
+    ff_bprint_to_codecpar_extradata             2   588, 591
+    av_get_audio_frame_duration                 2   796-797
+    av_get_media_type_string                    1   32
+    av_codec_get_tag2                           1   223
+    avformat_network_init                       1   560
+    ff_is_http_proto                            1   582
+
+slice.c  (13 lines)
+    ff_init_filters                            13   305-308, 334-338, 353-356
+
+mpeg4videodsp.c  (10 lines)
+    ff_mpeg4videodsp_init                       5   110, 112-113, 118, 120
+    ff_mpeg4videodsp_init_x86                   5   153, 156, 158-159, 161
+
+mux.c  (9 lines)
+    init_muxer                                  9   229-230, 240, 252-254, 374-376
+
+qtpalette.c  (9 lines)
+    ff_get_qtpalette                            9   388, 392-399
+
+evc_parser.c  (7 lines)
+    evc_parse                                   3   353-355
+    parse_nal_unit                              2   87-88
+    parse_nal_units                             2   244-245
+
+input.c  (6 lines)
+    ff_sws_init_input_funcs                     6   1516-1518, 1856-1858
+
+cmdutils.c  (5 lines)
+    filter_codec_opts                           5   937, 945-948
+
+mastering_display_metadata.c  (5 lines)
+    av_mastering_display_metadata_create_side_data    5   32, 34, 37, 40, 42
+
+h264_ps.c  (4 lines)
+    ff_h264_decode_seq_parameter_set            4   368, 370, 421, 423
+
+h264_slice.c  (4 lines)
+    fill_filter_caches                          4   2277, 2280-2281, 2283
+
+img2_alias_pix.c  (4 lines)
+    alias_pix_read_probe                        4   42-45
+
+movenc.c  (4 lines)
+    mov_init                                    3   7192, 7194-7195
+    validate_codec_tag                          1   1866
+
+mpeg.c  (4 lines)
+    mpegps_probe                                4   105-106, 108-109
+
+samplefmt.c  (3 lines)
+    av_get_sample_fmt_name                      3   51, 53, 55
+
+swscale.c  (3 lines)
+    sws_init_swscale                            3   561, 575, 579
+
+vc1dec.c  (3 lines)
+    vc1_probe                                   3   47-49
+
+vlc.c  (3 lines)
+    ff_vlc_init_from_lengths                    2   332-333
+    vlc_common_end                              1   236
+
+h264_direct.c  (2 lines)
+    pred_temp_direct_motion                     2   688-689
+
+mem.c  (2 lines)
+    av_malloc                                   2   143-144
+
+ffmpeg.c  (1 lines)
+    transcode_step                              1   1157
+
+img2dec.c  (1 lines)
+    pnm_magic_check                             1   1013
+
+motion_est.c  (1 lines)
+    ff_estimate_p_frame_motion                  1   934
+
+mpegvideodec.c  (1 lines)
+    mpegvideo_probe                             1   54
+
+options.c  (1 lines)
+    format_child_next                           1   55
+

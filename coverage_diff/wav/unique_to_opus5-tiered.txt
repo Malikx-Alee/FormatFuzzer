@@ -1,0 +1,13 @@
+wav: lines only opus5-tiered reached
+====================================
+25 lines in 3 files
+
+riff.c  (18 lines)
+    ParseRiffHeaderConfig                      18   102-106, 108-109, 114-115, 117, 122-124, 248-249, 251-252, 254
+
+common_utils.c  (6 lines)
+    WavpackLittleEndianToNative                 6   681-686
+
+pack.c  (1 lines)
+    write_channel_info                          1   322
+

@@ -1,0 +1,31 @@
+jpg: lines opus5 reached that opus4.7 did not
+=============================================
+75 lines in 8 files
+
+jdcolor.c  (30 lines)
+    null_convert                               18   334, 337-341, 343-353, 385
+    jinit_color_deconverter                    12   670-671, 755, 782-785, 787, 873, 875-877
+
+jdsample.c  (16 lines)
+    h2v1_upsample                              15   225, 228-232, 234-241, 244
+    jinit_upsampler                             1   519
+
+jdmarker.c  (15 lines)
+    examine_app14                              10   691-693, 695-701
+    get_dri                                     5   582, 584, 586, 588-589
+
+jdapimin.c  (8 lines)
+    default_decompress_parms                    8   152-155, 214-217
+
+jdmaster.c  (3 lines)
+    jpeg_calc_output_dimensions                 3   362-364
+
+jdarith.c  (1 lines)
+    start_pass                                  1   703
+
+jdinput.c  (1 lines)
+    initial_setup                               1   75
+
+jdphuff.c  (1 lines)
+    start_pass_phuff_decoder                    1   104
+

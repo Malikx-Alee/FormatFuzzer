@@ -1,0 +1,14 @@
+bmp: lines opus5 reached that opus4.7 did not
+=============================================
+73 lines in 1 files
+
+io-bmp.c  (73 lines)
+    decode_bitmasks                            30   642, 646-648, 650-651, 653, 655-657, 660, 666-667, 678-685, 687, 691, 695, 699, 703, 708-711
+    OneLine1                                   19   1018, 1020-1022, 1024-1027, 1029-1032, 1034-1039, 1041
+    DecodeHeader                                9   289-292, 544-546, 556-557
+    DecodeColormap                              7   628, 630-631, 633-636
+    OneLine32                                   2   818-819
+    OneLine16                                   2   903-904
+    OneLine                                     2   1060-1061
+    gdk_pixbuf__bmp_image_load_increment        2   1318-1319
+

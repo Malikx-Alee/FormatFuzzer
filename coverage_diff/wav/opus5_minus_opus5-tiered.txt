@@ -1,0 +1,10 @@
+wav: lines opus5 reached that opus5-tiered did not
+==================================================
+2 lines in 2 files
+
+extra1.c  (1 lines)
+    decorr_mono_pass                            1   77
+
+pack_utils.c  (1 lines)
+    WavpackPackInit                             1   555
+

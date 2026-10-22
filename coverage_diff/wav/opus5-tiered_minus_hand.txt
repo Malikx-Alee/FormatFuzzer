@@ -1,0 +1,22 @@
+wav: lines opus5-tiered reached that hand did not
+=================================================
+30 lines in 6 files
+
+riff.c  (18 lines)
+    ParseRiffHeaderConfig                      18   102-106, 108-109, 114-115, 117, 122-124, 248-249, 251-252, 254
+
+common_utils.c  (6 lines)
+    WavpackLittleEndianToNative                 6   681-686
+
+pack_utils.c  (3 lines)
+    copy_metadata                               3   1407-1409
+
+entropy_utils.c  (1 lines)
+    wp_log2                                     1   275
+
+extra1.c  (1 lines)
+    execute_mono                                1   558
+
+pack.c  (1 lines)
+    write_channel_info                          1   322
+

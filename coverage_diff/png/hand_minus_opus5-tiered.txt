@@ -1,0 +1,23 @@
+png: lines hand reached that opus5-tiered did not
+=================================================
+29 lines in 4 files
+
+pngrutil.c  (13 lines)
+    png_handle_zTXt                             3   2505, 2508, 2550
+    png_handle_iTXt                             3   2623, 2666, 2670
+    png_handle_sPLT                             2   1612-1613
+    png_handle_eXIf                             2   2029-2030
+    png_inflate                                 1   655
+    png_decompress_chunk                        1   808
+    png_handle_unknown                          1   2957
+
+png.c  (10 lines)
+    png_check_IHDR                             10   2054-2055, 2075-2076, 2095, 2101-2102, 2105, 2107-2108
+
+pngtest.c  (5 lines)
+    read_user_chunk_callback                    3   732, 741-742
+    set_chunk_location                          2   670, 676
+
+pngwutil.c  (1 lines)
+    png_write_iCCP                              1   1154
+

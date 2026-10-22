@@ -1,0 +1,41 @@
+mp4: lines only opus5-tiered reached
+====================================
+69 lines in 11 files
+
+mpjpegdec.c  (28 lines)
+    parse_multipart_header                     15   165, 170-172, 174, 177-178, 184, 190, 201-202, 204-205, 211, 239
+    get_line                                    6   49, 51, 53, 56, 59-60
+    trim_right                                  5   37, 39, 41, 44-45
+    mpjpeg_read_probe                           2   117, 119
+
+aviobuf.c  (11 lines)
+    ff_get_line                                11   816, 818-819, 821-826, 829-830
+
+sbgdec.c  (8 lines)
+    str_to_time                                 7   193-195, 197-198, 204-205
+    lex_space                                   1   231
+
+dnxhddec.c  (7 lines)
+    dnxhd_probe                                 7   35-37, 39-42
+
+mpeg4video.h  (4 lines)
+    ff_mpeg4_pred_dc                            4   107, 119, 121-122
+
+h264dec.c  (3 lines)
+    ff_h264_flush_change                        3   463-464, 467
+
+sga.c  (3 lines)
+    decode_palette                              3   85-87
+
+dnxhddata.h  (2 lines)
+    <file scope>                                2   71, 81
+
+bink.c  (1 lines)
+    probe                                       1   73
+
+flvdec.c  (1 lines)
+    kux_probe                                   1   125
+
+hevcdec.c  (1 lines)
+    hevc_probe                                  1   48
+

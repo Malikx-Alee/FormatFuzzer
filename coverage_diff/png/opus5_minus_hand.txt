@@ -1,0 +1,10 @@
+png: lines opus5 reached that hand did not
+==========================================
+4 lines in 2 files
+
+pngrutil.c  (3 lines)
+    png_get_int_32_checked                      3   1215-1217
+
+pngwutil.c  (1 lines)
+    png_image_size                              1   256
+

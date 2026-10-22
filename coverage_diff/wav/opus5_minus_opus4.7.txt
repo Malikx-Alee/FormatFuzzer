@@ -1,0 +1,7 @@
+wav: lines opus5 reached that opus4.7 did not
+=============================================
+7 lines in 1 files
+
+pack.c  (7 lines)
+    write_channel_info                          7   314-319, 321
+

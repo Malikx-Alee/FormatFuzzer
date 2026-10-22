@@ -1,0 +1,13 @@
+midi: lines opus4.7 reached that opus5-tiered did not
+=====================================================
+20 lines in 1 files
+
+readmidi.c  (20 lines)
+    insert_note_steps                           4   4570-4571, 4574-4575
+    smf_time_signature                          3   3343-3345
+    smf_key_signature                           3   3386-3388
+    groom_list                                  3   4363, 4365-4366
+    read_midi_file                              3   4882-4883, 4885
+    read_sysex_event                            2   3275-3276
+    read_smf_track                              2   3500, 3506
+

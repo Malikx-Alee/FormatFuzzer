@@ -1,0 +1,31 @@
+jpg: lines opus4.7 reached that hand did not
+============================================
+110 lines in 7 files
+
+jddiffct.c  (52 lines)
+    decompress_data                            37   163, 165-172, 175-176, 179, 185, 187-191, 199, 203, 211-220, 222-223, 234-236, 239-240
+    <file scope>                                7   68, 74, 77-78, 80, 83-84
+    start_input_pass                            5   107, 112, 114-116
+    start_output_pass                           3   146, 148-149
+
+jdlhuff.c  (25 lines)
+    decode_mcus                                25   207, 210-213, 216-221, 231-234, 237, 242, 246, 249-251, 254-255, 266, 270
+
+jdlossls.c  (23 lines)
+    jpeg_undifference_first_row                11   174, 178, 180, 187, 191-193, 197-199, 213
+    start_pass_lossless                         7   258-259, 264-265, 268, 271-272
+    noscale                                     5   228, 231-234
+
+jdapimin.c  (4 lines)
+    default_decompress_parms                    4   177, 180, 182, 186
+
+jdarith.c  (4 lines)
+    decode_mcu_AC_first                         3   359-361
+    start_pass                                  1   653
+
+jdapistd.c  (1 lines)
+    jpeg_read_scanlines                         1   331
+
+jdmarker.c  (1 lines)
+    examine_app14                               1   690
+

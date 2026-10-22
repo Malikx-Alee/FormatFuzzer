@@ -1,0 +1,12 @@
+midi: lines opus4.7 reached that opus5 did not
+==============================================
+14 lines in 2 files
+
+readmidi.c  (9 lines)
+    groom_list                                  6   4127, 4223, 4268, 4270, 4272, 4274
+    read_sysex_event                            2   3275-3276
+    read_smf_track                              1   3500
+
+playmidi.c  (5 lines)
+    midi_program_change                         5   3492-3495, 3498
+

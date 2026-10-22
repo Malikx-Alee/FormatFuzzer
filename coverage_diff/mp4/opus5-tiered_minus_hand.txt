@@ -1,0 +1,64 @@
+mp4: lines opus5-tiered reached that hand did not
+=================================================
+100 lines in 17 files
+
+mpjpegdec.c  (28 lines)
+    parse_multipart_header                     15   165, 170-172, 174, 177-178, 184, 190, 201-202, 204-205, 211, 239
+    get_line                                    6   49, 51, 53, 56, 59-60
+    trim_right                                  5   37, 39, 41, 44-45
+    mpjpeg_read_probe                           2   117, 119
+
+sbgdec.c  (16 lines)
+    str_to_time                                 7   193-195, 197-198, 204-205
+    parse_options                               7   360-363, 443-444, 446
+    lex_space                                   1   231
+    parse_script                                1   824
+
+aviobuf.c  (11 lines)
+    ff_get_line                                11   816, 818-819, 821-826, 829-830
+
+h264_direct.c  (8 lines)
+    ff_h264_direct_dist_scale_factor            6   70-75
+    ff_h264_direct_ref_list_init                2   174-175
+
+dnxhddec.c  (7 lines)
+    dnxhd_probe                                 7   35-37, 39-42
+
+h264_slice.c  (5 lines)
+    implicit_weight_table                       5   711-714, 741
+
+mov.c  (5 lines)
+    mov_probe                                   3   8140, 8144-8145
+    mov_build_index                             2   4276-4277
+
+mpeg4video.h  (4 lines)
+    ff_mpeg4_pred_dc                            4   107, 119, 121-122
+
+h264dec.c  (3 lines)
+    ff_h264_flush_change                        3   463-464, 467
+
+sga.c  (3 lines)
+    decode_palette                              3   85-87
+
+dnxhddata.h  (2 lines)
+    <file scope>                                2   71, 81
+
+mem.c  (2 lines)
+    av_realloc_f                                1   182
+    av_reallocp_array                           1   231
+
+mpeg.c  (2 lines)
+    mpegps_probe                                2   99, 111
+
+bink.c  (1 lines)
+    probe                                       1   73
+
+c93.c  (1 lines)
+    decode_end                                  1   55
+
+flvdec.c  (1 lines)
+    kux_probe                                   1   125
+
+hevcdec.c  (1 lines)
+    hevc_probe                                  1   48
+

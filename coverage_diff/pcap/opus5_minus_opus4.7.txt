@@ -1,0 +1,82 @@
+pcap: lines opus5 reached that opus4.7 did not
+==============================================
+461 lines in 21 files
+
+print-domain.c  (142 lines)
+    domain_print                               61   943, 945-949, 952-953, 955-958, 961-968, 1004, 1006, 1015-1016, 1018-1022, 1027-1029, 1079, 1085-1087, 1089-1093, 1095-1098, 1100-1103, 1105-1112, 1115-1116, 1171-1172
+    ns_nskip                                   28   65, 70-75, 77-78, 80, 83-85, 87, 89-91, 93, 95-96, 98-100, 102-105, 107
+    fqdn_print                                 26   183, 187-188, 191, 193, 195, 197-202, 205-207, 209-212, 214, 216, 227-229, 288-289
+    ns_qprint                                  18   636, 639, 642, 644-645, 648-650, 652-654, 657-660, 664-666
+    labellen                                    6   144, 149, 151-152, 167, 169
+    ns_rcode                                    3   53, 56-57
+
+print-snmp.c  (98 lines)
+    asn1_parse                                 70   420, 426-428, 440, 446-447, 449-452, 454, 485, 489-496, 498-501, 504-506, 508, 512, 516-518, 520, 522-526, 559-563, 565, 567-568, 574, 578-583, 603, 630, 632-635, 641-645, 647, 660, 662-664
+    snmp_print                                 11   1868, 1872-1873, 1875-1876, 1879-1884
+    asn1_print                                 10   727, 731, 734, 736-737, 739, 800-802, 845
+    asn1_print_octets                           7   672, 674-675, 678-681
+
+print-gre.c  (53 lines)
+    gre_print_1                                26   233, 235, 239-241, 243, 247-248, 250-252, 255, 258-259, 261-264, 267, 276, 285-286, 288, 292, 294-295
+    gre_print_0                                13   154-155, 157-159, 190, 194, 196-197, 201, 223-224, 226
+    gre_sre_ip_print                            6   341, 344, 347, 351-353
+    gre_sre_print                               5   323-327
+    gre_print                                   3   92-94
+
+print-ah.c  (18 lines)
+    ah_print                                   18   36, 44-45, 47, 56-57, 59-60, 62-70, 72
+
+print-ip-demux.c  (15 lines)
+    ip_demux_print                             15   49-50, 55-57, 59-61, 191-193, 195-196, 199, 201
+
+print-vxlan.c  (15 lines)
+    vxlan_print                                15   49, 54-56, 59-61, 65, 67-69, 72-73, 75, 77
+
+print-bcm-li.c  (14 lines)
+    bcm_li_print                               14   63, 68-69, 73, 75-78, 80-81, 83, 91-93
+
+print-pim.c  (12 lines)
+    pim_print                                  12   452, 455, 458, 460-464, 468, 477-478, 481
+
+print-vrrp.c  (12 lines)
+    vrrp_print                                 12   104, 109, 112-121
+
+print-bootp.c  (11 lines)
+    bootp_print                                11   282, 290-293, 296-298, 302, 304-305
+
+print-ip6.c  (11 lines)
+    ip6_print                                  11   276, 278-279, 344, 418, 423, 456, 488-491
+
+print-tcp.c  (11 lines)
+    tcp_print                                  11   526, 536-539, 705, 763, 767-768, 806-807
+
+print-ntp.c  (10 lines)
+    ntp_print                                  10   401, 404, 408-409, 411-412, 414-416, 419
+
+print-ssh.c  (8 lines)
+    ssh_print_version                           4   25, 27, 29-30
+    ssh_print                                   4   92, 94, 96-97
+
+print-syslog.c  (8 lines)
+    syslog_print                                8   78, 81-82, 85, 92-93, 145-146
+
+print-udp.c  (8 lines)
+    udp_print                                   8   591, 594, 600, 609, 618, 642, 703, 723
+
+print-sctp.c  (4 lines)
+    sctp_print                                  4   531-532, 538, 768
+
+print-smtp.c  (4 lines)
+    smtp_print                                  4   23, 25-27
+
+util-print.c  (4 lines)
+    nd_print_protocol                           3   465, 467-468
+    txtproto_print                              1   919
+
+extract.h  (2 lines)
+    get_be_u_3                                  1   611
+    get_be_u_4                                  1   619
+
+print.c  (1 lines)
+    pretty_print_packet                         1   375
+

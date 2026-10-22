@@ -1,0 +1,32 @@
+{
+  "format": "jpg",
+  "instrumented": 17343,
+  "covered": {
+    "hand": 3527,
+    "opus4.7": 3466,
+    "opus5": 2950,
+    "opus5-tiered": 4024
+  },
+  "unique": {
+    "hand": 1,
+    "opus4.7": 3,
+    "opus5": 0,
+    "opus5-tiered": 369
+  },
+  "union": 4031,
+  "intersection": 2874,
+  "pairwise_minus": {
+    "hand-opus4.7": 171,
+    "hand-opus5": 603,
+    "hand-opus5-tiered": 4,
+    "opus4.7-hand": 110,
+    "opus4.7-opus5": 591,
+    "opus4.7-opus5-tiered": 4,
+    "opus5-hand": 26,
+    "opus5-opus4.7": 75,
+    "opus5-opus5-tiered": 2,
+    "opus5-tiered-hand": 501,
+    "opus5-tiered-opus4.7": 562,
+    "opus5-tiered-opus5": 1076
+  }
+}

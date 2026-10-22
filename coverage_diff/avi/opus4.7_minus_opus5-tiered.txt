@@ -1,0 +1,11 @@
+avi: lines opus4.7 reached that opus5-tiered did not
+====================================================
+9 lines in 2 files
+
+input.c  (7 lines)
+    ff_sws_init_input_funcs                     6   1562-1564, 1892-1894
+    rgb12leToY_c                                1   402
+
+motion_est.c  (2 lines)
+    ff_estimate_p_frame_motion                  2   942, 946
+

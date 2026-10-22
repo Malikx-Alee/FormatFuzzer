@@ -1,0 +1,10 @@
+wav: lines hand reached that opus5-tiered did not
+=================================================
+3 lines in 2 files
+
+pack.c  (2 lines)
+    pack_samples                                2   1082, 1086
+
+entropy_utils.c  (1 lines)
+    store_weight                                1   362
+

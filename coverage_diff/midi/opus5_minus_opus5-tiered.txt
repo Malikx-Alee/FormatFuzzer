@@ -1,0 +1,22 @@
+midi: lines opus5 reached that opus5-tiered did not
+===================================================
+46 lines in 3 files
+
+readmidi.c  (34 lines)
+    read_smf_track                              7   3506, 3597-3601, 3616
+    read_midi_file                              6   4817-4819, 4882-4883, 4885
+    insert_note_steps                           5   4570-4571, 4574-4575, 4592
+    read_smf_file                               4   4475-4476, 4498-4499
+    smf_time_signature                          3   3343-3345
+    smf_key_signature                           3   3386-3388
+    groom_list                                  3   4363, 4365-4366
+    dumpstring                                  2   466-467
+    fix_string                                  1   3311
+
+common.c  (10 lines)
+    safe_exit                                   7   620, 622, 624-625, 627-629
+    safe_malloc                                 3   643-644, 664
+
+list_a.c  (2 lines)
+    acntl                                       2   197-198
+

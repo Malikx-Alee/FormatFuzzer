@@ -1,0 +1,23 @@
+zip: lines opus5-tiered reached that hand did not
+=================================================
+55 lines in 5 files
+
+inflate.c  (20 lines)
+    inflate                                    11   1462-1468, 1507-1510
+    inflate_stored                              9   1100, 1104, 1106-1108, 1113, 1118-1120
+
+extract.c  (17 lines)
+    TestExtraField                              9   2093, 2110, 2142-2143, 2147-2149, 2152, 2155
+    memextract                                  8   2284-2287, 2322, 2324-2326
+
+unshrink.c  (9 lines)
+    unshrink                                    5   181, 183, 185, 189, 191
+    partial_clear                               4   307, 316, 324, 333
+
+process.c  (8 lines)
+    find_ecrec64                                7   1304, 1306, 1308, 1362, 1364, 1369, 1372
+    rec_find                                    1   1158
+
+fileio.c  (1 lines)
+    makeint64                                   1   2470
+

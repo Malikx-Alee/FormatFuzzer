@@ -1,0 +1,42 @@
+pcap: lines only hand reached
+=============================
+96 lines in 12 files
+
+gencode.c  (36 lines)
+    init_linktype                              36   1518-1523, 1575, 1577-1581, 1604-1609, 1625-1630, 1632-1637, 1639-1644
+
+print-fr.c  (18 lines)
+    mfr_print                                  12   441, 444, 463, 465, 470, 472, 579, 581-582, 592, 595, 597
+    mfr_if_print                                6   380, 383-384, 386-387, 393
+
+print-tcp.c  (9 lines)
+    tcp_print                                   9   812, 823-829, 835
+
+print-geonet.c  (7 lines)
+    geonet_print                                7   128, 137, 182-183, 230-231, 255
+
+print-juniper.c  (7 lines)
+    juniper_services_if_print                   7   640, 653-658
+
+print-usb.c  (7 lines)
+    get_direction                               4   146, 157-158, 160
+    usb_header_print                            3   196-198
+
+print-ppi.c  (4 lines)
+    ppi_if_print                                4   88, 90-92
+
+print-ppp.c  (3 lines)
+    ppp_if_print                                3   1604-1606
+
+print-atalk.c  (2 lines)
+    llap_print                                  2   142-143
+
+addrtostr.c  (1 lines)
+    addrtostr6                                  1   176
+
+print-gre.c  (1 lines)
+    gre_print_0                                 1   178
+
+print-nflog.c  (1 lines)
+    nflog_if_print                              1   183
+

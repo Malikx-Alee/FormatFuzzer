@@ -1,0 +1,13 @@
+jpg: lines hand reached that opus5-tiered did not
+=================================================
+4 lines in 3 files
+
+jdphuff.c  (2 lines)
+    start_pass_phuff_decoder                    2   101, 104
+
+jdapimin.c  (1 lines)
+    default_decompress_parms                    1   173
+
+jdinput.c  (1 lines)
+    initial_setup                               1   75
+

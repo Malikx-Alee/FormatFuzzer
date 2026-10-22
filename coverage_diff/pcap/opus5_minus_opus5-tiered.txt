@@ -1,0 +1,37 @@
+pcap: lines opus5 reached that opus5-tiered did not
+===================================================
+181 lines in 8 files
+
+print-domain.c  (91 lines)
+    fqdn_print                                 26   183, 187-188, 191, 193, 195, 197-202, 205-207, 209-212, 214, 216, 227-229, 288-289
+    domain_print                               24   966-968, 1006, 1015-1016, 1018-1022, 1027-1029, 1087, 1090-1093, 1110-1112, 1115-1116
+    ns_nskip                                   19   71, 77-78, 85, 87, 89-91, 93, 95-96, 98-100, 102-105, 107
+    ns_qprint                                  13   648-650, 652-654, 657-660, 664-666
+    labellen                                    6   144, 149, 151-152, 167, 169
+    ns_rcode                                    3   53, 56-57
+
+print-snmp.c  (45 lines)
+    asn1_parse                                 29   492-496, 498-501, 559-563, 567-568, 574, 578-583, 603, 641-645
+    asn1_print_octets                           7   672, 674-675, 678-681
+    asn1_print                                  6   736-737, 739, 800-802
+    snmp_print                                  3   1882-1884
+
+print-vxlan.c  (15 lines)
+    vxlan_print                                15   49, 54-56, 59-61, 65, 67-69, 72-73, 75, 77
+
+print-bootp.c  (11 lines)
+    bootp_print                                11   282, 290-293, 296-298, 302, 304-305
+
+print-gre.c  (11 lines)
+    gre_sre_ip_print                            6   341, 344, 347, 351-353
+    gre_sre_print                               5   323-327
+
+print-udp.c  (3 lines)
+    udp_print                                   3   594, 642, 703
+
+util-print.c  (3 lines)
+    print_txt_line                              3   840-842
+
+print-tcp.c  (2 lines)
+    tcp_print                                   2   806-807
+

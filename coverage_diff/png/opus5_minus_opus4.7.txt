@@ -1,0 +1,35 @@
+png: lines opus5 reached that opus4.7 did not
+=============================================
+108 lines in 7 files
+
+pngwutil.c  (31 lines)
+    png_write_iTXt                             31   1663, 1673, 1675, 1679, 1681, 1683-1684, 1695-1696, 1708-1712, 1714-1715, 1718, 1720, 1723, 1725, 1727, 1735, 1739, 1742, 1744, 1746, 1748, 1750, 1754, 1756-1757
+
+png.c  (22 lines)
+    png_icc_check_header                       13   1632, 1638, 1646, 1653, 1670, 1681, 1719-1720, 1767, 1773, 1775, 1788-1789
+    png_icc_profile_error                       3   1561-1562, 1564
+    png_icc_check_length                        2   1598, 1607
+    png_icc_check_tag_table                     2   1825, 1834
+    is_ICC_signature_char                       1   1526
+    icc_check_length                            1   1589
+
+pngrutil.c  (22 lines)
+    png_handle_iTXt                            12   2651, 2676, 2678-2679, 2684-2689, 2691-2692
+    png_handle_iCCP                             4   1455, 1498-1499, 1504
+    png_get_int_32_checked                      3   1215-1217
+    png_handle_sRGB                             2   1300-1301
+    png_read_sig                                1   141
+
+pngwrite.c  (16 lines)
+    png_write_info                              8   334-339, 341, 344
+    png_write_end                               8   432-437, 439, 442
+
+pngset.c  (14 lines)
+    png_set_text_2                             14   1048-1049, 1054-1055, 1073, 1108-1114, 1132-1133
+
+pngtest.c  (2 lines)
+    pngtest_check_text_support                  2   835, 841
+
+pngrtran.c  (1 lines)
+    png_init_palette_transformations            1   1197
+

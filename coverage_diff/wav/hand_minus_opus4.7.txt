@@ -1,0 +1,18 @@
+wav: lines hand reached that opus4.7 did not
+============================================
+14 lines in 4 files
+
+pack.c  (11 lines)
+    write_channel_info                          7   314-319, 321
+    scan_int32_data                             2   841-842
+    pack_samples                                2   1082, 1086
+
+pack_utils.c  (1 lines)
+    WavpackFlushSamples                         1   811
+
+riff.c  (1 lines)
+    ParseRiffHeaderConfig                       1   235
+
+wavpack.c  (1 lines)
+    pack_audio                                  1   2553
+

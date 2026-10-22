@@ -1,0 +1,17 @@
+zip: lines only opus5-tiered reached
+====================================
+29 lines in 4 files
+
+inflate.c  (11 lines)
+    inflate                                    11   1462-1468, 1507-1510
+
+unshrink.c  (9 lines)
+    unshrink                                    5   181, 183, 185, 189, 191
+    partial_clear                               4   307, 316, 324, 333
+
+extract.c  (8 lines)
+    TestExtraField                              8   2110, 2142-2143, 2147-2149, 2152, 2155
+
+process.c  (1 lines)
+    rec_find                                    1   1158
+

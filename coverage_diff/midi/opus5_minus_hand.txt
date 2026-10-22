@@ -1,0 +1,11 @@
+midi: lines opus5 reached that hand did not
+===========================================
+12 lines in 1 files
+
+readmidi.c  (12 lines)
+    read_smf_track                              5   3637-3639, 3697-3698
+    read_midi_file                              3   4817-4819
+    read_smf_file                               2   4475-4476
+    fix_string                                  1   3323
+    insert_note_steps                           1   4592
+

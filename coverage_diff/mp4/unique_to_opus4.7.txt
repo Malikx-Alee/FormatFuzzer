@@ -1,0 +1,78 @@
+mp4: lines only opus4.7 reached
+===============================
+411 lines in 21 files
+
+mpeg4videodec.c  (112 lines)
+    mpeg4_update_thread_context                34   3697, 3700-3702, 3704, 3706, 3710-3734, 3736-3737, 3739
+    ff_mpeg4_decode_picture_header             27   3488, 3491-3494, 3497, 3502-3503, 3505, 3512-3515, 3518, 3521, 3525-3526, 3528, 3531, 3591, 3599, 3601, 3603, 3617, 3623, 3627-3628
+    mpeg4_init_static                          23   3758, 3760, 3762, 3767, 3772-3773, 3775-3777, 3779-3780, 3782, 3785-3791, 3794, 3797, 3800, 3803
+    decode_init                                22   3805, 3807-3810, 3812-3815, 3817, 3820-3823, 3825, 3827-3828, 3830, 3833-3834, 3836-3837
+    mpeg4_update_thread_context_for_user        6   3745, 3748-3749, 3751-3752, 3754
+
+h264_loopfilter.c  (69 lines)
+    ff_h264_filter_mb                          44   734, 738-744, 746, 750, 759-763, 765, 768, 771-772, 777-789, 792-798, 803, 809-812
+    <file scope>                               22   150-153, 155-161, 173-176, 178-184
+    check_mv                                    3   495, 558-559
+
+mpegvideo_dec.c  (44 lines)
+    ff_mpeg_update_thread_context              44   62, 65-67, 69, 72, 76-79, 81-86, 88, 94, 101, 103-104, 106-107, 126-128, 135-137, 140-141, 144-146, 149-151, 154, 156, 170-171, 179, 184, 187
+
+mpegvideo_parser.c  (34 lines)
+    mpegvideo_extract_headers                  22   102, 106-113, 117, 120, 123, 246-247, 250, 253, 258, 266-269, 271
+    mpegvideo_parse                            12   273, 278-280, 282, 285, 287, 297-298, 301-303
+
+mpeg4video_parser.c  (31 lines)
+    mpeg4_decode_header                        15   82, 85-89, 91, 93, 100-102, 108, 115-117
+    mpeg4video_parse                            9   131, 136-137, 139-140, 150, 152-154
+    mpeg4video_parse_init                       7   120, 122, 124-128
+
+h264dsp_template.c  (27 lines)
+    h264_h_loop_filter_chroma422_mbaff_intra_9_c   27   353-361, 365-369, 371-373, 375, 377-378, 380, 432, 434-435, 452, 454-455
+
+h2645_sei.c  (26 lines)
+    ff_h2645_sei_to_frame                      26   709-715, 718-723, 725-728, 730-735, 737-738, 747
+
+extract_extradata_bsf.c  (15 lines)
+    extract_extradata_mpeg12                    8   303, 306-308, 310-312, 314
+    extract_extradata_mpeg4                     7   332, 335-337, 339-341
+
+mpeg4videodsp.c  (10 lines)
+    ff_mpeg4videodsp_init                       5   110, 112-113, 118, 120
+    ff_mpeg4videodsp_init_x86                   5   153, 156, 158-159, 161
+
+demux.c  (9 lines)
+    estimate_timings_from_bit_rate              9   1724-1726, 1728-1730, 1733, 1738-1739
+
+h263dec.c  (6 lines)
+    ff_h263_decode_end                          6   414, 420, 434, 466-468
+
+input.c  (6 lines)
+    ff_sws_init_input_funcs                     6   1516-1518, 1856-1858
+
+mastering_display_metadata.c  (5 lines)
+    av_mastering_display_metadata_create_side_data    5   32, 34, 37, 40, 42
+
+h264_slice.c  (4 lines)
+    fill_filter_caches                          4   2277, 2280-2281, 2283
+
+mov.c  (4 lines)
+    mov_read_trak                               4   4741, 4749-4751
+
+h264_direct.c  (2 lines)
+    pred_temp_direct_motion                     2   688-689
+
+swscale.c  (2 lines)
+    sws_init_swscale                            2   561, 575
+
+vlc.c  (2 lines)
+    ff_vlc_init_from_lengths                    2   332-333
+
+ffmpeg.c  (1 lines)
+    transcode_step                              1   1157
+
+img2dec.c  (1 lines)
+    pnm_magic_check                             1   1013
+
+mpegvideodec.c  (1 lines)
+    mpegvideo_probe                             1   54
+

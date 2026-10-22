@@ -1,0 +1,7 @@
+wav: lines only hand reached
+============================
+2 lines in 1 files
+
+pack.c  (2 lines)
+    pack_samples                                2   1082, 1086
+

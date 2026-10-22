@@ -1,0 +1,15 @@
+wav: lines opus4.7 reached that hand did not
+============================================
+7 lines in 3 files
+
+pack_utils.c  (4 lines)
+    copy_metadata                               3   1407-1409
+    WavpackPackInit                             1   555
+
+extra1.c  (2 lines)
+    decorr_mono_pass                            1   77
+    execute_mono                                1   558
+
+entropy_utils.c  (1 lines)
+    wp_log2                                     1   275
+

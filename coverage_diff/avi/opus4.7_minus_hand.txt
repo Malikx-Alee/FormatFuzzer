@@ -1,0 +1,33 @@
+avi: lines opus4.7 reached that hand did not
+============================================
+74 lines in 8 files
+
+input.c  (35 lines)
+    bgr48BEToY_c                               26   273-275, 277, 279-281, 283, 327-331, 333-336, 339-340, 342-343, 346, 348, 350, 352-353
+    ff_sws_init_input_funcs                     6   1562-1564, 1892-1894
+    rgb16leToY_c                                1   400
+    rgb15leToY_c                                1   401
+    rgb12leToY_c                                1   402
+
+avformat.c  (22 lines)
+    av_find_default_stream_index               20   354, 356-357, 359, 361-366, 368-370, 372, 376, 379-380, 382-384
+    avpriv_set_pts_info                         2   776, 780
+
+ffmpeg_demux.c  (6 lines)
+    ts_fixup                                    6   410, 412-414, 416, 420
+
+demux.c  (3 lines)
+    wrap_timestamp                              3   55-56, 59
+
+swscale.c  (3 lines)
+    swscale                                     3   327-329
+
+motion_est.c  (2 lines)
+    ff_estimate_p_frame_motion                  2   942, 946
+
+rawdec.c  (2 lines)
+    raw_decode                                  2   428-429
+
+avidec.c  (1 lines)
+    avi_read_header                             1   1053
+

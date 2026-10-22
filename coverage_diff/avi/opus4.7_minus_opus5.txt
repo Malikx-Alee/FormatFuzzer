@@ -1,0 +1,39 @@
+avi: lines opus4.7 reached that opus5 did not
+=============================================
+71 lines in 10 files
+
+mpegvideo_dec.c  (22 lines)
+    ff_mpv_common_frame_size_change            22   190, 192, 194, 197, 199-201, 203-205, 207-208, 212, 215, 218, 221-222, 224-226, 229, 231
+
+input.c  (17 lines)
+    bgr24ToUV_half_c                           14   885, 888-896, 898-899, 901-902
+    bgr48BEToY_c                                1   346
+    rgb16leToY_c                                1   400
+    rgb12leToY_c                                1   402
+
+aviobuf.c  (10 lines)
+    avio_rb16                                   5   793, 795-798
+    avio_rb32                                   5   808, 810-813
+
+avidec.c  (8 lines)
+    avi_sync                                    7   1325-1326, 1328, 1331-1332, 1334-1335
+    avi_load_index                              1   1823
+
+h263dec.c  (6 lines)
+    ff_h263_decode_end                          6   519, 521-522, 525, 527, 530
+
+motion_est.c  (2 lines)
+    ff_estimate_p_frame_motion                  2   942, 946
+
+mpegvideo_enc.c  (2 lines)
+    ff_mpv_encode_init                          2   639, 644
+
+msrledec.c  (2 lines)
+    ff_msrle_decode                             2   253-254
+
+mpeg4videodec.c  (1 lines)
+    decode_vol_header                           1   2665
+
+mpegpicture.c  (1 lines)
+    ff_mpeg_unref_picture                       1   261
+

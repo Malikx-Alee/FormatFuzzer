@@ -1,0 +1,14 @@
+midi: lines hand reached that opus5 did not
+===========================================
+18 lines in 2 files
+
+readmidi.c  (13 lines)
+    read_smf_track                              4   3483, 3488, 3491, 3500
+    parse_sysex_event_multi                     3   2756, 2760, 2801
+    parse_sysex_event                           2   3202, 3205
+    read_sysex_event                            2   3275-3276
+    groom_list                                  2   4127, 4223
+
+playmidi.c  (5 lines)
+    midi_program_change                         5   3492-3495, 3498
+

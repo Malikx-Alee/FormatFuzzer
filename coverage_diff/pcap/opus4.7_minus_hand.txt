@@ -1,0 +1,10 @@
+pcap: lines opus4.7 reached that hand did not
+=============================================
+10 lines in 2 files
+
+print-ip6opts.c  (6 lines)
+    hbhopt_process                              6   186, 189-190, 192-194
+
+print-ip6.c  (4 lines)
+    ip6_print                                   4   336, 341, 346, 351
+

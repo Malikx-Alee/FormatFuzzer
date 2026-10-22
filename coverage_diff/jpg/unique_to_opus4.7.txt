@@ -1,0 +1,7 @@
+jpg: lines only opus4.7 reached
+===============================
+3 lines in 1 files
+
+jdarith.c  (3 lines)
+    decode_mcu_AC_first                         3   359-361
+

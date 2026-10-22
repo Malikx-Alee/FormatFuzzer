@@ -1,0 +1,10 @@
+jpg: lines opus4.7 reached that opus5-tiered did not
+====================================================
+4 lines in 2 files
+
+jdarith.c  (3 lines)
+    decode_mcu_AC_first                         3   359-361
+
+jdphuff.c  (1 lines)
+    start_pass_phuff_decoder                    1   101
+

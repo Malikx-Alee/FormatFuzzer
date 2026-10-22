@@ -1,0 +1,16 @@
+jpg: lines opus5 reached that hand did not
+==========================================
+26 lines in 4 files
+
+jdmarker.c  (11 lines)
+    examine_app14                              11   690-693, 695-701
+
+jdcolor.c  (10 lines)
+    null_convert                               10   344-353
+
+jdapimin.c  (4 lines)
+    default_decompress_parms                    4   152-155
+
+jdarith.c  (1 lines)
+    start_pass                                  1   703
+

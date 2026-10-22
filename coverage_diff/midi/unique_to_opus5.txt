@@ -1,0 +1,9 @@
+midi: lines only opus5 reached
+==============================
+6 lines in 1 files
+
+readmidi.c  (6 lines)
+    read_midi_file                              3   4817-4819
+    read_smf_file                               2   4475-4476
+    insert_note_steps                           1   4592
+

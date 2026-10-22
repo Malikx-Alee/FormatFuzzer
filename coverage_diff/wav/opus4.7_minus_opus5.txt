@@ -1,0 +1,19 @@
+wav: lines opus4.7 reached that opus5 did not
+=============================================
+20 lines in 4 files
+
+pack_utils.c  (11 lines)
+    pack_streams                                5   1272-1276
+    WavpackPackSamples                          3   691, 790-791
+    copy_metadata                               3   1407-1409
+
+extra2.c  (6 lines)
+    execute_stereo                              5   733-737
+    decorr_stereo_pass_reverse                  1   283
+
+pack.c  (2 lines)
+    write_decorr_samples                        2   194-195
+
+entropy_utils.c  (1 lines)
+    store_weight                                1   362
+

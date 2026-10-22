@@ -1,0 +1,95 @@
+avi: lines only hand reached
+============================
+214 lines in 26 files
+
+mpegvideo_motion.c  (65 lines)
+    qpel_motion                                47   333, 343-345, 347, 349-350, 352-354, 356, 359, 363-365, 367-368, 370-371, 373-375, 377-378, 380-382, 384-386, 391-395, 397, 401-402, 406-408, 412-413, 431-433, 435
+    hpel_motion                                 8   105, 190-193, 197-199
+    apply_8x8                                   6   701, 721-723, 731, 736
+    mpeg_motion_field                           4   234, 242, 248, 251
+
+qtrle.c  (53 lines)
+    qtrle_decode_frame                         28   446, 449-454, 456, 459, 465-466, 471, 474, 488-489, 491, 494, 496, 525-527, 539, 553-554, 556, 564, 566, 569
+    qtrle_decode_24bpp                         25   297, 299-305, 307-309, 311-312, 314, 318, 332, 334, 336-339, 342-345
+
+input.c  (14 lines)
+    rgb24ToUV_half_c                           14   938, 941-950, 952-953, 955
+
+mpeg4videodec.c  (13 lines)
+    decode_new_pred                             8   677-679, 681-684, 686
+    mpeg4_decode_partition_a                    2   966, 968
+    mpeg4_decode_mb                             1   1723
+    decode_vol_header                           1   2568
+    decode_vop_header                           1   3208
+
+error_resilience.c  (10 lines)
+    guess_mv                                    9   548-554, 659-660
+    ff_er_add_slice                             1   872
+
+cinepak.c  (7 lines)
+    cinepak_predecode_check                     7   330-331, 335, 342-343, 351, 356
+
+vf_scale.c  (6 lines)
+    child_next                                  4   985, 987-989
+    config_props                                2   597, 617
+
+cbs_av1.c  (5 lines)
+    cbs_av1_split_fragment                      5   692, 694-695, 699-700
+
+dump.c  (5 lines)
+    dump_stream_format                          5   560-563, 565
+
+h263dec.c  (5 lines)
+    ff_h263_decode_end                          5   326, 359, 392, 396, 399
+
+av1dec.c  (4 lines)
+    av1_decode_init                             4   849-850, 855-856
+
+cbs_av1_syntax_template.c  (4 lines)
+    cbs_av1_write_metadata_obu                  4   3854, 3856, 4608, 4610
+
+h264dec.c  (3 lines)
+    h264_decode_frame                           3   1057, 1060-1061
+
+mpegvideo_dec.c  (3 lines)
+    lowest_referenced_row                       2   998-999
+    ff_mpv_frame_start                          1   319
+
+avcodec.c  (2 lines)
+    avcodec_open2                               2   226, 229
+
+decode.c  (2 lines)
+    ff_decode_frame_props                       2   1549, 1552
+
+ffmpeg_filter.c  (2 lines)
+    choose_pix_fmts                             2   322-323
+
+qpeldsp_init.c  (2 lines)
+    put_qpel8_mc33_mmxext                       1   503
+    put_no_rnd_qpel8_mc33_mmxext                1   505
+
+vscale.c  (2 lines)
+    lum_planar_vscale                           1   55
+    ff_init_vscale_pfn                          1   294
+
+av1_parse.c  (1 lines)
+    ff_av1_packet_split                         1   85
+
+av1_parser.c  (1 lines)
+    av1_parser_parse                            1   79
+
+avidec.c  (1 lines)
+    guess_ni_flag                               1   1777
+
+demux.c  (1 lines)
+    compute_pkt_fields                          1   1116
+
+mpegpicture.c  (1 lines)
+    ff_find_unused_picture                      1   386
+
+riffdec.c  (1 lines)
+    ff_read_riff_info                           1   282
+
+utils.c  (1 lines)
+    av_get_frame_filename2                      1   307
+

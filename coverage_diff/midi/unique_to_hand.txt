@@ -1,0 +1,8 @@
+midi: lines only hand reached
+=============================
+5 lines in 1 files
+
+readmidi.c  (5 lines)
+    parse_sysex_event_multi                     3   2756, 2760, 2801
+    parse_sysex_event                           2   3202, 3205
+

@@ -1,0 +1,7 @@
+midi: lines opus4.7 reached that hand did not
+=============================================
+4 lines in 1 files
+
+readmidi.c  (4 lines)
+    groom_list                                  4   4268, 4270, 4272, 4274
+

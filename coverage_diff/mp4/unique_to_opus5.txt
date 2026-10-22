@@ -1,0 +1,217 @@
+mp4: lines only opus5 reached
+=============================
+1225 lines in 50 files
+
+mov.c  (348 lines)
+    mov_read_trun                             130   5249, 5251-5266, 5268-5270, 5273-5274, 5280, 5284-5285, 5294-5295, 5303, 5305-5308, 5310, 5312-5313, 5315-5317, 5319, 5324, 5330-5333, 5335-5336, 5338, 5342, 5346, 5349-5350, 5353-5354, 5363-5365, 5368, 5372, 5375-5376, 5379, 5381, 5383-5385, 5387, 5389, 5394-5395, 5397, 5411-5412, 5415-5418, 5421-5422, 5424-5430, 5432-5435, 5437-5438, 5456, 5459-5460, 5462, 5468-5469, 5471-5475, 5477-5479, 5481, 5484-5485, 5487, 5489-5491, 5493-5494, 5496-5497, 5500-5502, 5526-5529, 5538-5539, 5541, 5546, 5548-5550
+    mov_read_sidx                              71   5555, 5557-5565, 5567-5568, 5573, 5575-5577, 5582, 5587, 5589, 5591, 5596-5598, 5603, 5606, 5608, 5610-5611, 5614-5619, 5623-5624, 5626-5629, 5631-5632, 5635-5636, 5639, 5641, 5644-5649, 5651-5653, 5656, 5660, 5663-5671, 5675-5678, 5683
+    mov_read_pssh                              36   6858, 6860-6867, 6869, 6871, 6873-6874, 6876, 6878, 6881, 6886-6888, 6923-6925, 6929-6930, 6938-6940, 6943, 6945, 6963-6964, 6968-6969, 6974-6976
+    mov_read_tfhd                              19   5131, 5139-5141, 5143-5146, 5148-5154, 5156-5159
+    mov_read_trex                              15   5185, 5187-5188, 5190, 5192, 5198, 5200-5208
+    set_frag_stream                            13   1298, 1300-1301, 1303-1304, 1307-1311, 1326-1328
+    mov_switch_root                            13   8839, 8841-8842, 8844, 8846, 8851-8854, 8863, 8865-8866, 8868
+    mov_read_saio                               9   6763, 6765-6770, 6772-6773
+    mov_read_senc                               8   6564, 6566-6570, 6572-6573
+    get_current_encryption_info                 7   6467-6469, 6474, 6476, 6478, 6480
+    get_frag_stream_info                        6   1284-1285, 1287, 1289-1291
+    mov_read_header                             6   8696-8699, 8701-8702
+    fix_frag_index_entries                      4   1488, 1491-1492, 1494
+    mov_read_packet                             4   8933-8934, 8943-8944
+    mov_read_ddts                               2   914, 919
+    mov_read_stsc                               2   2918-2919
+    mov_read_ctts                               2   3356-3357
+    mov_read_default                            1   8059
+
+rawdec.c  (159 lines)
+    raw_decode                                124   171, 174-176, 178-180, 182, 187, 189, 192, 198, 207, 209-210, 216-217, 220-221, 224, 227, 229-230, 232-233, 236, 242, 245-246, 248-249, 253-265, 268-276, 279-289, 293-307, 313, 337, 342, 346-350, 353, 360-361, 363, 365, 369-370, 375, 378, 381, 397-407, 409, 418-420, 424, 427, 431, 434-436, 440, 445, 456, 470, 476-477
+    raw_init_decoder                           14   71, 73-74, 76, 78-82, 85-86, 91-93
+    raw_data_read_header                        9   106, 108-109, 113, 116-117, 119, 122, 125
+    ff_raw_subtitle_read_header                 7   94, 97-99, 101-103
+    raw_close_decoder                           5   480, 482, 484-486
+
+mux.c  (87 lines)
+    ff_interleave_packet_per_dts               52   949, 952-956, 958-959, 963-971, 973, 977-978, 980-984, 986-990, 992-996, 998, 1001, 1003-1004, 1007, 1017-1019, 1028, 1054-1057, 1059-1061, 1063
+    ff_interleave_add_packet                   28   845, 848-853, 855-856, 860, 866-867, 869, 872, 875, 892-893, 896-899, 901, 907, 909-910, 912, 914, 916
+    interleave_compare_dts                      7   919, 922-924, 926, 944-945
+
+input.c  (85 lines)
+    bgr48BEToY_c                               28   273-275, 277-281, 283, 327-331, 333-340, 342-343, 348, 350, 352-353
+    ff_sws_init_input_funcs                    25   1312, 1317-1318, 1544-1549, 1559-1561, 1582, 1877-1879, 1889-1891, 1898, 1903-1904, 1920-1922
+    rgb24ToUV_half_c                           14   938, 941-950, 952-953, 955
+    palToUV_c                                  10   496, 500-505, 507-508, 510
+    palToY_c                                    7   484, 487-490, 492, 494
+    rgb15beToY_c                                1   407
+
+encryption_info.c  (55 lines)
+    av_encryption_init_info_add_side_data      29   292, 294-297, 299-303, 306, 308, 315, 317-318, 321-328, 330-332, 336-338
+    av_encryption_init_info_alloc              16   178, 181-182, 184-185, 188-194, 197-198, 203-204
+    av_encryption_init_info_free               10   216, 218-220, 223-227, 229
+
+msmpeg4dec.c  (52 lines)
+    msmpeg4_decode_init_static                 26   297, 299, 301-305, 308-309, 311-312, 315-316, 320, 323, 327, 330, 334-338, 342, 345, 348-349
+    ff_msmpeg4_decode_init                     26   351, 353-355, 357, 360, 363, 365-366, 368-369, 378, 380, 382, 385, 387, 394, 397, 407-408, 410-411, 413-416
+
+msmpeg4.c  (50 lines)
+    init_h263_dc_for_msmpeg4                   34   52, 54-56, 58-62, 65-66, 71-73, 75-80, 83-84, 87-89, 91-96, 99-100, 102
+    ff_msmpeg4_common_init                     10   114, 116, 118-119, 121-123, 140, 150-151
+    msmpeg4_common_init_static                  6   104, 106, 108-109, 111-112
+
+imgutils.c  (45 lines)
+    av_image_get_buffer_size                   18   466, 469-474, 477-478, 481-482, 485-486, 488-489, 493-494, 496
+    av_image_fill_pointers                     16   145, 148-150, 152, 154-155, 157-158, 162-163, 165, 168, 171-173
+    av_image_fill_arrays                        9   446, 450, 452-453, 456-457, 460-461, 463
+    av_image_fill_plane_sizes                   2   127-128
+
+hscale.c  (42 lines)
+    lum_convert                                21   86, 88-91, 93-96, 98-105, 107-108, 114, 124
+    chr_convert                                21   202, 204-206, 208-209, 211, 213-216, 218-222, 224-227, 232
+
+swscale.c  (36 lines)
+    update_palette                             17   748, 750-757, 789-792, 794, 813, 818, 821
+    swscale                                    13   290-295, 327-329, 341, 345-347
+    scale_internal                              4   889, 945, 953, 958
+    sws_init_swscale                            2   565, 574
+
+movenc.c  (31 lines)
+    mov_write_audio_tag                        11   1360, 1362, 1364, 1366, 1368, 1370, 1372, 1374, 1376-1377, 1381
+    mov_write_header                            8   7421-7424, 7427, 7434, 7441, 7447
+    mov_write_stts_tag                          5   2667-2668, 2670-2672
+    mov_write_mdhd_tag                          2   3335-3336
+    ff_mov_write_packet                         2   6147, 6151
+    mov_init                                    2   7280-7281
+    mov_write_mvhd_tag                          1   3903
+
+mpeg_er.c  (21 lines)
+    ff_mpeg_er_init                            21   102, 104-106, 108, 110-115, 117-119, 122-123, 125-126, 128-129, 131
+
+vc1_parser.c  (21 lines)
+    vc1_extract_header                         14   61, 65-70, 115-120, 122
+    vc1_parse                                   7   160, 206, 208-209, 211-212, 215
+
+mpegvideo_enc.c  (16 lines)
+    ff_mpv_reallocate_putbitbuffer             16   2824-2826, 2828-2829, 2831, 2836, 2838-2840, 2843-2848
+
+raw.c  (13 lines)
+    avpriv_pix_fmt_find                        10   355, 358, 360-363, 367-369, 371
+    avcodec_pix_fmt_to_codec_tag                3   347-348, 350
+
+ffmpeg_mux.c  (11 lines)
+    queue_packet                                6   314-315, 318-319, 322-323
+    thread_start                                5   521-524, 526
+
+mpeg12dec.c  (11 lines)
+    decode_chunks                               9   2474-2475, 2481, 2483, 2488-2489, 2491, 2587, 2615
+    mpeg_decode_frame                           2   2792, 2794
+
+msrle.c  (10 lines)
+    msrle_decode_frame                         10   113-116, 118, 121-122, 130, 132-133
+
+utils.c  (10 lines)
+    ff_bprint_to_codecpar_extradata             5   587, 624-627
+    sws_init_single_context                     3   1525, 1673, 1675
+    ff_hex_to_data                              1   501
+    alloc_gamma_tbl                             1   1214
+
+decode.c  (9 lines)
+    ff_copy_palette                             7   1823, 1825-1826, 1828-1831
+    decode_receive_frame_internal               2   652, 654
+
+avcodec.c  (8 lines)
+    avcodec_open2                               5   267-271
+    get_bit_rate                                3   113-114, 117
+
+h263dec.c  (8 lines)
+    ff_h263_decode_init                         6   95-98, 130-131
+    h263_probe                                  1   55
+    ff_h263_decode_end                          1   465
+
+h264dec.c  (8 lines)
+    is_avcc_extradata                           7   908, 910-912, 914-916
+    h264_decode_frame                           1   1041
+
+vf_hflip_init.h  (8 lines)
+    hflip_b24_c                                 7   56, 58-59, 61-62, 64, 66
+    ff_hflip_init                               1   96
+
+pcm.c  (7 lines)
+    pcm_decode_init                             7   251, 253-255, 257, 286, 288
+
+channel_layout.c  (6 lines)
+    av_channel_layout_compare                   6   951-952, 955, 959-960, 962
+
+demux.c  (6 lines)
+    avformat_find_stream_info                   4   2679, 2685-2686, 2781
+    select_from_pts_buffer                      1   793
+    has_codec_parameters                        1   1984
+
+h2645_sei.c  (6 lines)
+    decode_alternative_transfer                 4   316, 319-320, 322
+    ff_h2645_sei_message_decode                 2   457-458
+
+h264_mb.c  (6 lines)
+    await_references                            6   631-632, 742, 749-751
+
+put_bits.h  (6 lines)
+    rebase_put_bits                             6   112, 115, 117-120
+
+mathematics.c  (5 lines)
+    av_compare_ts                               5   147, 149-152
+
+vf_rotate.c  (4 lines)
+    filter_slice                                4   477-480
+
+ac3_parser.c  (3 lines)
+    ff_ac3_find_syncword                        3   120, 151-152
+
+buffer.c  (3 lines)
+    av_buffer_make_writable                     3   165, 167, 169
+
+drawutils.c  (3 lines)
+    ff_draw_color                               2   172, 183
+    ff_draw_init2                               1   129
+
+dump.c  (3 lines)
+    dump_sidedata                               3   500-501, 503
+
+mjpegdec.c  (3 lines)
+    ff_mjpeg_decode_frame_from_buf              3   2591, 2601, 2603
+
+subtitles.c  (3 lines)
+    ff_subtitles_read_line                      3   461, 463, 465
+
+error_resilience.c  (2 lines)
+    ff_er_frame_end                             2   940-941
+
+evc_parser.c  (2 lines)
+    parse_nal_unit                              2   70-71
+
+ffmpeg_filter.c  (2 lines)
+    ifilter_send_eof                            2   2338-2339
+
+frame.c  (2 lines)
+    calc_cropping_offsets                       2   974-975
+
+h264_ps.c  (2 lines)
+    ff_h264_decode_seq_parameter_set            2   355-356
+
+dv.c  (1 lines)
+    dv_probe                                    1   696
+
+ffmpeg_dec.c  (1 lines)
+    video_duration_estimate                     1   294
+
+h264_parse.c  (1 lines)
+    ff_h264_decode_extradata                    1   519
+
+mpegvideo.c  (1 lines)
+    ff_mpv_init_context_frame                   1   584
+
+srtdec.c  (1 lines)
+    srt_to_ass                                  1   49
+
+vf_hflip_init.c  (1 lines)
+    ff_hflip_init_x86                           1   44
+
+vf_transpose.c  (1 lines)
+    config_props_output                         1   193
+

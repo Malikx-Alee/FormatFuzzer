@@ -1,0 +1,20 @@
+wav: lines opus5-tiered reached that opus4.7 did not
+====================================================
+37 lines in 5 files
+
+riff.c  (19 lines)
+    ParseRiffHeaderConfig                      19   102-106, 108-109, 114-115, 117, 122-124, 235, 248-249, 251-252, 254
+
+pack.c  (10 lines)
+    write_channel_info                          8   314-319, 321-322
+    scan_int32_data                             2   841-842
+
+common_utils.c  (6 lines)
+    WavpackLittleEndianToNative                 6   681-686
+
+pack_utils.c  (1 lines)
+    WavpackFlushSamples                         1   811
+
+wavpack.c  (1 lines)
+    pack_audio                                  1   2553
+

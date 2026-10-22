@@ -1,0 +1,7 @@
+zip: lines only hand reached
+============================
+3 lines in 1 files
+
+process.c  (3 lines)
+    find_ecrec64                                3   1345, 1347, 1349
+

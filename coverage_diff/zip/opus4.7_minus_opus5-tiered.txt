@@ -1,0 +1,11 @@
+zip: lines opus4.7 reached that opus5-tiered did not
+====================================================
+6 lines in 2 files
+
+extract.c  (5 lines)
+    extract_or_test_files                       4   494, 497-498, 805
+    extract_or_test_entrylist                   1   1268
+
+fileio.c  (1 lines)
+    do_string                                   1   2237
+

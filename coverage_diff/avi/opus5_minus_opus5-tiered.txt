@@ -1,0 +1,172 @@
+avi: lines opus5 reached that opus5-tiered did not
+==================================================
+867 lines in 42 files
+
+imc.c  (219 lines)
+    imc_decode_block                           75   813, 815-820, 824-828, 830, 832, 835-840, 843-844, 847, 849, 852, 856-857, 859-860, 866, 868, 876-878, 880, 883-886, 888-890, 893, 895-896, 898-903, 906-910, 914, 920-921, 928, 932, 935-936, 938-940, 943, 945, 947, 953, 955-958, 960
+    imc_calculate_coeffs                       34   255, 259-264, 266-270, 272-273, 275-277, 280-283, 286-288, 291-292, 294-297, 302-304, 307
+    imc_get_skip_coeff                         31   604, 606, 608-611, 614-615, 617-620, 623-628, 630-634, 636-640, 642, 648, 655
+    imc_refine_bit_allocation                  26   770, 772-773, 775-782, 785, 787-788, 790-792, 799-804, 807, 810-811
+    imc_decode_frame                           22   963, 966-968, 970, 972, 974, 976-978, 982-983, 986-987, 989, 991, 993, 995-996, 999, 1004, 1006
+    imc_read_level_coeffs                      17   310, 313-317, 319-324, 326, 330-331, 333, 336
+    imc_get_coeffs                             14   742, 745, 747-748, 750-753, 755-757, 761, 764, 768
+
+aacdec_template.c  (176 lines)
+    decode_ics                                 35   2038, 2041-2046, 2048-2051, 2057, 2059, 2061-2063, 2067-2068, 2070, 2074-2077, 2083, 2090-2091, 2096-2100, 2105, 2112, 2114, 2117
+    decode_ics_info                            32   1335, 1338-1341, 1343-1344, 1349-1351, 1359-1360, 1362-1364, 1386-1388, 1403, 1407-1408, 1410, 1412-1414, 1416-1417, 1421-1422, 1427, 1433, 1439
+    aac_decode_frame                           22   3346, 3349-3357, 3360-3361, 3365, 3376-3377, 3379, 3382, 3385, 3388, 3395-3396, 3398
+    decode_spectrum_and_dequant                18   1680, 1686-1689, 1691-1693, 1695-1696, 1698, 1921, 1924, 1926-1930
+    frame_configure_elements                   16   164, 166-167, 170-175, 181-182, 185-186, 190-192
+    get_che                                    12   583, 587, 591, 610, 632, 704, 706-708, 710-711, 714
+    decode_pulses                              10   1585, 1588-1591, 1593-1595, 1597-1598
+    decode_cpe                                  9   2217, 2219-2220, 2222, 2240, 2242, 2245, 2254-2255
+    assign_pair                                 8   205, 209-211, 213, 216-217, 219
+    assign_channels                             7   322-323, 325-327, 329-330
+    count_paired_channels                       3   254, 261-262
+    pop_output_configuration                    3   432-433, 439
+    che_configure                               1   153
+
+ac3enc_template.c  (111 lines)
+    apply_channel_coupling                    106   111, 113, 115, 119-121, 123, 125, 130-132, 135-138, 140-143, 145-146, 150, 155-162, 164-166, 170-171, 175-177, 179-180, 182-183, 190-192, 194, 196, 202-204, 206-207, 209, 213-214, 217-219, 228, 230-232, 234, 239-241, 243-249, 251, 253, 260-262, 266-268, 270, 272, 274-275, 277, 281-285, 287-289, 291-293, 295, 298-301, 304, 306, 311, 313
+    compute_rematrixing_strategy                3   334-336
+    ff_ac3_float_encode_frame                   2   384, 394
+
+ac3enc.c  (94 lines)
+    output_audio_block                         32   1537-1538, 1540-1542, 1544-1549, 1551, 1554-1555, 1562-1570, 1652-1656, 1671-1673, 1690
+    count_frame_bits                           20   989, 991-996, 999, 1005-1011, 1036, 1046-1049
+    set_bandwidth                              17   2449-2450, 2452-2453, 2455, 2457-2461, 2463-2465, 2469-2472
+    ff_ac3_adjust_frame_size                    7   306, 308, 312-316
+    allocate_buffers                            6   2499-2500, 2516-2517, 2529-2530
+    ac3_quantize_mantissas                      4   1432-1434, 1441
+    compute_exp_strategy                        3   493, 496, 507
+    ff_ac3_compute_coupling_strategy            2   369, 382
+    ff_ac3_encode_init                          2   2591-2592
+    encode_exponents_blk_ch                     1   590
+
+adpcm.c  (52 lines)
+    adpcm_zork_expand_nibble                   27   638, 640-642, 644-659, 661-662, 664-665, 667-668, 670
+    adpcm_ct_expand_nibble                     11   574, 576-577, 579-580, 584, 586-587, 589-590, 592
+    get_nb_samples                              7   960-963, 1057-1059
+    adpcm_decode_frame                          5   1085-1086, 1505, 1920, 2244
+    adpcm_decode_init                           2   311-312
+
+tx_template.c  (22 lines)
+    ff_tx_mdct_inv_int32_c                     22   1318, 1321-1325, 1327-1329, 1331-1334, 1337, 1339-1343, 1345-1346, 1348
+
+ac3_parser.c  (18 lines)
+    ff_ac3_find_syncword                       18   56, 58, 60-62, 65, 70-71, 218, 220-221, 224-226, 228, 234-235, 237
+
+ac3dec.c  (17 lines)
+    ac3_decode_frame                           17   1496, 1499-1510, 1512, 1514-1516
+
+mpegvideo_enc.c  (16 lines)
+    ff_mpv_reallocate_putbitbuffer             16   2824-2826, 2828-2829, 2831, 2836, 2838-2840, 2843-2848
+
+on2avc.c  (15 lines)
+    on2avc_decode_frame                        14   834, 837-842, 844, 853-857, 859
+    on2avc_decode_init                          1   923
+
+mathematics.c  (9 lines)
+    av_rescale_delta                            6   180-182, 185-186, 188
+    av_compare_ts                               3   153, 155-156
+
+sync_queue.c  (9 lines)
+    overflow_heartbeat                          8   320-323, 325-328
+    sq_receive                                  1   615
+
+aac_parser.c  (8 lines)
+    aac_sync                                    8   30, 32-35, 40-41, 44
+
+demux.c  (7 lines)
+    ff_rfps_calculate                           4   2318-2319, 2321-2322
+    try_decode_frame                            3   2084, 2095, 2097
+
+aac_ac3_parser.c  (6 lines)
+    ff_aac_ac3_parse                            6   56-57, 79-82
+
+input.c  (6 lines)
+    ff_sws_init_input_funcs                     6   1562-1564, 1892-1894
+
+log.c  (6 lines)
+    avpriv_report_missing_feature               6   485, 487, 489-492
+
+mux.c  (6 lines)
+    ff_interleave_add_packet                    5   897-901
+    interleave_compare_dts                      1   945
+
+put_bits.h  (6 lines)
+    rebase_put_bits                             6   112, 115, 117-120
+
+rematrix.c  (6 lines)
+    swri_rematrix                               6   647, 651, 657-659, 661
+
+ac3enc_float.c  (5 lines)
+    clip_coefficients                           5   56, 65-68
+
+adts_header.c  (5 lines)
+    <file scope>                                5   30, 32-33, 35, 37
+
+ffmpeg_dec.c  (5 lines)
+    audio_samplerate_update                     3   180, 185, 193
+    audio_ts_process                            2   222-223
+
+bswapdsp.c  (4 lines)
+    bswap16_buf                                 4   43, 45-47
+
+ffmpeg_demux.c  (4 lines)
+    ts_discontinuity_detect                     4   261, 264, 270, 273
+
+seek.c  (4 lines)
+    ff_add_index_entry                          4   101, 103-105
+
+ac3.c  (3 lines)
+    ff_ac3_bit_alloc_calc_mask                  3   251-253
+
+audioconvert.c  (3 lines)
+    conv_AV_SAMPLE_FMT_S32_to_AV_SAMPLE_FMT_FLT    1   70
+    conv_AV_SAMPLE_FMT_S64_to_AV_SAMPLE_FMT_DBL    1   77
+    conv_AV_SAMPLE_FMT_DBL_to_AV_SAMPLE_FMT_FLT    1   88
+
+common.h  (3 lines)
+    <file scope>                                3   196-198
+
+fifo.c  (3 lines)
+    av_fifo_grow2                               3   117-119
+
+swresample.c  (3 lines)
+    swr_convert_internal                        3   779-780, 827
+
+avformat.c  (2 lines)
+    av_find_default_stream_index                2   373-374
+
+buffersrc.c  (2 lines)
+    init_audio                                  2   396, 398
+
+ffmpeg_filter.c  (2 lines)
+    fg_output_frame                             2   2107-2108
+
+rematrix_template.c  (2 lines)
+    sum2_s32                                    1   60
+    mix8to2_s32                                 1   100
+
+truespeech.c  (2 lines)
+    truespeech_decode_init                      2   68-69
+
+audio_convert_init.c  (1 lines)
+    swri_audio_convert_init_x86                 1   104
+
+bytestream.h  (1 lines)
+    <file scope>                                1   93
+
+objpool.c  (1 lines)
+    objpool_release                             1   88
+
+pcm.c  (1 lines)
+    pcm_decode_frame                            1   387
+
+riffdec.c  (1 lines)
+    ff_wav_codec_get_id                         1   219
+
+utils.c  (1 lines)
+    ff_bprint_to_codecpar_extradata             1   713
+

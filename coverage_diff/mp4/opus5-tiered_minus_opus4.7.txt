@@ -1,0 +1,341 @@
+mp4: lines opus5-tiered reached that opus4.7 did not
+====================================================
+1636 lines in 83 files
+
+mjpegdec.c  (206 lines)
+    ff_mjpeg_decode_frame_from_buf             71   2371, 2375-2384, 2386, 2388, 2390-2392, 2394, 2397-2400, 2402, 2406, 2408, 2414, 2417, 2419, 2424-2425, 2429, 2433-2436, 2438-2440, 2442, 2448, 2450, 2456-2457, 2470, 2472-2477, 2479-2483, 2486, 2488-2489, 2492-2496, 2608-2609, 2611, 2613, 2617-2621
+    ff_mjpeg_decode_init                       29   124, 126-127, 129-131, 133, 136-148, 150, 153, 164, 167-168, 172, 184-185, 190
+    ff_mjpeg_decode_end                        23   2934, 2936-2937, 2939, 2943-2945, 2949, 2951-2954, 2956-2958, 2960-2962, 2964, 2966, 2968-2969, 2971
+    mjpeg_decode_com                           18   2172, 2174-2175, 2214-2217, 2219-2225, 2231-2234
+    ff_mjpeg_decode_sof                        13   302, 304-307, 309-311, 313-314, 316-318
+    init_default_huffman_tables                12   61, 63, 83, 85-87, 89-90, 93-94, 96-97
+    ff_mjpeg_decode_dht                        11   241, 243-246, 248, 250, 255-256, 258-259
+    ff_mjpeg_find_marker                        9   2237, 2242-2243, 2245-2246, 2250, 2307, 2350-2351
+    init_idct                                   6   115, 117, 119-122
+    reset_icc_profile                           6   2357, 2359, 2361, 2367-2369
+    mjpeg_decode_app                            5   1855, 1857, 1859-1860, 1869
+    ff_mjpeg_decode_frame                       3   2924, 2927-2928
+
+h264pred_template.c  (154 lines)
+    pred8x16_horizontal_add_9_c               154   2353, 2355-2359, 2361-2363, 2365, 2418, 2420-2424, 2426-2428, 2430, 2505, 2507-2513, 2515, 2560, 2562-2568, 2570, 2591, 2593-2595, 2616, 2618-2620, 2773, 2775-2777, 2798, 2800-2802, 2955, 2957-2961, 2963-2966, 2968-2969, 2971-2973, 2975, 3060, 3062-3066, 3068-3071, 3073-3074, 3076-3078, 3080, 3251, 3253-3257, 3259-3265, 3267-3274, 3276-3278, 3280-3282, 3284-3286, 3288-3290, 3292, 3461, 3463-3467, 3469-3475, 3477-3484, 3486-3488, 3490-3492, 3494-3496, 3498-3500, 3502
+
+hevcdec.c  (97 lines)
+    hevc_init_context                          27   3479, 3481-3482, 3484, 3486-3488, 3490-3493, 3495-3496, 3499-3501, 3503, 3505-3506, 3510, 3512-3513, 3516, 3518-3519, 3521, 3523
+    hevc_decode_free                           26   3434, 3436-3437, 3439, 3441-3442, 3444, 3446-3448, 3450, 3452-3455, 3458, 3460-3462, 3464-3465, 3469-3470, 3472, 3474, 3476
+    pic_arrays_free                            19   66, 68-69, 71-72, 74-76, 78-80, 82-83, 85-87, 89-91
+    hevc_decode_init                           19   3612, 3614-3615, 3617, 3623, 3625-3626, 3628, 3630-3631, 3634-3636, 3638, 3640-3641, 3643-3645
+    hevc_decode_extradata                       5   3292, 3294, 3296, 3298-3299
+    hevc_probe                                  1   48
+
+vc1dec.c  (97 lines)
+    vc1_init_static                            58   482, 484, 486, 489, 492, 495-498, 501-503, 506-508, 512-515, 518-520, 523-525, 529-532, 536-538, 542, 544-546, 550-552, 556-558, 562, 564-566, 570, 572-574, 578-580, 583-585, 589-590
+    vc1_decode_init                            26   625, 627-630, 633-634, 636, 638, 640, 642, 670-675, 677, 682-683, 686, 688, 712-715
+    ff_vc1_init_common                         13   597, 599-600, 603-604, 606-607, 609-610, 612, 615, 618-619
+
+rgb2rgb_template.c  (66 lines)
+    ff_rgb24toyv12_c                           33   649, 653-657, 659, 661-664, 666-668, 670-672, 674-676, 678-679, 681-682, 684, 687-690, 692, 694, 696-697
+    rgb24toyv12_mmxext                         25   1547, 1555-1556, 1558-1564, 1567, 1569-1570, 1632, 1636-1637, 1639-1640, 1726, 1731-1733, 1736, 1740-1741
+    rgb15tobgr24_mmxext                         8   698, 700-701, 703-706, 708
+
+vc1_parser.c  (60 lines)
+    vc1_parse                                  49   124, 132-139, 141, 147, 150-156, 158-159, 171, 181-186, 188, 190-195, 205, 224-226, 228, 231-235, 246-247, 250-252
+    vc1_parse_init                             11   255, 257-266
+
+dvdec.c  (55 lines)
+    dv_init_static                             30   152, 154-158, 161-164, 166-167, 169-172, 178, 181, 183-186, 188, 192-194, 196-198, 200
+    dvvideo_decode_init                        14   248, 250-252, 254, 256, 258-259, 261, 267, 269-270, 272, 274
+    dvvideo_decode_frame                       11   623, 626-631, 633-636
+
+mov.c  (54 lines)
+    mov_read_udta_string                       14   472-473, 475, 477, 479, 481, 488-489, 491, 493, 495, 497, 504-505
+    update_frag_index                           9   1458, 1463-1470
+    mov_read_dvc1                               9   2151, 2153-2155, 2157, 2159, 2161, 2164-2165
+    mov_build_index                             5   4217-4218, 4239, 4276-4277
+    mov_read_elst                               4   5797, 5809-5811
+    mov_probe                                   3   8140, 8144-8145
+    mov_read_ddts                               2   902-903
+    mov_read_glbl                               2   2134-2135
+    mov_fix_index                               2   3895-3896
+    mov_read_header                             2   8796-8797
+    mov_read_stps                               1   2988
+    mov_read_close                              1   8448
+
+vc1dsp.c  (51 lines)
+    ff_vc1dsp_init                             51   974, 976-983, 985-988, 990-995, 997-1003, 1005-1008, 1010-1013, 1015-1018, 1020-1023, 1026-1030, 1033-1034, 1043, 1049
+
+h264_mc_template.c  (48 lines)
+    <file scope>                               48   219, 233-234, 236, 241, 244, 979, 989-990, 992, 994-997, 999-1000, 1004-1006, 1009, 1013-1015, 1018, 1027-1031, 1033-1034, 1036, 1039-1040, 1042, 1045, 1050-1051, 1053, 1056, 1064-1067, 1069, 1077-1079
+
+h264idct_template.c  (42 lines)
+    ff_h264_chroma_dc_dequant_idct_9_c         42   1476-1482, 1484-1486, 1489-1494, 1496-1499, 1501, 1606-1612, 1614-1616, 1619-1624, 1626-1629, 1631
+
+demux.c  (34 lines)
+    avformat_find_stream_info                  17   2835-2838, 2840-2841, 2844, 2850-2853, 2855-2857, 2860, 2869-2870
+    select_from_pts_buffer                      6   766-771
+    parse_packet                                4   1181-1182, 1220-1221
+    compute_pkt_fields                          3   960, 964, 974
+    try_decode_frame                            2   2051-2052
+    ff_rfps_calculate                           2   2280-2281
+
+evc_parser.c  (34 lines)
+    decode_extradata                           32   256, 258-261, 263, 265, 269-270, 272, 275, 280, 285-290, 293, 296, 302-303, 305, 307, 309-311, 314-317, 324
+    evc_parse                                   2   345-346
+
+vc1dsp_mmx.c  (34 lines)
+    ff_vc1dsp_init_mmx                         17   443, 445-447, 449-452, 454-457, 459-463
+    ff_vc1dsp_init_mmxext                      17   465, 467-469, 471-474, 476-479, 481-485
+
+h2645_sei.c  (32 lines)
+    decode_film_grain_characteristics          21   356-359, 367-375, 377-381, 385, 388, 390
+    decode_nal_sei_mastering_display_info       5   428, 432-433, 437, 439
+    decode_registered_user_data                 2   136, 139
+    ff_h2645_sei_message_decode                 2   465-466
+    decode_frame_packing_arrangement            1   299
+    ff_h2645_sei_to_frame                       1   521
+
+vc1dsp_init.c  (32 lines)
+    ff_vc1dsp_init_x86                         32   101, 103, 105-107, 109-111, 123-124, 126, 128-130, 132, 134-137, 139-140, 142-143, 145-149, 151-153, 156
+
+h264_cavlc.c  (29 lines)
+    ff_h264_decode_mb_cavlc                    20   737-739, 741-742, 755, 804-805, 818, 946-947, 992-995, 1030-1033, 1090
+    decode_residual                             9   665-670, 673-675
+
+h264_loopfilter.c  (29 lines)
+    check_mv                                   27   457-461, 548-549, 552, 579, 583, 599-601, 605-606, 635, 641-642, 645-646, 648-649, 694-698
+    ff_h264_filter_mb_fast                      2   423-424
+
+mpjpegdec.c  (28 lines)
+    parse_multipart_header                     15   165, 170-172, 174, 177-178, 184, 190, 201-202, 204-205, 211, 239
+    get_line                                    6   49, 51, 53, 56, 59-60
+    trim_right                                  5   37, 39, 41, 44-45
+    mpjpeg_read_probe                           2   117, 119
+
+h264_slice.c  (22 lines)
+    init_scan_tables                            6   768-773
+    h264_select_output_frame                    5   1313-1317
+    h264_frame_start                            3   662, 666-667
+    h264_export_frame_props                     3   1176-1178
+    h264_slice_header_parse                     2   1783, 1857
+    ff_h264_queue_decode_slice                  2   2094-2095
+    h264_init_ps                                1   1142
+
+h264_cabac.c  (20 lines)
+    ff_h264_decode_mb_cabac                    15   2022, 2441, 2443-2444, 2449, 2451-2458, 2463-2464
+    decode_cabac_residual_nondc_internal        4   1843-1845, 1847
+    decode_cabac_mb_skip                        1   1353
+
+hevc_parse.c  (19 lines)
+    ff_hevc_decode_extradata                   19   80, 84-85, 87, 94, 96, 98, 100-102, 106, 109-111, 113, 115-117, 119
+
+h264_mb_template.c  (18 lines)
+    <file scope>                               18   172-178, 230-231, 796-802, 854-855
+
+parser.c  (18 lines)
+    ff_combine_frame                           17   222, 228-229, 232, 237-240, 250-251, 253, 259-264
+    av_parser_parse2                            1   188
+
+msrle.c  (17 lines)
+    msrle_decode_frame                         15   82, 85-89, 91, 94, 97, 112, 136-137, 140, 143, 146
+    msrle_decode_init                           2   76-77
+
+swscale.c  (17 lines)
+    scale_internal                             13   1020-1021, 1024-1027, 1029, 1032-1033, 1035, 1041, 1043-1044
+    reset_ptr                                   3   612, 614-615
+    yuv2yuvX_sse3                               1   223
+
+sbgdec.c  (16 lines)
+    str_to_time                                 7   193-195, 197-198, 204-205
+    parse_options                               7   360-363, 443-444, 446
+    lex_space                                   1   231
+    parse_script                                1   824
+
+decode.c  (15 lines)
+    reget_buffer_internal                       9   1698, 1700-1701, 1703, 1705, 1711-1712, 1714-1715
+    ff_reget_buffer                             4   1735, 1737-1738, 1740
+    ff_get_buffer                               2   1685-1686
+
+mjpegdec_common.c  (15 lines)
+    ff_mjpeg_build_vlc                          9   41, 44-46, 48-49, 51-52, 55
+    <file scope>                                6   31-36
+
+swscale_unscaled.c  (14 lines)
+    bgr24ToYv12Wrapper                          8   1640, 1644, 1646-1648, 1651-1652, 1654
+    ff_get_unscaled_swscale                     6   2009, 2039, 2173, 2175, 2219-2220
+
+dv_profile.c  (13 lines)
+    ff_dv_frame_profile                        13   261, 265, 267, 270-272, 275-276, 280, 283-284, 288, 292
+
+hevc_ps.c  (12 lines)
+    ff_hevc_ps_uninit                          12   1999, 2001, 2003-2008, 2010-2013
+
+vlc.c  (12 lines)
+    alloc_table                                 5   66, 68-70, 75
+    ff_vlc_free                                 3   509, 511-512
+    vlc_common_init                             2   106-107
+    vlc_common_end                              2   240, 242
+
+aviobuf.c  (11 lines)
+    ff_get_line                                11   816, 818-819, 821-826, 829-830
+
+h264_mvpred.h  (11 lines)
+    fill_decode_caches                          6   678-679, 702-705
+    <file scope>                                5   87-90, 449
+
+h264dec.c  (11 lines)
+    decode_nal_units                            6   638-641, 687-688
+    ff_h264_flush_change                        3   463-464, 467
+    get_last_needed_nal                         2   535-536
+
+msmpeg4_vc1_data.c  (11 lines)
+    msmp4_vc1_vlcs_init                         7   39, 41, 44, 47, 50, 54, 57
+    ff_msmp4_vc1_vlcs_init_once                 4   59, 61-63
+
+h264_sei.c  (10 lines)
+    ff_h264_sei_uninit                          8   65, 68-69, 71-72, 74-75, 79
+    decode_green_metadata                       2   296-297
+
+error_resilience.c  (9 lines)
+    guess_mv                                    9   548-554, 659-660
+
+output.c  (9 lines)
+    yuv2planeX_8_c                              9   405, 409-414, 416, 418
+
+startcode.c  (9 lines)
+    ff_startcode_find_candidate_c               9   32, 34, 41-43, 45, 54-55, 57
+
+bswapdsp_init.c  (8 lines)
+    ff_bswapdsp_init_x86                        8   30, 32, 34-38, 40
+
+h264_ps.c  (8 lines)
+    init_dequant_tables                         7   656-662
+    ff_h264_decode_picture_parameter_set        1   820
+
+pthread_frame.c  (8 lines)
+    ff_frame_thread_init                        4   902, 907-909
+    init_thread                                 3   832-834
+    frame_worker_thread                         1   204
+
+dnxhddec.c  (7 lines)
+    dnxhd_probe                                 7   35-37, 39-42
+
+frame.c  (7 lines)
+    av_frame_is_writable                        7   666, 668, 671, 674-677
+
+h264_parse.c  (7 lines)
+    ff_h264_get_profile                         3   540, 544-545
+    ff_h264_parse_ref_count                     2   259, 261
+    ff_h264_decode_extradata                    2   480-481
+
+hevc_parser.c  (7 lines)
+    hevc_parser_close                           7   338, 340, 342-344, 346-347
+
+dovi_rpu.c  (6 lines)
+    ff_dovi_ctx_unref                           6   44, 46-47, 49-50, 52
+
+h264_mb.c  (6 lines)
+    await_references                            6   309, 343-344, 395-397
+
+h264_parser.c  (6 lines)
+    <file scope>                                6   321, 435-436, 481, 483, 536
+
+bswapdsp.c  (5 lines)
+    ff_bswapdsp_init                            5   49, 51-52, 57, 59
+
+h264_refs.c  (5 lines)
+    ff_h264_build_ref_list                      2   357, 359
+    ff_h264_execute_ref_pic_marking             2   645, 675
+    <file scope>                                1   48
+
+h264dsp_init.c  (5 lines)
+    ff_h264dsp_init_x86                         5   203, 244-245, 270-271
+
+demux_utils.c  (4 lines)
+    ff_get_extradata                            4   362-365
+
+ffmpeg_filter.c  (4 lines)
+    choose_out_timebase                         4   1874-1875, 1881-1882
+
+mpeg4video.h  (4 lines)
+    ff_mpeg4_pred_dc                            4   107, 119, 121-122
+
+msrledec.c  (4 lines)
+    ff_msrle_decode                             4   249, 252, 255, 259
+
+utils.c  (4 lines)
+    sws_init_single_context                     2   1737, 1741
+    ff_set_sar                                  1   117
+    av_get_frame_filename2                      1   300
+
+vc1_common.h  (4 lines)
+    <file scope>                                4   61-64
+
+intfloat.h  (3 lines)
+    <file scope>                                3   42-44
+
+sga.c  (3 lines)
+    decode_palette                              3   85-87
+
+dnxhddata.h  (2 lines)
+    <file scope>                                2   71, 81
+
+hevc_refs.c  (2 lines)
+    ff_hevc_unref_frame                         2   33, 36
+
+md5.c  (2 lines)
+    av_md5_alloc                                2   50, 52
+
+mem.c  (2 lines)
+    av_realloc_f                                1   182
+    av_reallocp_array                           1   231
+
+mpeg.c  (2 lines)
+    mpegps_probe                                2   99, 111
+
+mpegvideodec.c  (2 lines)
+    mpegvideo_probe                             2   63-64
+
+vf_transpose.c  (2 lines)
+    filter_slice                                2   301-302
+
+vscale.c  (2 lines)
+    chr_planar_vscale                           2   100-101
+
+westwood_aud.c  (2 lines)
+    wsaud_probe                                 2   76-77
+
+avcodec.c  (1 lines)
+    avcodec_open2                               1   209
+
+avpacket.c  (1 lines)
+    av_packet_make_refcounted                   1   498
+
+bink.c  (1 lines)
+    probe                                       1   73
+
+c93.c  (1 lines)
+    decode_end                                  1   55
+
+flvdec.c  (1 lines)
+    kux_probe                                   1   125
+
+h2645_parse.c  (1 lines)
+    find_next_start_code                        1   406
+
+h264_direct.c  (1 lines)
+    pred_spatial_direct_motion                  1   417
+
+hevc_sei.h  (1 lines)
+    <file scope>                                1   108
+
+id3v2.c  (1 lines)
+    ff_id3v2_match                              1   147
+
+movenc.c  (1 lines)
+    mov_write_ftyp_tag                          1   5514
+
+vf_scale.c  (1 lines)
+    scale_frame                                 1   725
+
+vvcdec.c  (1 lines)
+    vvc_probe                                   1   47
+

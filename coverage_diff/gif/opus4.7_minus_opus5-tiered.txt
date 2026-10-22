@@ -1,0 +1,7 @@
+gif: lines opus4.7 reached that opus5-tiered did not
+====================================================
+4 lines in 1 files
+
+dgif_lib.c  (4 lines)
+    DGifGetImageHeader                          4   379-382
+

@@ -1,0 +1,16 @@
+pcap: lines opus4.7 reached that opus5 did not
+==============================================
+13 lines in 4 files
+
+print-ip6opts.c  (6 lines)
+    hbhopt_process                              6   186, 189-190, 192-194
+
+print-ip6.c  (4 lines)
+    ip6_print                                   4   336, 341, 346, 351
+
+print-ip.c  (2 lines)
+    ipN_print                                   2   529-530
+
+print-tcp.c  (1 lines)
+    tcp_print                                   1   333
+
