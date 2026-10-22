@@ -1,121 +1,102 @@
 """
 Result transformation module for the learning constraints system.
-Contains functions for transforming and flattening JSON results.
+Flattens the nested result JSON into the key/value shape downstream tools read.
+
+Two flattenings are produced:
+
+* ``*_flattened.json``       keyed by cleaned *leaf name* (``width``), values pooled across all
+                              paths that end in that name (historical shape);
+* ``*_flattened_paths.json`` keyed by cleaned *full path* (``file~chunk~ihdr~width``), so fields
+                              that share a name under different parents stay apart.
 """
 import os
 import json
 import logging
 from .config import Config
+from .utils import strip_index
 
 
 class ResultTransformer:
     """Result transformer class for processing and flattening JSON results."""
-    
+
     def __init__(self):
-        """Initialize the result transformer."""
         self.logger = logging.getLogger(__name__)
-    
-    def flatten_json(self, data, out=None):
+
+    def flatten_json(self, data, out=None, key_mode="leaf"):
         """
-        Flatten nested JSON, use last nested key, merge duplicate keys, keep unique values, and handle >10 values.
-        
+        Flatten nested JSON into ``{key: value | [values] | marker}``.
+
         Args:
-            data: The JSON data to flatten
-            out (dict, optional): Output dictionary to accumulate results
-            
-        Returns:
-            dict: Flattened JSON data
+            data: nested dict with lists at the leaves
+            out: optional dict to accumulate into
+            key_mode: ``"leaf"`` (cleaned last key) or ``"path"`` (cleaned full path)
         """
         if out is None:
             out = {}
-        
-        def _flatten(obj, prefix=''):
+
+        def _add(key, value):
+            if key in out:
+                if isinstance(out[key], list):
+                    if value not in out[key]:
+                        out[key].append(value)
+                elif out[key] != value:
+                    out[key] = [out[key], value]
+            else:
+                out[key] = value
+
+        def _flatten(obj, path):
             if isinstance(obj, dict):
                 for k, v in obj.items():
-                    _flatten(v, k)  # Only use the last key
+                    k = strip_index(k)
+                    _flatten(v, f"{path}~{k}" if path else k)
             elif isinstance(obj, list):
                 for item in obj:
-                    _flatten(item, prefix)
+                    _flatten(item, path)
             else:
-                # Merge duplicate keys and keep unique values
-                if prefix in out:
-                    if isinstance(out[prefix], list):
-                        if obj not in out[prefix]:
-                            out[prefix].append(obj)
-                    else:
-                        if out[prefix] != obj:
-                            out[prefix] = [out[prefix], obj]
-                else:
-                    out[prefix] = obj
-        
-        _flatten(data)
-        
-        # Post-process: if any key has more than 10 values, set to "More than 10 values"
+                key = path if key_mode == "path" else path.split("~")[-1]
+                _add(key, obj)
+
+        _flatten(data, "")
+
+        limit = Config.FLATTEN_MAX_VALUES
         for k in list(out.keys()):
-            if isinstance(out[k], list) and len(out[k]) > 20:
-                out[k] = "More than 10 values"
-        
+            if isinstance(out[k], list) and len(out[k]) > limit:
+                out[k] = f"More than {limit} values"
+
         return out
-    
-    def transform_json_file(self, input_path, output_path):
-        """
-        Transform a single JSON file by flattening its structure.
 
-        Args:
-            input_path (str): Path to the input JSON file
-            output_path (str): Path to save the transformed JSON file
-
-        Returns:
-            bool: True if transformation was successful, False otherwise
-        """
+    def transform_json_file(self, input_path, output_path, key_mode="leaf"):
+        """Flatten one result JSON file into ``output_path``."""
         try:
             with open(input_path, 'r') as f:
                 data = json.load(f)
 
-            # Extract special keys before flattening
             checksum_algorithms = data.pop("checksum_algorithms", None)
+            flattened_data = self.flatten_json(data, key_mode=key_mode)
 
-            # Flatten and merge
-            flattened_data = self.flatten_json(data)
-
-            # Add special keys back to flattened data
             if checksum_algorithms:
-                # Add checksum algorithms (keep nested structure for by_chunk_type)
-                if "by_chunk_type" in checksum_algorithms:
-                    for chunk_type, algorithms in checksum_algorithms["by_chunk_type"].items():
-                        # Convert list to single value if only one algorithm
-                        if isinstance(algorithms, list) and len(algorithms) == 1:
-                            flattened_data[chunk_type] = algorithms[0]
-                        else:
-                            flattened_data[chunk_type] = algorithms
+                for chunk_type, algorithms in checksum_algorithms.get("by_chunk_type", {}).items():
+                    if isinstance(algorithms, list) and len(algorithms) == 1:
+                        flattened_data[chunk_type] = algorithms[0]
+                    else:
+                        flattened_data[chunk_type] = algorithms
+                compression_methods = checksum_algorithms.get("compression_methods") or {}
+                if compression_methods:
+                    flattened_data["compressionMethods"] = sorted(set(compression_methods.values()))
+                    flattened_data["compressionMethodsValues"] = sorted(int(k) for k in compression_methods.keys())
 
-                # Add compression methods as a separate top-level key (as a set/list)
-                if "compression_methods" in checksum_algorithms:
-                    compression_methods = checksum_algorithms["compression_methods"]
-                    # Convert dict values to a set (unique values only)
-                    if compression_methods:
-                        flattened_data["compressionMethods"] = list(set(compression_methods.values()))
-                        # Also add the numeric method values (keys)
-                        flattened_data["compressionMethodsValues"] = sorted([int(k) for k in compression_methods.keys()])
-
-            # Write the flattened data to a new file
             with open(output_path, 'w') as f:
                 json.dump(flattened_data, f, indent=4)
 
             self.logger.info(f"Transformed {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
             return True
-
         except Exception as e:
             self.logger.error(f"Error transforming {input_path}: {e}")
             return False
-    
+
     def transform_results_directory(self, results_dir=None, output_suffix="_flattened"):
         """
-        Transform the hex values JSON file in the results directory.
-
-        Args:
-            results_dir (str, optional): Directory containing JSON files. If None, uses Config.CURRENT_RESULTS_DIR
-            output_suffix (str): Suffix to add to transformed file names
+        Flatten the hex values file in the results directory (leaf-keyed and path-keyed).
 
         Returns:
             tuple: (successful_count, total_count)
@@ -127,51 +108,31 @@ class ResultTransformer:
             self.logger.warning(f"Results directory does not exist: {results_dir}")
             return 0, 0
 
-        # Construct path for hex file
         hex_file = os.path.join(results_dir, f"{Config.FILE_TYPE}_parsed_values_hex_original.json")
-
         if not os.path.exists(hex_file):
             self.logger.warning(f"Hex values file does not exist: {hex_file}")
             return 0, 0
 
-        # Transform the hex values file
-        filename = os.path.basename(hex_file)
-        output_filename = f"{os.path.splitext(filename)[0]}{output_suffix}.json"
-        output_path = os.path.join(results_dir, output_filename)
+        stem = os.path.splitext(os.path.basename(hex_file))[0]
+        jobs = [
+            (os.path.join(results_dir, f"{stem}{output_suffix}.json"), "leaf"),
+            (os.path.join(results_dir, f"{stem}{output_suffix}_paths.json"), "path"),
+        ]
+        successful = sum(1 for out, mode in jobs if self.transform_json_file(hex_file, out, key_mode=mode))
+        self.logger.info(f"Transformation complete! Produced {successful}/{len(jobs)} flattened files")
+        return successful, len(jobs)
 
-        successful_count = 0
-        if self.transform_json_file(hex_file, output_path):
-            successful_count = 1
-
-        self.logger.info(f"Transformation complete! Processed {successful_count}/1 hex values file")
-        return successful_count, 1
-    
-    def transform_specific_files(self, file_patterns, output_suffix="_flattened"):
-        """
-        Transform specific JSON files based on patterns.
-
-        Args:
-            file_patterns (list): List of file paths to transform
-            output_suffix (str): Suffix to add to transformed file names
-
-        Returns:
-            tuple: (successful_count, total_count)
-        """
+    def transform_specific_files(self, file_patterns, output_suffix="_flattened", key_mode="leaf"):
+        """Flatten specific JSON files next to themselves."""
         successful_count = 0
         total_count = 0
-
         for file_path in file_patterns:
-            if os.path.exists(file_path):
-                total_count += 1
-                output_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}{output_suffix}.json"
-                output_path = os.path.join(os.path.dirname(file_path), output_filename)
-
-                if self.transform_json_file(file_path, output_path):
-                    successful_count += 1
-            else:
+            if not os.path.exists(file_path):
                 self.logger.warning(f"File not found: {file_path}")
-
+                continue
+            total_count += 1
+            output_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}{output_suffix}.json"
+            output_path = os.path.join(os.path.dirname(file_path), output_filename)
+            if self.transform_json_file(file_path, output_path, key_mode=key_mode):
+                successful_count += 1
         return successful_count, total_count
-
-
-

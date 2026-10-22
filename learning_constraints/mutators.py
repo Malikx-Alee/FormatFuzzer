@@ -1,6 +1,7 @@
 """
 File mutation module for the learning constraints system.
-Contains functions for mutating files through smart abstraction and random overwrites.
+Mutates each learnable field of a file with the fuzzer's smart abstraction and with random
+bytes, validates the result, and harvests values (and new attributes) from valid mutants.
 """
 import os
 import shutil
@@ -8,266 +9,198 @@ import subprocess
 import hashlib
 import logging
 from .config import Config, GlobalState
+from .validators import FileValidator
+from .parsers import FileParser
+from .utils import overwrite_bytes_randomly
 
 # Module-level logger
 logger = logging.getLogger(__name__)
-from .validators import FileValidator
-from .parsers import FileParser
-from .utils import overwrite_bytes_randomly, ByteRange
+
+
+def _short_hash(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()[:8]
 
 
 def _get_unique_suffix(file_path: str) -> str:
-    """
-    Generate a unique suffix for temporary files based on input file path and process ID.
-    This prevents race conditions when multiple processes work on different files.
-
-    Args:
-        file_path: Path to the input file being processed
-
-    Returns:
-        A unique suffix string
-    """
-    # Use hash of file path + process ID to create unique identifier
-    unique_str = f"{file_path}_{os.getpid()}"
-    return hashlib.md5(unique_str.encode()).hexdigest()[:8]
+    """Unique suffix for temp files: hash of input path + process id (safe across workers)."""
+    return _short_hash(f"{file_path}_{os.getpid()}")
 
 
 class FileMutator:
-    """File mutator class for performing smart abstraction-based mutations and random overwrite mutations."""
-    
-    def __init__(self, global_state: GlobalState):
-        """
-        Initialize the mutator with global state.
+    """Performs smart-abstraction and random-overwrite mutations and processes valid mutants."""
 
-        Args:
-            global_state (GlobalState): The global state object
-        """
+    def __init__(self, global_state: GlobalState):
         self.global_state = global_state
         self.parser = FileParser(global_state)
         self.validator = FileValidator()
-    
+        self._special_this_file = 0
+
+    # ------------------------------------------------------------------
+    # Primitive mutations
+    # ------------------------------------------------------------------
+
     def smart_abstraction_mutation(self, file_path, start, end, output_path):
         """
-        Perform smart abstraction-based mutation on a specific byte range using the fuzzer.
-
-        Args:
-            file_path (str): Path to the input file
-            start (int): Start position for mutation
-            end (int): End position for mutation
-            output_path (str): Path for the output file
+        Run ``<type>-fuzzer abstract`` on one byte range.
 
         Returns:
-            bool: True if smart abstraction mutation was successful, False otherwise
+            bool: True if the fuzzer produced an output file and exited 0.
         """
+        if os.path.exists(output_path):
+            os.remove(output_path)
         try:
             result = subprocess.run(
                 [
-                    Config.get_fuzzer_executable(), 
-                    "abstract", 
-                    "--targetfile", file_path, 
-                    "--targetstart", str(start), 
-                    "--targetend", str(end), 
+                    Config.get_fuzzer_executable(), "abstract",
+                    "--targetfile", file_path,
+                    "--targetstart", str(start),
+                    "--targetend", str(end),
                     output_path
                 ],
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                text=True
+                text=True,
+                errors="replace",
+                timeout=Config.FUZZER_TIMEOUT,
             )
-            
-            return os.path.exists(output_path) and result.returncode == 0
-            
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout ({Config.FUZZER_TIMEOUT}s) abstracting {file_path} [{start}-{end}]")
+            return False
         except Exception as e:
             logger.error(f"Error performing smart abstraction mutation on {file_path} from {start} to {end}: {e}")
             return False
-    
+        return result.returncode == 0 and os.path.exists(output_path)
+
     def random_overwrite_mutation(self, file_path, start, end, output_path):
-        """
-        Perform random overwrite mutation on a specific byte range.
-
-        Args:
-            file_path (str): Path to the input file
-            start (int): Start position for mutation
-            end (int): End position for mutation
-            output_path (str): Path for the output file
-
-        Returns:
-            bool: True if random overwrite mutation was successful, False otherwise
-        """
+        """Copy the file and overwrite one byte range with random bytes."""
         try:
-            # Copy original file to output path
             shutil.copy(file_path, output_path)
-            
-            # Perform random overwrite
             overwrite_bytes_randomly(output_path, start, end)
-            
             return True
-            
         except Exception as e:
             logger.error(f"Error performing random overwrite mutation on {file_path}: {e}")
             return False
-    
-    def save_special_file(self, source_path, new_attribute, start, end, operation_type="abstract"):
-        """
-        Save a file that revealed new attributes to the special directory.
 
-        Args:
-            source_path (str): Path to the source file
-            new_attribute (str): The new attribute that was discovered
-            start (int): Start position of the operation
-            end (int): End position of the operation
-            operation_type (str): Type of operation ("abstract" or "overwrite")
+    # ------------------------------------------------------------------
+    # Special files
+    # ------------------------------------------------------------------
 
-        Returns:
-            str: Path to the saved special file
+    def _special_quota_left(self):
+        return (self._special_this_file < Config.MAX_SPECIAL_FILES_PER_FILE
+                and self.global_state.valid_abstractions_special_count < Config.MAX_SPECIAL_FILES)
+
+    def save_special_file(self, source_path, new_attribute, start, end, operation_type, origin_file):
         """
-        filename = f"special_{operation_type}_{new_attribute}_{start}_{end}.{Config.FILE_TYPE}"
+        Save a mutant that exposed a never-seen attribute path to the special directory.
+
+        The filename carries the operation, the new leaf name, the mutated range and a short
+        hash of the originating file so two source files cannot overwrite each other.
+        """
+        safe_attr = "".join(c if c.isalnum() or c in "-_" else "_" for c in new_attribute)[:60]
+        filename = f"special_{operation_type}_{safe_attr}_{start}_{end}_{_short_hash(origin_file)}.{Config.FILE_TYPE}"
         special_file_path = os.path.join(Config.CURRENT_ABSTRACTED_SPECIAL_DIR, filename)
 
         shutil.copy(source_path, special_file_path)
         self.global_state.valid_abstractions_special_count += 1
-
-        # print(f"New attributes found in {operation_type} mutation! Saved to {special_file_path}")
+        self._special_this_file += 1
+        logger.info(f"New attribute '{new_attribute}' found by {operation_type} of [{start}-{end}]; saved {filename}")
         return special_file_path
-    
-    def process_smart_abstraction_mutation_attempt(self, file_path, start, end, original_attributes, original_byte_ranges):
-        """
-        Attempt to perform smart abstraction-based mutation and process the results.
 
-        Args:
-            file_path (str): Path to the input file
-            start (int): Start position for mutation
-            end (int): End position for mutation
-            original_attributes (set): Set of original file attributes
-            original_byte_ranges (list): List of all byte ranges including large ones
+    # ------------------------------------------------------------------
+    # Mutant handling
+    # ------------------------------------------------------------------
+
+    def _process_valid_mutant(self, mutant_path, origin_file, start, end, known_attributes, operation_type):
+        """Parse a validated mutant, save it if it exposes new attributes, and harvest its values."""
+        mutated_original_ranges, mutated_ranges = self.parser.parse_file_structure(mutant_path)
+
+        has_new, new_leaf, new_path = self.parser.check_for_new_attributes(mutated_ranges, known_attributes)
+        if has_new:
+            if self._special_quota_left():
+                self.save_special_file(mutant_path, new_leaf, start, end, operation_type, origin_file)
+            else:
+                logger.debug(f"Special-file quota reached; not saving mutant exposing '{new_path}'")
+
+        # Extracting also registers the mutant's paths as seen, so the same discovery is not
+        # reported again by later mutants or other files.
+        self.parser.extract_bytes_from_file(mutant_path, mutated_ranges, mutated_original_ranges)
+
+    def process_smart_abstraction_mutation_attempt(self, file_path, start, end, known_attributes, original_byte_ranges=None):
+        """
+        Try up to MAX_ABSTRACTION_ATTEMPTS smart abstractions of one range; process the first
+        valid mutant.
 
         Returns:
-            bool: True if a valid smart abstraction mutation was created, False otherwise
+            bool: True if a valid mutant was produced.
         """
-        # Use unique suffix to prevent race conditions in parallel processing
-        unique_suffix = _get_unique_suffix(file_path)
-        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR, f"abstracted_{unique_suffix}.{Config.FILE_TYPE}")
+        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR,
+                                   f"abstracted_{_get_unique_suffix(file_path)}.{Config.FILE_TYPE}")
+        try:
+            for attempt in range(1, Config.MAX_ABSTRACTION_ATTEMPTS + 1):
+                try:
+                    if not self.smart_abstraction_mutation(file_path, start, end, output_file):
+                        continue
+                    if not self.validator.is_valid_file(output_file):
+                        continue
+                    self._process_valid_mutant(output_file, file_path, start, end, known_attributes, "smart_abstraction")
+                    self.global_state.valid_abstractions_count += 1
+                    return True
+                except Exception as e:
+                    logger.error(f"Error in smart abstraction mutation attempt {attempt} for {file_path}: {e}")
+            return False
+        finally:
+            if os.path.exists(output_file):
+                os.remove(output_file)
 
-        for attempt in range(1, Config.MAX_ABSTRACTION_ATTEMPTS + 1):
-            try:
-                if self.smart_abstraction_mutation(file_path, start, end, output_file):
-                    if self.validator.is_valid_file(output_file):
-                        # print(f"Valid Smart Abstraction Mutation {Config.FILE_TYPE}")
-
-                        # Parse the mutated file
-                        mutated_original_byte_ranges, mutated_byte_ranges = self.parser.parse_file_structure(output_file)
-
-                        # Check for new attributes
-                        has_new_attrs, new_attr = self.parser.check_for_new_attributes(
-                            mutated_byte_ranges, original_attributes
-                        )
-
-                        # Save to special directory if new attributes found
-                        if has_new_attrs:
-                            self.save_special_file(output_file, new_attr, start, end, "smart_abstraction")
-
-                        # Extract bytes from the mutated file
-                        self.parser.extract_bytes_from_file(output_file, mutated_byte_ranges, mutated_original_byte_ranges)
-                        self.global_state.valid_abstractions_count += 1
-
-                        return True
-                    else:
-                        # print(f"Invalid Smart Abstraction Mutation {Config.FILE_TYPE}")
-                        pass
-
-            except Exception as e:
-                logger.error(f"Error in smart abstraction mutation attempt {attempt} for {file_path}: {e}")
-
-        return False
-    
-    def process_random_overwrite_mutation_attempt(self, file_path, start, end, original_attributes, original_byte_ranges):
+    def process_random_overwrite_mutation_attempt(self, file_path, start, end, known_attributes, original_byte_ranges=None):
         """
-        Attempt to perform random overwrite mutation and process the results.
-
-        Args:
-            file_path (str): Path to the input file
-            start (int): Start position for mutation
-            end (int): End position for mutation
-            original_attributes (set): Set of original file attributes
-            original_byte_ranges (list): List of all byte ranges including large ones
+        Try up to MAX_OVERWRITE_ATTEMPTS random overwrites of one range; process the first
+        valid mutant.
 
         Returns:
-            bool: True if a valid random overwrite mutation was created, False otherwise
+            bool: True if a valid mutant was produced.
         """
-        # Use unique suffix to prevent race conditions in parallel processing
-        unique_suffix = _get_unique_suffix(file_path)
-        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR, f"overwrite_{unique_suffix}.{Config.FILE_TYPE}")
+        output_file = os.path.join(Config.CURRENT_ABSTRACTED_DIR,
+                                   f"overwrite_{_get_unique_suffix(file_path)}.{Config.FILE_TYPE}")
+        try:
+            for attempt in range(1, Config.MAX_OVERWRITE_ATTEMPTS + 1):
+                try:
+                    if not self.random_overwrite_mutation(file_path, start, end, output_file):
+                        continue
+                    if not self.validator.is_valid_file(output_file):
+                        continue
+                    self._process_valid_mutant(output_file, file_path, start, end, known_attributes, "random_overwrite")
+                    self.global_state.valid_overwrites_count += 1
+                    return True
+                except Exception as e:
+                    logger.error(f"Error in random overwrite mutation attempt {attempt} for {file_path}: {e}")
+            return False
+        finally:
+            if os.path.exists(output_file):
+                os.remove(output_file)
 
-        for attempt in range(1, Config.MAX_OVERWRITE_ATTEMPTS + 1):
-            try:
-                if self.random_overwrite_mutation(file_path, start, end, output_file):
-                    if self.validator.is_valid_file(output_file):
-                        # print(f"Valid Random Overwrite Mutation {Config.FILE_TYPE}")
-
-                        # Parse the mutated file
-                        mutated_original_byte_ranges, mutated_byte_ranges = self.parser.parse_file_structure(output_file)
-
-                        # Check for new attributes
-                        has_new_attrs, new_attr = self.parser.check_for_new_attributes(
-                            mutated_byte_ranges, original_attributes
-                        )
-
-                        # Save to special directory if new attributes found
-                        if has_new_attrs:
-                            self.save_special_file(output_file, new_attr, start, end, "random_overwrite")
-
-                        # Extract bytes from the mutated file
-                        self.parser.extract_bytes_from_file(output_file, mutated_byte_ranges, mutated_original_byte_ranges)
-                        self.global_state.valid_overwrites_count += 1
-
-                        # Clean up temporary file
-                        if os.path.exists(output_file):
-                            os.remove(output_file)
-
-                        return True
-                    else:
-                        # print(f"Invalid Random Overwrite Mutation {Config.FILE_TYPE}")
-                        pass
-
-            except Exception as e:
-                logger.error(f"Error in random overwrite mutation attempt {attempt} for {file_path}: {e}")
-            finally:
-                # Clean up temporary file
-                if os.path.exists(output_file):
-                    os.remove(output_file)
-
-        return False
-    
     def mutate_file_completely(self, file_path, byte_ranges, original_byte_ranges):
         """
-        Perform complete mutation process on a file for all byte ranges using both mutation strategies.
-
-        Args:
-            file_path (str): Path to the file to mutate
-            byte_ranges (list): List of ByteRange objects - filtered ranges
-            original_byte_ranges (list): List of all ByteRange objects including large ones
+        Mutate every learnable byte range of a file with both strategies.
 
         Returns:
-            list: The original byte ranges (for compatibility)
+            list: the byte ranges that were processed (for compatibility)
         """
-        # Get original attributes before mutation
-        original_attributes = self.parser.get_file_attributes(byte_ranges)
+        self._special_this_file = 0
+        file_attributes = self.parser.get_file_attributes(byte_ranges)
+        self.global_state.register_attributes(file_attributes)
+        # "Known" = this file's own attributes plus everything the run has seen so far.
+        known_attributes = file_attributes | set(self.global_state.seen_attribute_paths)
 
         for br in byte_ranges:
-            # print(f"Mutating {file_path} from {br.start} to {br.end}...")
-
-            # Try smart abstraction-based mutation
             try:
-                self.process_smart_abstraction_mutation_attempt(file_path, br.start, br.end, original_attributes, original_byte_ranges)
+                self.process_smart_abstraction_mutation_attempt(file_path, br.start, br.end, known_attributes, original_byte_ranges)
             except Exception as e:
                 logger.error(f"Error in smart abstraction mutation for {file_path}: {e}")
 
-            # Try random overwrite mutation
             try:
-                self.process_random_overwrite_mutation_attempt(file_path, br.start, br.end, original_attributes, original_byte_ranges)
+                self.process_random_overwrite_mutation_attempt(file_path, br.start, br.end, known_attributes, original_byte_ranges)
             except Exception as e:
                 logger.error(f"Error in random overwrite mutation for {file_path}: {e}")
 
         return byte_ranges
-
-
-

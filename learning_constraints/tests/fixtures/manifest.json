@@ -1,0 +1,86 @@
+{
+  "png": {
+    "primary": "testcases/png/basn3p02.png",
+    "primary_size": 146,
+    "files": [
+      "testcases/png/basn3p02.png",
+      "testcases/png/basn4a16.png",
+      "testcases/png/basn0g16.png"
+    ],
+    "sizes": {
+      "testcases/png/basn3p02.png": 146,
+      "testcases/png/basn4a16.png": 2205,
+      "testcases/png/basn0g16.png": 168
+    }
+  },
+  "jpg": {
+    "primary": "testcases/jpg/w3c_home_gray.jpg",
+    "primary_size": 2006,
+    "files": [
+      "testcases/jpg/w3c_home_gray.jpg",
+      "testcases/jpg/not_kitty.jpg",
+      "testcases/jpg/w3c_home_256.jpg"
+    ],
+    "sizes": {
+      "testcases/jpg/w3c_home_gray.jpg": 2006,
+      "testcases/jpg/not_kitty.jpg": 413,
+      "testcases/jpg/w3c_home_256.jpg": 2159
+    }
+  },
+  "avi": {
+    "primary": "testcases/avi/video_test_bwrgb.avi",
+    "primary_size": 3900,
+    "files": [
+      "testcases/avi/video_test_bwrgb.avi",
+      "testcases/avi/video_Registration.avi",
+      "testcases/avi/XPSP1_NT_printscan_ui_shellext_src_cam.avi"
+    ],
+    "sizes": {
+      "testcases/avi/video_test_bwrgb.avi": 3900,
+      "testcases/avi/video_Registration.avi": 1110,
+      "testcases/avi/XPSP1_NT_printscan_ui_shellext_src_cam.avi": 3968
+    }
+  },
+  "mp4": {
+    "primary": "testcases/mp4/small_movie.mp4",
+    "primary_size": 1267,
+    "files": [
+      "testcases/mp4/small_movie.mp4",
+      "testcases/mp4/videotest.mp4",
+      "testcases/mp4/openaigym.video.108.53448.video000000.mp4"
+    ],
+    "sizes": {
+      "testcases/mp4/small_movie.mp4": 1267,
+      "testcases/mp4/videotest.mp4": 1563,
+      "testcases/mp4/openaigym.video.108.53448.video000000.mp4": 1708
+    }
+  },
+  "zip": {
+    "primary": "testcases/zip/small_archive.zip",
+    "primary_size": 289,
+    "files": [
+      "testcases/zip/small_archive.zip",
+      "testcases/zip/type-search-index.zip",
+      "testcases/zip/test25.zip"
+    ],
+    "sizes": {
+      "testcases/zip/small_archive.zip": 289,
+      "testcases/zip/type-search-index.zip": 326,
+      "testcases/zip/test25.zip": 698
+    }
+  },
+  "bmp": {
+    "primary": "testcases/bmp/plus.bmp",
+    "primary_size": 306,
+    "files": [
+      "testcases/bmp/plus.bmp",
+      "testcases/bmp/not_kitty.bmp",
+      "testcases/bmp/w32g_subbtn.bmp"
+    ],
+    "sizes": {
+      "testcases/bmp/plus.bmp": 306,
+      "testcases/bmp/not_kitty.bmp": 630,
+      "testcases/bmp/w32g_subbtn.bmp": 758
+    }
+  }
+}

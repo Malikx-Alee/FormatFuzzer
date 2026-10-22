@@ -1,21 +1,81 @@
 """
 Utility functions for the learning constraints system.
 Contains helper functions used across multiple modules.
+
+Key naming conventions used throughout the package:
+
+* An *attribute label* is what the fuzzer prints: ``file~chunk_3~plte~plteChunkData~btRed_2``.
+  Segments are separated by ``~`` and array elements / re-reads carry a ``_<N>`` suffix.
+* A *cleaned path* is the label with every ``_<N>`` suffix removed:
+  ``file~chunk~plte~plteChunkData~btRed``.  Values, blacklists and the "seen attributes" set
+  are all keyed by cleaned path, so the same field in different array elements pools together
+  while the same field name under different parents stays apart.
+* A *cleaned key* (or leaf name) is the last segment of the cleaned path: ``btRed``.  It is used
+  only when writing the flattened output, where the downstream consumers expect leaf names.
 """
 import collections
 import random
 import os
+import re
 import logging
-
 import binascii
+import zlib
+import hashlib
+from typing import Optional, Tuple, List, Dict, Iterator, Any
+from dataclasses import dataclass
 
 # Module-level logger
 logger = logging.getLogger(__name__)
-import zlib
-import hashlib
-from typing import Optional, Tuple, List, Dict
-from dataclasses import dataclass
 
+
+# ---------------------------------------------------------------------------
+# Key handling
+# ---------------------------------------------------------------------------
+
+_INDEX_SUFFIX_RE = re.compile(r"^(.+?)_(\d+)$")
+
+
+def split_index(name: str) -> Tuple[str, Optional[int]]:
+    """
+    Split a trailing ``_<digits>`` index off a single path segment.
+
+    ``chunk_5`` -> ``("chunk", 5)``, ``index_entry_12`` -> ``("index_entry", 12)``,
+    ``dw_flags`` -> ``("dw_flags", None)``.
+    """
+    match = _INDEX_SUFFIX_RE.match(name)
+    if not match:
+        return name, None
+    return match.group(1), int(match.group(2))
+
+
+def strip_index(name: str) -> str:
+    """Remove a trailing ``_<digits>`` suffix from a single path segment, if present."""
+    return split_index(name)[0]
+
+
+def clean_single_key(key: str) -> str:
+    """Backward-compatible alias for :func:`strip_index`."""
+    return strip_index(key)
+
+
+def clean_keys_list(keys: List[str]) -> List[str]:
+    """Strip array indices from every segment of a split attribute label."""
+    return [strip_index(key) for key in keys]
+
+
+def clean_attribute_key(attribute: str) -> str:
+    """Return the cleaned *leaf name* (last segment, index stripped) of an attribute label."""
+    return strip_index(attribute.split("~")[-1])
+
+
+def clean_attribute_path(attribute: str) -> str:
+    """Return the cleaned *full path* (every segment index-stripped) of an attribute label."""
+    return "~".join(clean_keys_list(attribute.split("~")))
+
+
+# ---------------------------------------------------------------------------
+# ByteRange
+# ---------------------------------------------------------------------------
 
 @dataclass
 class ByteRange:
@@ -25,35 +85,51 @@ class ByteRange:
     Attributes:
         start: Start position of the byte range (inclusive)
         end: End position of the byte range (inclusive)
-        attribute: Hierarchical attribute path (e.g., "file~chunk~crc")
+        attribute: Hierarchical attribute label as printed by the fuzzer (e.g. "file~chunk_1~crc")
+        flags: Extra CSV fields the fuzzer emitted for this line ("Optional", "Appendable", ...)
     """
     start: int
     end: int
     attribute: str
+    flags: Tuple[str, ...] = ()
 
     @property
     def size(self) -> int:
-        """Return the size of the byte range in bytes."""
+        """Return the size of the byte range in bytes (inclusive end)."""
         return self.end - self.start + 1
 
     @property
     def cleaned_key(self) -> str:
-        """Return the cleaned attribute key (without array indices)."""
+        """Return the cleaned leaf name (last segment without array index)."""
         return clean_attribute_key(self.attribute)
 
     @property
+    def cleaned_path(self) -> str:
+        """Return the cleaned full path (all segments without array indices)."""
+        return clean_attribute_path(self.attribute)
+
+    @property
     def attribute_keys(self) -> List[str]:
-        """Return the attribute split into hierarchical keys."""
+        """Return the raw attribute split into hierarchical keys."""
         return self.attribute.split("~")
 
+    @property
+    def optional(self) -> bool:
+        """True when the fuzzer flagged this range as Optional."""
+        return "Optional" in self.flags
+
     def is_within_size_limit(self, max_bytes: int = 8) -> bool:
-        """Check if the byte range is within the size limit."""
-        return self.end - self.start <= max_bytes
+        """Check if the byte range is within the size limit (size in bytes, inclusive)."""
+        return self.size <= max_bytes
 
     def as_tuple(self) -> Tuple[int, int, str]:
         """Return the byte range as a tuple for backward compatibility."""
         return (self.start, self.end, self.attribute)
 
+
+# ---------------------------------------------------------------------------
+# Checksum helpers
+# ---------------------------------------------------------------------------
 
 # Optional: third-party hashes may not be available; guard imports
 try:
@@ -88,17 +164,14 @@ def _sum_checks(data: bytes) -> Dict[str, bytes]:
 def _hash_algorithms(data: bytes) -> Dict[str, bytes]:
     """Compute hash digests for supported algorithms."""
     results: Dict[str, bytes] = {}
-    # MD2/MD4 generally unavailable in hashlib; skip unless present via openssl backed
     for name in ["md5", "sha1", "sha256", "sha384", "sha512"]:
         h = hashlib.new(name)
         h.update(data)
         results[name.upper().replace("SHA1", "SHA-1").replace("SHA256", "SHA-256").replace("SHA384", "SHA-384").replace("SHA512", "SHA-512")] = h.digest()
-    # RIPEMD160 if available
     if HAVE_RIPEMD160:
         rh = _RIPEMD.new()
         rh.update(data)
         results["RIPEMD160"] = rh.digest()
-    # TIGER if available
     if HAVE_TIGER:
         th = _TIGER.new()
         th.update(data)
@@ -106,27 +179,16 @@ def _hash_algorithms(data: bytes) -> Dict[str, bytes]:
     return results
 
 
-def _crc_algorithms(data: bytes) -> Dict[str, bytes]:
-    """Compute CRCs using Python stdlib where possible."""
-    res: Dict[str, bytes] = {}
-    # CRC-32
-    crc32_val = binascii.crc32(data) & 0xFFFFFFFF
-    res["CRC-32"] = crc32_val.to_bytes(4, "big")
-    # Adler32 (use zlib; binascii may not provide adler32 in some environments)
-    adler_val = zlib.adler32(data) & 0xFFFFFFFF
-    res["Adler32"] = adler_val.to_bytes(4, "big")
-    # CRC-16 and CRC-16/CCITT not in stdlib: simple implementations
-    # CRC-16 (IBM/ARC) poly=0xA001 (reflected) init=0x0000
+def _crc16_arc(data: bytes) -> int:
     crc = 0x0000
     for b in data:
         crc ^= b
         for _ in range(8):
-            if (crc & 1) != 0:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    res["CRC-16"] = crc.to_bytes(2, "little")
-    # CRC-16/CCITT-FALSE poly=0x1021 init=0xFFFF
+            crc = (crc >> 1) ^ 0xA001 if (crc & 1) else (crc >> 1)
+    return crc
+
+
+def _crc16_ccitt_false(data: bytes) -> int:
     crc = 0xFFFF
     for b in data:
         crc ^= (b << 8) & 0xFFFF
@@ -135,7 +197,16 @@ def _crc_algorithms(data: bytes) -> Dict[str, bytes]:
                 crc = ((crc << 1) ^ 0x1021) & 0xFFFF
             else:
                 crc = (crc << 1) & 0xFFFF
-    res["CRC-16/CCITT"] = crc.to_bytes(2, "big")
+    return crc
+
+
+def _crc_algorithms(data: bytes) -> Dict[str, bytes]:
+    """Compute CRCs using Python stdlib where possible."""
+    res: Dict[str, bytes] = {}
+    res["CRC-32"] = (binascii.crc32(data) & 0xFFFFFFFF).to_bytes(4, "big")
+    res["Adler32"] = (zlib.adler32(data) & 0xFFFFFFFF).to_bytes(4, "big")
+    res["CRC-16"] = _crc16_arc(data).to_bytes(2, "little")
+    res["CRC-16/CCITT"] = _crc16_ccitt_false(data).to_bytes(2, "big")
     return res
 
 
@@ -144,88 +215,33 @@ def detect_checksum_algorithm_first(data: bytes, expected_value: bytes) -> Optio
     exp = expected_value
 
     # 1) CRCs (PNG should match here quickly)
-    crc32_val = binascii.crc32(data) & 0xFFFFFFFF
-    if crc32_val.to_bytes(4, "big") == exp:
+    if (binascii.crc32(data) & 0xFFFFFFFF).to_bytes(4, "big") == exp:
         return "CRC-32"
-    adler_val = zlib.adler32(data) & 0xFFFFFFFF
-    if adler_val.to_bytes(4, "big") == exp:
+    if (zlib.adler32(data) & 0xFFFFFFFF).to_bytes(4, "big") == exp:
         return "Adler32"
-    # CRC-16 (IBM/ARC)
-    crc = 0x0000
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0xA001 if (crc & 1) else (crc >> 1)
-    if crc.to_bytes(2, "little") == exp:
+    if _crc16_arc(data).to_bytes(2, "little") == exp:
         return "CRC-16"
-    # CRC-16/CCITT-FALSE
-    crc = 0xFFFF
-    for b in data:
-        crc ^= (b << 8) & 0xFFFF
-        for _ in range(8):
-            if (crc & 0x8000) != 0:
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
-            else:
-                crc = (crc << 1) & 0xFFFF
-    if crc.to_bytes(2, "big") == exp:
+    if _crc16_ccitt_false(data).to_bytes(2, "big") == exp:
         return "CRC-16/CCITT"
 
     # 2) Sum-based checks
-    total = sum(data) & ((1 << 64) - 1)
-    if (total & 0xFF).to_bytes(1, "big") == exp:
-        return "Checksum - UByte (8 bit)"
-    if (total & 0xFFFF).to_bytes(2, "little") == exp:
-        return "Checksum - UShort (16 bit) - Little Endian"
-    if (total & 0xFFFF).to_bytes(2, "big") == exp:
-        return "Checksum - UShort (16 bit) - Big Endian"
-    if (total & 0xFFFFFFFF).to_bytes(4, "little") == exp:
-        return "Checksum - UInt (32 bit) - Little Endian"
-    if (total & 0xFFFFFFFF).to_bytes(4, "big") == exp:
-        return "Checksum - UInt (32 bit) - Big Endian"
-    if (total & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "little") == exp:
-        return "Checksum - UInt64 (64 bit) - Little Endian"
-    if (total & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "big") == exp:
-        return "Checksum - UInt64 (64 bit) - Big Endian"
+    for name, digest in _sum_checks(data).items():
+        if digest == exp:
+            return name
 
-    # 3) Hashes (only if lengths match)
-    # Only try when expected value length matches the digest length to avoid extra work.
-    try_hashes: List[Tuple[str, int]] = [
-        ("MD5", 16), ("SHA-1", 20), ("SHA-256", 32), ("SHA-384", 48), ("SHA-512", 64)
-    ]
-    if len(exp) in [l for _, l in try_hashes] or len(exp) in (16, 20, 32, 48, 64):
-        # md5
-        if len(exp) == 16:
-            h = hashlib.md5(); h.update(data)
-            if h.digest() == exp:
-                return "MD5"
-        # sha-1
-        if len(exp) == 20:
-            h = hashlib.sha1(); h.update(data)
-            if h.digest() == exp:
-                return "SHA-1"
-        # sha-256
-        if len(exp) == 32:
-            h = hashlib.sha256(); h.update(data)
-            if h.digest() == exp:
-                return "SHA-256"
-        # sha-384
-        if len(exp) == 48:
-            h = hashlib.sha384(); h.update(data)
-            if h.digest() == exp:
-                return "SHA-384"
-        # sha-512
-        if len(exp) == 64:
-            h = hashlib.sha512(); h.update(data)
-            if h.digest() == exp:
-                return "SHA-512"
+    # 3) Hashes (only when the expected length matches the digest length)
+    hash_by_len = {16: ("MD5", hashlib.md5), 20: ("SHA-1", hashlib.sha1), 32: ("SHA-256", hashlib.sha256),
+                   48: ("SHA-384", hashlib.sha384), 64: ("SHA-512", hashlib.sha512)}
+    if len(exp) in hash_by_len:
+        name, ctor = hash_by_len[len(exp)]
+        if ctor(data).digest() == exp:
+            return name
 
-    # Optional RIPEMD160
     if HAVE_RIPEMD160 and len(exp) == 20:
         rh = _RIPEMD.new(); rh.update(data)
         if rh.digest() == exp:
             return "RIPEMD160"
 
-    # Optional TIGER
     if HAVE_TIGER and len(exp) == 24:
         th = _TIGER.new(); th.update(data)
         if th.digest() == exp:
@@ -240,129 +256,157 @@ def detect_checksum_algorithms(data: bytes, expected_value: bytes) -> List[str]:
     candidates.update(_sum_checks(data))
     candidates.update(_crc_algorithms(data))
     candidates.update(_hash_algorithms(data))
+    return [name for name, digest in candidates.items() if digest == expected_value]
 
-    normalized_expected = expected_value
-    matches = [name for name, digest in candidates.items() if digest == normalized_expected]
-    return matches
 
+# ---------------------------------------------------------------------------
+# Nested value dictionary helpers
+# ---------------------------------------------------------------------------
 
 def convert_sets_to_lists(obj):
-    """
-    Recursively converts sets to lists in a nested dictionary.
-
-    Args:
-        obj: The object to convert (dict, set, list, or other)
-
-    Returns:
-        The converted object with sets replaced by lists
-    """
+    """Recursively convert sets to (sorted) lists in a nested dictionary."""
     if isinstance(obj, dict):
         return {k: convert_sets_to_lists(v) for k, v in obj.items()}
     elif isinstance(obj, set):
-        return list(obj)
+        try:
+            return sorted(obj)
+        except TypeError:
+            return list(obj)
     elif isinstance(obj, list):
         return [convert_sets_to_lists(item) for item in obj]
-    elif isinstance(obj, collections.defaultdict):
-        return {k: convert_sets_to_lists(v) for k, v in obj.items()}
     return obj
 
 
-def clean_single_key(key):
-    """
-    Removes trailing _<number> suffix from a single key if present.
-
-    For example: 'chunk_5' -> 'chunk', 'data_10' -> 'data', 'crc' -> 'crc'
-
-    Args:
-        key (str): A single key to clean
-
-    Returns:
-        str: The cleaned key
-    """
-    if "_" in key:
-        parts = key.split("_")
-        if len(parts) > 1 and parts[1].isdigit():
-            return parts[0]
-    return key
-
-
-def clean_keys_list(keys):
-    """
-    Clean a list of keys by removing array indices (e.g., chunk_5 -> chunk).
-
-    This is used to ensure consistent navigation in nested dictionaries,
-    where data is stored without array indices.
-
-    Args:
-        keys (list): List of keys to clean
-
-    Returns:
-        list: List of cleaned keys
-    """
-    return [clean_single_key(key) for key in keys]
-
-
-def clean_attribute_key(attribute):
-    """
-    Extracts the last part after '~' and removes trailing _<number> if present.
-
-    Args:
-        attribute (str): The attribute string to clean
-
-    Returns:
-        str: The cleaned attribute key
-    """
-    key = attribute.split("~")[-1]
-    return clean_single_key(key)
+def new_nested_dict():
+    """Create an empty nested value dictionary."""
+    return collections.defaultdict(lambda: collections.defaultdict(lambda: set()))
 
 
 def insert_nested_dict(root, original_keys, value):
     """
-    Recursively inserts values into a nested dictionary with special handling for hierarchical arrays.
+    Insert a value into the nested dictionary under the *cleaned* path of ``original_keys``.
 
     Args:
         root: The root dictionary to insert into
-        original_keys (list): List of keys representing the path
+        original_keys (list): Raw attribute segments (array indices are stripped here)
         value: The value to insert
     """
     current = root
-
-    # Clean keys by removing array indices if present
     keys = clean_keys_list(original_keys)
 
-    # Navigate through all keys except the last one
-    for key in keys[:-1]:  # Traverse and create intermediate levels
-        if key not in current:
-            # Create new nested defaultdict if key doesn't exist
+    for key in keys[:-1]:
+        if key not in current or isinstance(current[key], (set, list)):
             current[key] = collections.defaultdict(lambda: set())
-        elif isinstance(current[key], set):
-            # If the current level is a set, convert it to a defaultdict for deeper nesting
-            current[key] = collections.defaultdict(lambda: set())
-        elif isinstance(current[key], list):
-            current[key] = collections.defaultdict(lambda: set())
-        # Move to the next level
         current = current[key]
 
-    last_key = keys[-1]  # Final key where value should be stored
-
-    # Handle the final key insertion
+    last_key = keys[-1]
     if last_key not in current:
-        # Initialize as a set if it doesn't exist
         current[last_key] = set()
-
+    if isinstance(current[last_key], list):
+        current[last_key] = set(current[last_key])
     if isinstance(current[last_key], set):
-        # If it's a set, add the value
         current[last_key].add(value)
 
 
-def overwrite_bytes_randomly(file_path, start, end):
+def iter_leaf_paths(nested, prefix: str = "") -> Iterator[Tuple[str, Any]]:
+    """Yield ``(cleaned_path, values)`` for every leaf (set or list) in a nested dictionary."""
+    for key, value in nested.items():
+        path = f"{prefix}~{key}" if prefix else key
+        if isinstance(value, dict):
+            yield from iter_leaf_paths(value, path)
+        elif isinstance(value, (set, list)):
+            yield path, value
+
+
+def get_leaf(nested, path: str):
+    """Return the leaf (set or list) stored under a cleaned path, or None."""
+    current = nested
+    for key in path.split("~"):
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            return None
+    return current if isinstance(current, (set, list)) else None
+
+
+def remove_path_from_nested_dict(root, path: str) -> bool:
     """
-    Randomly overwrites bytes in a file between the given start and end positions.
+    Remove the leaf stored under a cleaned path and prune parents that become empty.
+
+    Only a leaf (set/list) is ever removed. Intermediate nodes that merely share the leaf's name
+    are untouched, which is what makes this safe for formats where a struct and a field share a
+    name (AVI ``data``, PNG ``type``).
+
+    Returns:
+        bool: True if a leaf was removed.
+    """
+    keys = path.split("~")
+    parents = []
+    current = root
+    for key in keys[:-1]:
+        if isinstance(current, dict) and key in current and isinstance(current[key], dict):
+            parents.append((current, key))
+            current = current[key]
+        else:
+            return False
+
+    leaf_key = keys[-1]
+    if not (isinstance(current, dict) and leaf_key in current and isinstance(current[leaf_key], (set, list))):
+        return False
+    del current[leaf_key]
+
+    for parent, key in reversed(parents):
+        if not parent[key]:
+            del parent[key]
+        else:
+            break
+    return True
+
+
+def remove_attribute_from_nested_dict(root, attribute_label: str) -> bool:
+    """Remove the leaf for an attribute label (any array index) from the nested dictionary."""
+    return remove_path_from_nested_dict(root, clean_attribute_path(attribute_label))
+
+
+def filter_blacklisted_attributes(nested_dict, blacklisted_paths, legacy_leaf_names=None):
+    """
+    Return a copy of ``nested_dict`` without the blacklisted leaves.
 
     Args:
-        file_path (str): Path to the file to modify
-        start (int): Start position (inclusive) of the range to overwrite
-        end (int): End position (inclusive) of the range to overwrite
+        nested_dict: Nested dictionary (sets or lists at the leaves)
+        blacklisted_paths: Set of cleaned full paths to drop
+        legacy_leaf_names: Optional set of leaf names from pre-v2 checkpoints; a leaf whose
+            name is in this set is dropped regardless of its path.
+    """
+    blacklisted_paths = set(blacklisted_paths or ())
+    legacy_leaf_names = set(legacy_leaf_names or ())
+    if not blacklisted_paths and not legacy_leaf_names:
+        return nested_dict
+
+    def _filter(current, prefix):
+        result = {}
+        for key, value in current.items():
+            path = f"{prefix}~{key}" if prefix else key
+            if isinstance(value, dict):
+                filtered = _filter(value, path)
+                if filtered:
+                    result[key] = filtered
+            else:
+                if path in blacklisted_paths or key in legacy_leaf_names:
+                    continue
+                result[key] = value
+        return result
+
+    return _filter(nested_dict, "")
+
+
+# ---------------------------------------------------------------------------
+# Byte helpers
+# ---------------------------------------------------------------------------
+
+def overwrite_bytes_randomly(file_path, start, end):
+    """
+    Randomly overwrite bytes in a file between the given start and end positions (inclusive).
 
     Raises:
         FileNotFoundError: If the file doesn't exist
@@ -374,46 +418,26 @@ def overwrite_bytes_randomly(file_path, start, end):
     if start > end:
         raise ValueError("Start position must be less than or equal to the end position.")
 
-    try:
-        with open(file_path, "r+b") as f:  # Open file in read/write binary mode
-            file_size = os.path.getsize(file_path)
+    file_size = os.path.getsize(file_path)
+    if start < 0 or end >= file_size:
+        raise ValueError(f"Start and end positions must be within the file size (0 to {file_size - 1}).")
 
-            if start < 0 or end >= file_size:
-                raise ValueError(f"Start and end positions must be within the file size (0 to {file_size - 1}).")
-
-            # Seek to the start position
-            f.seek(start)
-
-            # Overwrite bytes with random values
-            for position in range(start, end + 1):
-                random_byte = random.randint(0, 255)  # Generate a random byte (0-255)
-                f.write(bytes([random_byte]))  # Write the random byte
-
-            # print(f"Successfully overwrote bytes from position {start} to {end} in {file_path}.")
-
-    except Exception as e:
-        logger.error(f"Error overwriting bytes in {file_path}: {e}")
-        raise
+    with open(file_path, "r+b") as f:
+        f.seek(start)
+        f.write(bytes(random.randint(0, 255) for _ in range(start, end + 1)))
 
 
 def extract_byte_values(file_data, start, end):
     """
     Extract byte values from file data and convert to different formats.
 
-    Args:
-        file_data (bytes): The file data
-        start (int): Start position
-        end (int): End position
-
-    Returns:
-        dict: Dictionary containing hex, base10, and ascii representations
+    Raises:
+        ValueError: if the range is not within the data.
     """
-    if end >= len(file_data):
-        raise ValueError(f"End position {end} exceeds file size {len(file_data)}")
+    if start < 0 or start > end or end >= len(file_data):
+        raise ValueError(f"Invalid byte range {start}-{end} for data of size {len(file_data)}")
 
-    # Extract the byte range
     byte_range = file_data[start:end + 1]
-
     return {
         'hex': byte_range.hex(),
         'base10': "".join(str(byte) for byte in byte_range),
@@ -421,105 +445,21 @@ def extract_byte_values(file_data, start, end):
     }
 
 
-def validate_byte_range(start, end, file_size, max_size=8):
+def validate_byte_range(start, end, file_size, max_size=None):
     """
     Validate that a byte range is within acceptable bounds.
 
     Args:
-        start (int): Start position
-        end (int): End position
+        start (int): Start position (inclusive)
+        end (int): End position (inclusive)
         file_size (int): Size of the file
-        max_size (int): Maximum allowed range size
+        max_size (int, optional): Maximum allowed range size in bytes; None disables the check
 
     Returns:
         bool: True if valid, False otherwise
     """
-    if start < 0 or end >= file_size:
+    if start < 0 or end < start or end >= file_size:
         return False
-    if start > end:
-        return False
-    if end - start > max_size:
+    if max_size is not None and (end - start + 1) > max_size:
         return False
     return True
-
-
-def remove_attribute_from_nested_dict(root, attribute_label):
-    """
-    Remove all entries for a specific attribute from nested_values_hex.
-    This function removes entries based on the cleaned attribute key, which means
-    it will remove all variations of the attribute (e.g., attr_1, attr_2, etc.)
-
-    Args:
-        root: The root nested dictionary (nested_values_hex)
-        attribute_label (str): The attribute label (e.g., "file~dirEntry_5~deExtraField~efHeaderID")
-    """
-    # Get the cleaned attribute key (last part after '~', without array indices)
-    cleaned_key = clean_attribute_key(attribute_label)
-
-    def _remove_from_dict(current_dict, target_key):
-        """Recursively search and remove target_key from all levels of the dictionary."""
-        keys_to_remove = []
-
-        for key, value in current_dict.items():
-            if key == target_key:
-                # Mark this key for removal
-                keys_to_remove.append(key)
-            elif isinstance(value, dict):
-                # Recursively search in nested dictionaries
-                _remove_from_dict(value, target_key)
-                # If the nested dict becomes empty after removal, mark it for removal too
-                if not value:
-                    keys_to_remove.append(key)
-
-        # Remove marked keys
-        for key in keys_to_remove:
-            current_dict.pop(key, None)
-
-    # Start the recursive removal
-    _remove_from_dict(root, cleaned_key)
-
-
-def filter_blacklisted_attributes(nested_dict, blacklisted_attributes):
-    """
-    Filter out all blacklisted LEAF attributes from a nested dictionary structure.
-    Returns a new dictionary without the blacklisted leaf attributes.
-
-    Only leaf attributes (those with list values) are filtered. Intermediate/navigation
-    keys (those with dict values) are never filtered, even if their name appears in the
-    blacklist. This is because blacklisting is based on the full attribute path, and
-    intermediate keys like 'chunk' or 'ihdr' should not cause their children to be removed.
-
-    Args:
-        nested_dict: The nested dictionary to filter (can be the result of convert_sets_to_lists)
-        blacklisted_attributes: Set of cleaned attribute keys to remove
-
-    Returns:
-        dict: A new dictionary with blacklisted leaf attributes removed
-    """
-    if not blacklisted_attributes:
-        return nested_dict
-
-    def _filter_dict(current_dict):
-        """Recursively filter blacklisted keys from the dictionary."""
-        if not isinstance(current_dict, dict):
-            return current_dict
-
-        result = {}
-        for key, value in current_dict.items():
-            if isinstance(value, dict):
-                # Intermediate node - always recurse, never filter based on key name
-                # Even if 'chunk' or 'ihdr' is in blacklist, we keep the navigation path
-                filtered_value = _filter_dict(value)
-                # Only add if there's something left after filtering
-                if filtered_value:
-                    result[key] = filtered_value
-            else:
-                # Leaf node (list or other value) - check blacklist
-                if key in blacklisted_attributes:
-                    # Skip blacklisted leaf attributes
-                    continue
-                result[key] = value
-
-        return result
-
-    return _filter_dict(nested_dict)

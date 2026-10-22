@@ -1,81 +1,65 @@
 #!/usr/bin/env python3
 """
-Simple runner script for the Learning Constraints module.
+Runner script for the Learning Constraints module.
 
-Must be run with the repository root as the current working directory
-(it shells out to ./{file_type}-fuzzer, reads templates/{file_type}.bt, and
-writes to ./logs/, all resolved relative to the cwd).
+Run it with the repository root as the current working directory (it shells out to
+./{file_type}-fuzzer, reads templates/{file_type}.bt, and writes to ./logs/), or pass
+--fuzzer-dir build to use the binaries in build/.
 
 Usage:
-    python scripts/run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]
+    python scripts/run_learning_constraints.py <file_type> [max_files] [source_dir] [options]
+
+Options:
+    --resume            resume the latest incomplete run for this file type
+    --new               start a new run even if an incomplete one exists (no prompt)
+    --workers N         number of worker processes (1 = sequential); default from config.py
+    --strict            strict validator (identify -regard-warnings, ffmpeg -xerror)
+    --fuzzer-dir DIR    directory holding <file_type>-fuzzer (default: .)
 
 Examples:
-    python scripts/run_learning_constraints.py png                    # Process all PNG files from default directory
-    python scripts/run_learning_constraints.py jpg 5                  # Process only 5 JPG files
-    python scripts/run_learning_constraints.py gif /path/to/files     # Process all GIF files from custom directory
-    python scripts/run_learning_constraints.py bmp 5 /path/to/files   # Process 5 BMP files from custom directory
-    python scripts/run_learning_constraints.py png --resume           # Resume from last checkpoint
-    python scripts/run_learning_constraints.py png 10 --resume        # Resume with max 10 files
+    python scripts/run_learning_constraints.py png                    # all PNGs from the default directory
+    python scripts/run_learning_constraints.py jpg 5                  # only 5 JPG files
+    python scripts/run_learning_constraints.py gif /path/to/files     # all GIFs from a directory
+    python scripts/run_learning_constraints.py bmp 5 /path/to/files   # 5 BMP files from a directory
+    python scripts/run_learning_constraints.py png --resume           # resume the last incomplete run
+    python scripts/run_learning_constraints.py mp4 --workers 1 --fuzzer-dir build
 
-Parallel Processing:
-    By default, files are processed in parallel using all available CPU cores.
-    Configure parallelism in learning_constraints/config.py:
-    - PARALLEL_WORKERS = None    # Use all CPU cores (default)
-    - PARALLEL_WORKERS = 4       # Use 4 worker processes
-    - PARALLEL_WORKERS = 1       # Disable parallel processing (sequential mode)
-    - PARALLEL_BATCH_SIZE = 50   # Files per batch for checkpointing
-    - PARALLEL_FILE_TIMEOUT = 300  # Per-file timeout in seconds (5 min default)
+Exit codes: 0 success, 1 error, 2 no file succeeded, 130 interrupted.
+
+Interactive behaviour: when an *incomplete* run exists and stdin is a terminal, the script
+asks whether to resume it. Without a terminal it starts a new run unless --resume is given.
 """
 
 import sys
 import os
 
-# Allow running as `python scripts/run_learning_constraints.py` from the repo
-# root: the learning_constraints package lives at the repo root, one level
-# above this script's own directory, so it isn't importable by default.
+# The learning_constraints package lives at the repo root, one level above this script.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from learning_constraints import (
+from learning_constraints import (  # noqa: E402
     LearningConstraintsOrchestrator,
     Config,
     set_file_type,
     get_supported_file_types,
     get_worker_count
 )
-from learning_constraints.checkpoint import CheckpointManager
+from learning_constraints.checkpoint import CheckpointManager  # noqa: E402
+
+USAGE = "Usage: python scripts/run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume|--new] [--workers N] [--strict] [--fuzzer-dir DIR]"
 
 
 def check_for_resume(file_type):
-    """
-    Check if there's an existing checkpoint to resume from.
-
-    Args:
-        file_type (str): The file type to check for checkpoints
-
-    Returns:
-        tuple: (log_dir_path, checkpoint_path) or (None, None) if not found
-    """
-    log_dir, checkpoint_path = Config.find_latest_checkpoint(file_type)
+    """Return (log_dir, checkpoint_path, info) of the latest incomplete run, or (None, None, None)."""
+    log_dir, checkpoint_path = Config.find_latest_checkpoint(file_type, include_completed=False)
     if checkpoint_path:
-        # Load checkpoint info to display
-        checkpoint_info = CheckpointManager.load_checkpoint_info(checkpoint_path)
-        return log_dir, checkpoint_path, checkpoint_info
+        return log_dir, checkpoint_path, CheckpointManager.load_checkpoint_info(checkpoint_path)
     return None, None, None
 
 
 def prompt_for_resume(checkpoint_info, log_dir):
-    """
-    Prompt the user to decide whether to resume or start fresh.
-
-    Args:
-        checkpoint_info (dict): Information about the checkpoint
-        log_dir (str): Path to the log directory
-
-    Returns:
-        bool: True to resume, False to start fresh
-    """
+    """Ask the user whether to resume an incomplete run (only called when stdin is a TTY)."""
     print("\n" + "=" * 60)
-    print("⚠️  FOUND INCOMPLETE RUN")
+    print("FOUND INCOMPLETE RUN")
     print("=" * 60)
     print(f"Log directory: {log_dir}")
     print(f"Started: {checkpoint_info.get('started_at', 'Unknown')}")
@@ -84,155 +68,168 @@ def prompt_for_resume(checkpoint_info, log_dir):
     print("=" * 60)
 
     while True:
-        response = input("\nDo you want to [R]esume or start [N]ew? (R/N): ").strip().upper()
+        try:
+            response = input("\nDo you want to [R]esume or start [N]ew? (R/N): ").strip().upper()
+        except EOFError:
+            return False
         if response in ('R', 'RESUME'):
             return True
-        elif response in ('N', 'NEW'):
+        if response in ('N', 'NEW'):
             return False
+        print("Please enter 'R' to resume or 'N' to start a new run.")
+
+
+def parse_args(argv):
+    """Parse positional arguments plus the option flags. Returns a dict or exits on error."""
+    opts = {"resume": False, "new": False, "workers": None, "strict": False, "fuzzer_dir": None}
+    positional = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--resume":
+            opts["resume"] = True
+        elif arg == "--new":
+            opts["new"] = True
+        elif arg == "--strict":
+            opts["strict"] = True
+        elif arg in ("--workers", "--fuzzer-dir"):
+            if i + 1 >= len(argv):
+                print(f"Error: {arg} needs a value.\n{USAGE}")
+                sys.exit(1)
+            value = argv[i + 1]
+            if arg == "--workers":
+                try:
+                    opts["workers"] = int(value)
+                    if opts["workers"] < 1:
+                        raise ValueError
+                except ValueError:
+                    print("Error: --workers must be a positive integer.")
+                    sys.exit(1)
+            else:
+                opts["fuzzer_dir"] = value
+            i += 1
+        elif arg.startswith("--"):
+            print(f"Error: unknown option {arg}.\n{USAGE}")
+            sys.exit(1)
         else:
-            print("Please enter 'R' to resume or 'N' to start a new run.")
+            positional.append(arg)
+        i += 1
 
-
-def main():
-    """Simple main function that takes file type, max files, and source directory as command line arguments."""
-
-    # Check for --resume flag
-    resume_flag = '--resume' in sys.argv
-    if resume_flag:
-        sys.argv.remove('--resume')
-
-    # Check if file type was provided as argument (required)
-    if len(sys.argv) < 2:
+    if not positional:
         print("Error: file_type argument is required.")
-        print("Usage: python scripts/run_learning_constraints.py <file_type> [max_files] [source_dir] [--resume]")
+        print(USAGE)
         print(f"Supported types: {', '.join(get_supported_file_types())}")
         sys.exit(1)
 
-    file_type = sys.argv[1].lower()
-
-    # Default values
-    max_files = None
-    source_dir = None
-
-    # Parse optional arguments - detect if second arg is max_files (integer) or source_dir (path)
-    if len(sys.argv) > 2:
-        arg2 = sys.argv[2]
-        if arg2 != '--resume':  # Skip if it's the resume flag
-            try:
-                max_files = int(arg2)
-                if max_files <= 0:
-                    print("Error: max_files must be a positive integer.")
-                    sys.exit(1)
-            except ValueError:
-                # Not an integer, treat as source_dir
-                source_dir = arg2
-                if not os.path.isdir(source_dir):
-                    print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
-                    sys.exit(1)
-
-    # Check if source_dir was provided as third argument
-    if len(sys.argv) > 3:
-        arg3 = sys.argv[3]
-        if arg3 != '--resume':  # Skip if it's the resume flag
-            source_dir = arg3
-            if not os.path.isdir(source_dir):
-                print(f"Error: source_dir '{source_dir}' does not exist or is not a directory.")
+    opts["file_type"] = positional[0].lower()
+    opts["max_files"] = None
+    opts["source_dir"] = None
+    for value in positional[1:]:
+        try:
+            max_files = int(value)
+            if max_files <= 0:
+                print("Error: max_files must be a positive integer.")
                 sys.exit(1)
+            opts["max_files"] = max_files
+        except ValueError:
+            if not os.path.isdir(value):
+                print(f"Error: source_dir '{value}' does not exist or is not a directory.")
+                sys.exit(1)
+            opts["source_dir"] = value
+    return opts
 
-    # Validate file type
+
+def main():
+    opts = parse_args(sys.argv[1:])
+    file_type = opts["file_type"]
+
     supported_types = get_supported_file_types()
     if file_type not in supported_types:
         print(f"Error: '{file_type}' is not a supported file type.")
         print(f"Supported types: {', '.join(supported_types)}")
-        sys.exit(1)
+        return 1
 
-    # Set the file type
     set_file_type(file_type)
+    if opts["workers"] is not None:
+        Config.PARALLEL_WORKERS = opts["workers"]
+    if opts["strict"]:
+        Config.VALIDATOR_STRICT = True
+    if opts["fuzzer_dir"]:
+        Config.FUZZER_DIR = opts["fuzzer_dir"]
 
-    # Check for existing checkpoint and decide whether to resume
+    fuzzer = Config.get_fuzzer_executable()
+    if not os.path.exists(fuzzer):
+        print(f"Error: fuzzer executable not found: {fuzzer} (build it, or pass --fuzzer-dir build)")
+        return 1
+
+    # Decide whether to resume an incomplete run.
     should_resume = False
-    if resume_flag:
-        # Explicit --resume flag: set RESUME_MODE and proceed
-        Config.set_resume_mode(True)
-        should_resume = True
-        log_dir, checkpoint_path, checkpoint_info = check_for_resume(file_type)
+    log_dir, checkpoint_path, checkpoint_info = check_for_resume(file_type)
+    if opts["resume"]:
         if checkpoint_path:
+            should_resume = True
             print(f"\nResuming from checkpoint: {checkpoint_path}")
         else:
-            print("\nNo checkpoint found to resume. Starting fresh.")
-            Config.set_resume_mode(False)
-            should_resume = False
-    else:
-        # No --resume flag: check if checkpoint exists and prompt
-        log_dir, checkpoint_path, checkpoint_info = check_for_resume(file_type)
-        if checkpoint_path and checkpoint_info:
+            print("\nNo incomplete run found to resume. Starting fresh.")
+    elif checkpoint_path and not opts["new"]:
+        if sys.stdin.isatty():
             should_resume = prompt_for_resume(checkpoint_info, log_dir)
-            Config.set_resume_mode(should_resume)
-            if not should_resume:
-                print("\nStarting new run...")
+        else:
+            print(f"\nNote: incomplete run found at {log_dir}; starting a new run (use --resume to continue it).")
+    Config.set_resume_mode(should_resume)
 
-    files_info = f"all files" if max_files is None else f"up to {max_files} files"
-    effective_source_dir = source_dir if source_dir else Config.DATA_DIR
+    effective_source_dir = opts["source_dir"] if opts["source_dir"] else Config.DATA_DIR
+    if not os.path.isdir(effective_source_dir):
+        print(f"\nError: source directory {effective_source_dir} does not exist.")
+        if opts["source_dir"] is None:
+            print(f"Pass a source directory as an argument or put files in {Config.DATA_DIR}")
+        return 1
 
     if not should_resume:
+        files_info = "all files" if opts["max_files"] is None else f"up to {opts['max_files']} files"
+        num_workers = get_worker_count()
         print(f"\nLearning Constraints - Processing {file_type.upper()} files ({files_info})")
         print("=" * 60)
         print(f"Source directory: {effective_source_dir}")
         print(f"Results directory: ./logs/<timestamp>_{file_type}/results/")
-        if max_files is not None:
-            print(f"File limit: {max_files} files")
+        print(f"Fuzzer: {fuzzer}")
+        print(f"Validator: {'strict' if Config.VALIDATOR_STRICT else 'lenient'}")
+        print(f"Parallel processing: {num_workers} workers" if num_workers > 1 else "Parallel processing: disabled (sequential mode)")
 
-        # Show parallel processing configuration
-        num_workers = get_worker_count()
-        if num_workers > 1:
-            print(f"Parallel processing: {num_workers} workers")
-        else:
-            print("Parallel processing: disabled (sequential mode)")
-
-    # Check if source directory exists
-    if not os.path.exists(effective_source_dir):
-        print(f"\nWarning: Source directory {effective_source_dir} does not exist.")
-        if source_dir is None:
-            print("Please ensure you have files in the data directory before running.")
-            print(f"Expected directory: {Config.DATA_DIR}")
-        return
-
+    orchestrator = None
     try:
-        # Create orchestrator and run
-        orchestrator = LearningConstraintsOrchestrator(file_type=file_type, max_files=max_files, source_dir=source_dir)
+        orchestrator = LearningConstraintsOrchestrator(file_type=file_type, max_files=opts["max_files"],
+                                                       source_dir=opts["source_dir"])
         results = orchestrator.run_complete_process()
-
-        if results:
-            print("\n" + "=" * 60)
-            print("PROCESSING COMPLETED SUCCESSFULLY!")
-            print("=" * 60)
-
-            passed = results['passed_files']
-            special = results['special_files']
-
-            skipped_info = f" (skipped {passed.get('skipped', 0)} already processed)" if passed.get('skipped', 0) > 0 else ""
-            print(f"Valid files processed: {passed['successful']}/{passed['total']}{skipped_info}")
-
-            special_skipped = f" (skipped {special.get('skipped', 0)} already processed)" if special.get('skipped', 0) > 0 else ""
-            print(f"Special files processed: {special['successful']}/{special['total']}{special_skipped}")
-
-            print(f"Result files transformed: {results['transformed_files']['successful']}/{results['transformed_files']['total']}")
-
-            if results.get('resumed'):
-                print("(This was a resumed run)")
-
-            if 'total_time_formatted' in results:
-                print(f"Total time: {results['total_time_formatted']}")
-        else:
-            print("Process failed or was interrupted.")
-
     except KeyboardInterrupt:
-        print("\nProcess interrupted by user. Progress has been saved to checkpoint.")
-        print("Run with --resume flag to continue from where you left off.")
+        print("\nProcess interrupted by user.")
+        if orchestrator is not None and orchestrator.checkpoint_manager.has_saved:
+            print(f"Progress was saved to {orchestrator.checkpoint_manager.checkpoint_path}.")
+            print("Run with --resume to continue from where you left off.")
+        else:
+            print("No checkpoint was written; the run cannot be resumed.")
+        return 130
     except Exception as e:
         print(f"Error during processing: {e}")
-        sys.exit(1)
+        return 1
+
+    passed = results['passed_files']
+    special = results['special_files']
+    print("\n" + "=" * 60)
+    print("PROCESSING COMPLETED" if results['ok'] else "PROCESSING FINISHED - NO FILE SUCCEEDED")
+    print("=" * 60)
+    print(f"Source files processed: {passed['successful']}/{passed['total']} "
+          f"(failed {passed['failed']}, skipped {passed['skipped']} already processed)")
+    print(f"Special files processed: {special['successful']}/{special['total']} (failed {special['failed']})")
+    print(f"Result files transformed: {results['transformed_files']['successful']}/{results['transformed_files']['total']}")
+    print(f"Learned: {results['stats']['learned_values']} values over {results['stats']['learned_leaves']} fields; "
+          f"blacklisted {results['stats']['blacklisted_total']}")
+    if results.get('resumed'):
+        print("(This was a resumed run)")
+    print(f"Total time: {results['total_time_formatted']}")
+    print(f"Output: {results['log_dir']}")
+    return 0 if results['ok'] else 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

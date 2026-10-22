@@ -10,30 +10,24 @@ Main Components:
 - validators: File validation for different formats
 - parsers: File structure parsing and byte extraction
 - mutators: File mutation through smart abstraction and random overwrites
+- parallel: Multi-process execution and state merging
+- checkpoint: Progress saving/resuming
 - transformers: Result transformation and JSON flattening
 - utils: Utility functions and helpers
 - main: Main orchestrator for the complete process
 
-Usage:
+Usage (the ``__main__`` guard is required: worker processes re-import the calling module
+on platforms that use the "spawn" start method, such as macOS and Windows):
+
     from learning_constraints import LearningConstraintsOrchestrator
 
-    # Create orchestrator for GIF files
-    orchestrator = LearningConstraintsOrchestrator(file_type="gif")
+    def main():
+        orchestrator = LearningConstraintsOrchestrator(file_type="gif", source_dir="path/to/gifs")
+        results = orchestrator.run_complete_process()
+        return 0 if results["ok"] else 2
 
-    # Run the complete process
-    results = orchestrator.run_complete_process()
-
-    # Or process individual files/directories
-    orchestrator.process_file("path/to/file.gif")
-    orchestrator.process_directory("path/to/directory")
-
-    # Use individual components
-    from learning_constraints import FileParser, FileMutator, ResultTransformer, GlobalState
-
-    state = GlobalState()
-    parser = FileParser(state)
-    mutator = FileMutator(state)
-    transformer = ResultTransformer()
+    if __name__ == "__main__":
+        raise SystemExit(main())
 """
 
 from .config import Config, GlobalState
@@ -42,57 +36,46 @@ from .parsers import FileParser
 from .mutators import FileMutator
 from .transformers import ResultTransformer
 from .checkpoint import CheckpointManager
-from .parallel import process_files_parallel, merge_global_states, get_worker_count
+from .parallel import process_files_parallel, merge_global_states, get_worker_count, FileResultLogger
 from .main import LearningConstraintsOrchestrator, main
 from .utils import (
+    ByteRange,
     convert_sets_to_lists,
+    strip_index,
+    split_index,
     clean_attribute_key,
+    clean_attribute_path,
     insert_nested_dict,
+    iter_leaf_paths,
     overwrite_bytes_randomly,
     extract_byte_values,
-    validate_byte_range
+    validate_byte_range,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Learning Constraints Team"
 __description__ = "A modular system for file format fuzzing and learning through constraint discovery"
 
-# Package-level convenience functions
+
 def set_file_type(file_type):
-    """
-    Set the file type for the entire package.
-    
-    Args:
-        file_type (str): The file type to set (e.g., 'gif', 'jpg', 'png')
-    """
+    """Set the file type for the entire package."""
     Config.set_file_type(file_type)
 
+
 def get_supported_file_types():
-    """
-    Get the list of supported file types.
-    
-    Returns:
-        list: List of supported file type strings
-    """
+    """Return the list of supported file types."""
     return Config.SUPPORTED_FILE_TYPES.copy()
 
-def create_orchestrator(file_type=None, log_level=None, max_files=None):
-    """
-    Create a new LearningConstraintsOrchestrator instance.
 
-    Args:
-        file_type (str, optional): File type to process
-        log_level (optional): Logging level
-        max_files (int, optional): Maximum number of files to process
+def create_orchestrator(file_type=None, log_level=None, max_files=None, **kwargs):
+    """Create a new LearningConstraintsOrchestrator instance."""
+    if log_level is None:
+        import logging
+        log_level = logging.INFO
+    return LearningConstraintsOrchestrator(file_type=file_type, log_level=log_level, max_files=max_files, **kwargs)
 
-    Returns:
-        LearningConstraintsOrchestrator: New orchestrator instance
-    """
-    return LearningConstraintsOrchestrator(file_type=file_type, log_level=log_level, max_files=max_files)
 
-# Export main classes and functions
 __all__ = [
-    # Main classes
     'LearningConstraintsOrchestrator',
     'Config',
     'GlobalState',
@@ -101,22 +84,22 @@ __all__ = [
     'FileMutator',
     'ResultTransformer',
     'CheckpointManager',
-
-    # Convenience functions
+    'FileResultLogger',
+    'ByteRange',
     'main',
     'set_file_type',
     'get_supported_file_types',
     'create_orchestrator',
-
-    # Parallel processing
     'process_files_parallel',
     'merge_global_states',
     'get_worker_count',
-
-    # Utility functions
     'convert_sets_to_lists',
+    'strip_index',
+    'split_index',
     'clean_attribute_key',
+    'clean_attribute_path',
     'insert_nested_dict',
+    'iter_leaf_paths',
     'overwrite_bytes_randomly',
     'extract_byte_values',
     'validate_byte_range',

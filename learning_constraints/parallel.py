@@ -1,314 +1,205 @@
 """
 Parallel processing module for the learning constraints system.
-Provides multiprocessing support for parallel file processing.
+Each worker processes one file with its own GlobalState; the main process merges the results.
 """
 import logging
+import math
 import multiprocessing
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError
+from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FutureTimeout
 from typing import List, Tuple, Dict, Any, Optional
 
 from .config import Config, GlobalState
 from .parsers import FileParser
 from .mutators import FileMutator
-from .utils import clean_attribute_key
+from .utils import remove_path_from_nested_dict
 
 
 class FileResultLogger:
-    """Logger for tracking successful and failed file processing."""
+    """Appends one line per processed file to processed_success.log / processed_failed.log."""
 
     def __init__(self, log_dir: str):
-        """
-        Initialize the file result logger.
-
-        Args:
-            log_dir: Directory to write log files to
-        """
         self.log_dir = log_dir
         self.success_file = os.path.join(log_dir, "processed_success.log")
         self.failed_file = os.path.join(log_dir, "processed_failed.log")
 
-        # Create/clear the log files with headers
-        with open(self.success_file, 'w') as f:
-            f.write("# Successfully processed files\n")
-            f.write("# Format: timestamp | file_path | processing_time\n")
-            f.write("=" * 80 + "\n")
-
-        with open(self.failed_file, 'w') as f:
-            f.write("# Failed/Timed out files\n")
-            f.write("# Format: timestamp | file_path | reason | processing_time\n")
-            f.write("=" * 80 + "\n")
+        if not os.path.exists(self.success_file):
+            with open(self.success_file, 'w') as f:
+                f.write("# Successfully processed files\n")
+                f.write("# Format: timestamp | file_path | processing_time\n")
+                f.write("=" * 80 + "\n")
+        if not os.path.exists(self.failed_file):
+            with open(self.failed_file, 'w') as f:
+                f.write("# Failed/Timed out files\n")
+                f.write("# Format: timestamp | file_path | reason | processing_time\n")
+                f.write("=" * 80 + "\n")
 
     def log_success(self, file_path: str, elapsed_time: float):
-        """Log a successfully processed file."""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.success_file, 'a') as f:
-            f.write(f"{timestamp} | {file_path} | {elapsed_time:.2f}s\n")
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {file_path} | {elapsed_time:.2f}s\n")
 
     def log_failure(self, file_path: str, reason: str, elapsed_time: float):
-        """Log a failed file."""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.failed_file, 'a') as f:
-            f.write(f"{timestamp} | {file_path} | {reason} | {elapsed_time:.2f}s\n")
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {file_path} | {reason} | {elapsed_time:.2f}s\n")
 
     def log_timeout(self, file_path: str, timeout_seconds: float):
-        """Log a timed out file."""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.failed_file, 'a') as f:
-            f.write(f"{timestamp} | {file_path} | TIMEOUT (>{timeout_seconds}s) | {timeout_seconds:.2f}s+\n")
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {file_path} | TIMEOUT (>{timeout_seconds:.0f}s) | {timeout_seconds:.2f}s+\n")
 
 
 def _init_worker():
-    """Initialize worker process - suppress logging to avoid interleaved output."""
-    # Reduce logging noise from worker processes
+    """Initialize worker process - keep worker logging quiet."""
     logging.getLogger().setLevel(logging.WARNING)
 
 
-def _process_single_file(args: Tuple[str, str, Dict[str, str]]) -> Optional[Dict[str, Any]]:
+def process_one_file(file_path: str, state: GlobalState):
     """
-    Worker function to process a single file in a separate process.
-
-    Args:
-        args: Tuple of (file_path, file_type, config_paths)
-              config_paths contains: CURRENT_LOG_DIR, CURRENT_RESULTS_DIR,
-              CURRENT_ABSTRACTED_DIR, CURRENT_ABSTRACTED_SPECIAL_DIR
+    Parse and mutate one file into ``state``.
 
     Returns:
-        Dictionary containing the processing results and state to merge, or None on failure
+        tuple: (success, error_message)
     """
-    file_path, file_type, config_paths = args
+    parser = FileParser(state)
+    mutator = FileMutator(state)
+    original_byte_ranges, byte_ranges = parser.parse_file_structure(file_path)
+    if not byte_ranges:
+        return False, "No byte ranges found"
+    mutator.mutate_file_completely(file_path, byte_ranges, original_byte_ranges)
+    return True, None
 
+
+def _process_single_file(args: Tuple[str, Dict[str, Any], List[str]]) -> Dict[str, Any]:
+    """
+    Worker entry point: process a single file in a separate process.
+
+    Args:
+        args: (file_path, config_snapshot, known_attribute_paths)
+
+    Returns:
+        dict with file_path, success, state (serialised GlobalState) and error.
+    """
+    file_path, config_snapshot, known_attributes = args
     try:
-        # Set file type in this process
-        Config.set_file_type(file_type)
-
-        # Restore config paths in this worker process
-        Config.CURRENT_LOG_DIR = config_paths['CURRENT_LOG_DIR']
-        Config.CURRENT_RESULTS_DIR = config_paths['CURRENT_RESULTS_DIR']
-        Config.CURRENT_ABSTRACTED_DIR = config_paths['CURRENT_ABSTRACTED_DIR']
-        Config.CURRENT_ABSTRACTED_SPECIAL_DIR = config_paths['CURRENT_ABSTRACTED_SPECIAL_DIR']
-        Config.LOG_FILE = config_paths.get('LOG_FILE')
-
-        # Create isolated state for this file
+        Config.apply_worker_snapshot(config_snapshot)
         local_state = GlobalState()
-        parser = FileParser(local_state)
-        mutator = FileMutator(local_state)
+        local_state.register_attributes(known_attributes)
 
-        # Parse the file to get byte ranges
-        original_byte_ranges, byte_ranges = parser.parse_file_structure(file_path)
-
-        if not byte_ranges:
-            return {
-                'file_path': file_path,
-                'success': False,
-                'state': None,
-                'error': 'No byte ranges found'
-            }
-
-        # Perform mutation on the file
-        mutator.mutate_file_completely(file_path, byte_ranges, original_byte_ranges)
-
-        # Return the local state as a serializable dict for merging
+        success, error = process_one_file(file_path, local_state)
         return {
             'file_path': file_path,
-            'success': True,
-            'state': local_state.to_dict(),
-            'error': None
+            'success': success,
+            'state': local_state.to_dict() if success else None,
+            'error': error,
         }
-
     except Exception as e:
-        return {
-            'file_path': file_path,
-            'success': False,
-            'state': None,
-            'error': str(e)
-        }
+        return {'file_path': file_path, 'success': False, 'state': None, 'error': str(e)}
 
+
+# ----------------------------------------------------------------------
+# Merging
+# ----------------------------------------------------------------------
 
 def merge_global_states(main_state: GlobalState, worker_state_dict: Dict[str, Any]):
     """
-    Merge a worker's state dictionary into the main global state.
+    Merge a worker's serialised state into the main GlobalState.
 
-    Args:
-        main_state: The main GlobalState to merge into
-        worker_state_dict: Dictionary representation of worker's GlobalState
+    Blacklists are applied to *leaves only*, by cleaned path, so a struct that shares a name
+    with a blacklisted field no longer hides its children (the bug that made parallel runs keep
+    only the first worker's values).
     """
     if worker_state_dict is None:
         return
 
-    # Merge nested_values_hex (nested dicts with sets as leaves)
-    # Pass blacklisted attributes to skip merging values for them
+    # Blacklists first, so values the worker learned for a field that is blacklisted anywhere
+    # are dropped consistently.
+    main_state.blacklisted_by_size.update(worker_state_dict.get('blacklisted_by_size', []))
+    main_state.blacklisted_by_count.update(worker_state_dict.get('blacklisted_by_count', []))
+    main_state.legacy_blacklisted_names.update(worker_state_dict.get('legacy_blacklisted_names', []))
+    main_state.seen_attribute_paths.update(worker_state_dict.get('seen_attribute_paths', []))
+    for path, count in worker_state_dict.get('dropped_arrays', {}).items():
+        main_state.record_dropped_array(path, count)
+
     _merge_nested_values(
         main_dict=main_state.nested_values_hex,
         worker_dict=worker_state_dict.get('nested_values_hex', {}),
-        blacklisted_attributes=main_state.blacklisted_attributes
+        is_blacklisted=main_state.is_blacklisted,
     )
 
-    # Merge blacklisted sets
-    main_state.blacklisted_by_size.update(
-        worker_state_dict.get('blacklisted_by_size', [])
-    )
-    main_state.blacklisted_by_count.update(
-        worker_state_dict.get('blacklisted_by_count', [])
-    )
+    # Values of paths blacklisted by the worker must also leave the main state.
+    for path in worker_state_dict.get('blacklisted_by_size', []):
+        remove_path_from_nested_dict(main_state.nested_values_hex, path)
+    for path in worker_state_dict.get('blacklisted_by_count', []):
+        remove_path_from_nested_dict(main_state.nested_values_hex, path)
 
-    # Merge checksum_algorithms
     worker_checksums = worker_state_dict.get('checksum_algorithms', {})
-
-    # Merge by_chunk_type
     for chunk_type, algos in worker_checksums.get('by_chunk_type', {}).items():
-        if chunk_type not in main_state.checksum_algorithms['by_chunk_type']:
-            main_state.checksum_algorithms['by_chunk_type'][chunk_type] = []
-        existing = main_state.checksum_algorithms['by_chunk_type'][chunk_type]
-        main_state.checksum_algorithms['by_chunk_type'][chunk_type] = sorted(
-            set(existing + algos)
-        )
+        existing = main_state.checksum_algorithms['by_chunk_type'].get(chunk_type, [])
+        main_state.checksum_algorithms['by_chunk_type'][chunk_type] = sorted(set(existing) | set(algos))
+    main_state.checksum_algorithms['compression_methods'].update(worker_checksums.get('compression_methods', {}))
 
-    # Merge compression_methods
-    main_state.checksum_algorithms['compression_methods'].update(
-        worker_checksums.get('compression_methods', {})
-    )
-
-    # Add counts
     main_state.valid_abstractions_count += worker_state_dict.get('valid_abstractions_count', 0)
     main_state.valid_abstractions_special_count += worker_state_dict.get('valid_abstractions_special_count', 0)
     main_state.valid_overwrites_count += worker_state_dict.get('valid_overwrites_count', 0)
 
-    # Enforce MAX_UNIQUE_VALUES_PER_ATTRIBUTE limit after merging
-    # This is necessary because each worker has isolated state and may not have
-    # exceeded the limit individually, but the merged state might exceed it
+    # Workers count unique values per file; the union may exceed the limit.
     _enforce_unique_values_limit(main_state)
 
 
-def _merge_nested_values(main_dict: dict, worker_dict: dict, blacklisted_attributes: set = None, current_path: str = ""):
+def _merge_nested_values(main_dict: dict, worker_dict: dict, is_blacklisted=None, current_path: str = ""):
     """
-    Recursively merge nested dictionaries where leaves are sets (or lists from serialization).
+    Recursively merge nested dictionaries whose leaves are sets (or lists after serialisation).
 
     Args:
-        main_dict: Main nested dictionary to merge into
-        worker_dict: Worker's nested dictionary to merge from
-        blacklisted_attributes: Set of cleaned attribute keys to skip (already blacklisted)
-        current_path: Current path in the nested structure (for tracking attribute names)
+        main_dict: destination
+        worker_dict: source
+        is_blacklisted: callable(cleaned_path) -> bool, consulted for leaves only
+        current_path: path prefix of ``worker_dict``
     """
-    if blacklisted_attributes is None:
-        blacklisted_attributes = set()
-
     for key, value in worker_dict.items():
-        # Build path for this key
         path = f"{current_path}~{key}" if current_path else key
 
-        # Check if this key is blacklisted (use cleaned key for comparison)
-        cleaned_key = clean_attribute_key(path)
-        if cleaned_key in blacklisted_attributes:
-            # Skip merging values for blacklisted attributes
+        if isinstance(value, dict):
+            if key not in main_dict or not isinstance(main_dict[key], dict):
+                main_dict[key] = {}
+            _merge_nested_values(main_dict[key], value, is_blacklisted, path)
+            if not main_dict[key]:
+                del main_dict[key]
             continue
 
-        if key not in main_dict:
-            # Key doesn't exist in main - add it
-            if isinstance(value, list):
-                # Convert list back to set
-                main_dict[key] = set(value)
-            elif isinstance(value, dict):
-                # Recursively create nested structure
-                main_dict[key] = {}
-                _merge_nested_values(main_dict[key], value, blacklisted_attributes, path)
-            else:
-                main_dict[key] = value
-        else:
-            # Key exists - need to merge
-            if isinstance(value, dict) and isinstance(main_dict[key], dict):
-                # Both are dicts - recurse
-                _merge_nested_values(main_dict[key], value, blacklisted_attributes, path)
-            elif isinstance(value, (list, set)):
-                # Value is a collection - merge as set
-                if isinstance(main_dict[key], set):
-                    if isinstance(value, list):
-                        main_dict[key].update(value)
-                    else:
-                        main_dict[key].update(value)
-                else:
-                    # Convert to set if not already
-                    main_dict[key] = set(main_dict[key]) if isinstance(main_dict[key], list) else {main_dict[key]}
-                    main_dict[key].update(value if isinstance(value, set) else set(value))
+        if isinstance(value, (list, set)):
+            if is_blacklisted is not None and is_blacklisted(path):
+                continue
+            if key not in main_dict or not isinstance(main_dict[key], (set, list)):
+                main_dict[key] = set()
+            elif isinstance(main_dict[key], list):
+                main_dict[key] = set(main_dict[key])
+            main_dict[key].update(value)
+            continue
+
+        # Scalar (should not occur): keep the main value if present.
+        main_dict.setdefault(key, value)
 
 
 def _enforce_unique_values_limit(state: GlobalState, logger: Optional[logging.Logger] = None):
-    """
-    Enforce MAX_UNIQUE_VALUES_PER_ATTRIBUTE limit on the merged state.
-
-    After merging worker states, some attributes may have exceeded the limit
-    even though individual workers didn't exceed it. This function checks all
-    attributes and blacklists those that exceed the limit.
-
-    Args:
-        state: The GlobalState to check and enforce limits on
-        logger: Optional logger for debug messages
-    """
-    max_values = Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE
-    attributes_to_remove = []
-
-    def _check_nested_dict(current_dict: dict, path: str = ""):
-        """Recursively check nested dict for sets that exceed the limit."""
-        for key, value in current_dict.items():
-            current_path = f"{path}~{key}" if path else key
-
-            if isinstance(value, set):
-                # This is a leaf node - check the count
-                if len(value) > max_values:
-                    cleaned_key = clean_attribute_key(current_path)
-                    if cleaned_key not in state.blacklisted_by_count:
-                        attributes_to_remove.append((current_path, cleaned_key, len(value)))
-            elif isinstance(value, dict):
-                # Recurse into nested dict
-                _check_nested_dict(value, current_path)
-
-    # Check all attributes in nested_values_hex
-    _check_nested_dict(state.nested_values_hex)
-
-    # Remove attributes that exceed the limit (add to blacklisted_by_count)
-    for full_path, cleaned_key, count in attributes_to_remove:
-        state.blacklisted_by_count.add(cleaned_key)
-        _remove_attribute_from_nested(state.nested_values_hex, full_path)
-        if logger:
-            logger.debug(f"Post-merge blacklist (by count): '{cleaned_key}' had {count} values (limit: {max_values})")
-
-
-def _remove_attribute_from_nested(root: dict, attribute_path: str):
-    """
-    Remove an attribute from nested_values_hex by its full path.
-
-    Args:
-        root: The root nested dictionary
-        attribute_path: Full path like "file~chunk~attribute"
-    """
-    keys = attribute_path.split("~")
-
-    # Navigate to parent and remove the leaf
-    current = root
-    for key in keys[:-1]:
-        if key in current and isinstance(current[key], dict):
-            current = current[key]
-        else:
-            return  # Path doesn't exist
-
-    # Remove the final key
-    final_key = keys[-1]
-    if final_key in current:
-        del current[final_key]
+    """Blacklist (by count) merged leaves that exceed MAX_UNIQUE_VALUES_PER_ATTRIBUTE."""
+    newly = state.enforce_unique_value_limit()
+    if logger:
+        for path in newly:
+            logger.debug(f"Post-merge blacklist (by count): '{path}' exceeded {Config.MAX_UNIQUE_VALUES_PER_ATTRIBUTE} values")
+    return newly
 
 
 def get_worker_count() -> int:
-    """
-    Get the number of worker processes to use.
-
-    Returns:
-        Number of worker processes
-    """
+    """Number of worker processes to use."""
     if Config.PARALLEL_WORKERS is None:
         return multiprocessing.cpu_count()
     return max(1, Config.PARALLEL_WORKERS)
 
+
+# ----------------------------------------------------------------------
+# Drivers
+# ----------------------------------------------------------------------
 
 def process_files_parallel(
     file_paths: List[str],
@@ -317,28 +208,18 @@ def process_files_parallel(
     checkpoint_manager,
     logger: logging.Logger,
     max_workers: Optional[int] = None
-) -> Tuple[int, int, int]:
+) -> Tuple[int, int, int, int]:
     """
-    Process multiple files in parallel using multiprocessing.
-
-    Args:
-        file_paths: List of file paths to process
-        file_type: The file type being processed
-        main_state: The main GlobalState to merge results into
-        checkpoint_manager: CheckpointManager instance for tracking progress
-        logger: Logger instance
-        max_workers: Number of worker processes (None = use Config setting)
+    Process files in parallel.
 
     Returns:
-        Tuple of (successful_count, total_count, skipped_count)
+        tuple: (successful_count, total_count, skipped_count, failed_count)
     """
     if not file_paths:
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
-    # Filter out already processed files
     files_to_process = []
     skipped_count = 0
-
     for file_path in file_paths:
         if checkpoint_manager.is_file_processed(file_path):
             logger.info(f"Skipping already processed file: {file_path}")
@@ -348,69 +229,46 @@ def process_files_parallel(
 
     if not files_to_process:
         logger.info(f"All {len(file_paths)} files already processed")
-        return 0, len(file_paths), skipped_count
+        return 0, len(file_paths), skipped_count, 0
 
-    # Determine worker count
     num_workers = max_workers if max_workers is not None else get_worker_count()
-
-    # If only 1 worker, process sequentially (no multiprocessing overhead)
-    if num_workers <= 1:
-        return _process_files_sequential(
-            files_to_process, file_type, main_state, checkpoint_manager, logger, skipped_count
-        )
+    if num_workers <= 1 or len(files_to_process) == 1:
+        return _process_files_sequential(files_to_process, file_type, main_state, checkpoint_manager, logger, skipped_count)
 
     logger.info(f"Processing {len(files_to_process)} files in parallel with {num_workers} workers")
 
-    successful_count = 0
-    total_processed = 0
-
-    # Collect config paths to pass to workers (these are set in main process only)
-    config_paths = {
-        'CURRENT_LOG_DIR': Config.CURRENT_LOG_DIR,
-        'CURRENT_RESULTS_DIR': Config.CURRENT_RESULTS_DIR,
-        'CURRENT_ABSTRACTED_DIR': Config.CURRENT_ABSTRACTED_DIR,
-        'CURRENT_ABSTRACTED_SPECIAL_DIR': Config.CURRENT_ABSTRACTED_SPECIAL_DIR,
-        'LOG_FILE': Config.LOG_FILE
-    }
-
-    # Initialize file result logger for success/failure tracking
     result_logger = FileResultLogger(Config.CURRENT_LOG_DIR)
-    logger.info(f"Success/failure logs: {result_logger.success_file}, {result_logger.failed_file}")
-
-    # Prepare arguments for workers
-    work_items = [(fp, file_type, config_paths) for fp in files_to_process]
-
-    # Process in batches for checkpointing
+    config_snapshot = Config.worker_snapshot()
     batch_size = Config.PARALLEL_BATCH_SIZE
-
-    # Get timeout setting
     file_timeout = Config.PARALLEL_FILE_TIMEOUT
-    timeout_count = 0
+
+    successful_count = 0
     failed_count = 0
+    timeout_count = 0
+    total_processed = 0
+    total_batches = (len(files_to_process) + batch_size - 1) // batch_size
 
-    for batch_start in range(0, len(work_items), batch_size):
-        batch = work_items[batch_start:batch_start + batch_size]
-        batch_num = batch_start // batch_size + 1
-        total_batches = (len(work_items) + batch_size - 1) // batch_size
-
-        logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} files)")
+    for batch_index, batch_start in enumerate(range(0, len(files_to_process), batch_size), 1):
+        batch = files_to_process[batch_start:batch_start + batch_size]
+        logger.info(f"Processing batch {batch_index}/{total_batches} ({len(batch)} files)")
         batch_start_time = time.time()
 
-        with ProcessPoolExecutor(max_workers=num_workers, initializer=_init_worker) as executor:
-            # Submit all tasks in batch and track submission time
-            future_to_info = {}
-            for item in batch:
-                future = executor.submit(_process_single_file, item)
-                future_to_info[future] = {
-                    'file_path': item[0],
-                    'start_time': time.time()
-                }
+        # Snapshot of everything seen so far, so workers do not re-discover known attributes.
+        known_attributes = sorted(main_state.seen_attribute_paths)
+        batch_timeout = None
+        if file_timeout:
+            batch_timeout = file_timeout * math.ceil(len(batch) / num_workers) + 60
 
-            # Track completed files in this batch
-            batch_completed = 0
+        executor = ProcessPoolExecutor(max_workers=num_workers, initializer=_init_worker)
+        future_to_info = {}
+        for file_path in batch:
+            future = executor.submit(_process_single_file, (file_path, config_snapshot, known_attributes))
+            future_to_info[future] = {'file_path': file_path, 'start_time': time.time()}
 
-            # Collect results as they complete
-            for future in as_completed(future_to_info):
+        batch_completed = 0
+        timed_out = False
+        try:
+            for future in as_completed(future_to_info, timeout=batch_timeout):
                 info = future_to_info[future]
                 file_path = info['file_path']
                 elapsed = time.time() - info['start_time']
@@ -418,55 +276,54 @@ def process_files_parallel(
                 batch_completed += 1
 
                 try:
-                    # Use timeout for getting result
-                    result = future.result(timeout=file_timeout) if file_timeout else future.result()
-
-                    if result and result.get('success'):
-                        successful_count += 1
-                        # Merge worker state into main state
-                        if result.get('state'):
-                            merge_global_states(main_state, result['state'])
-                        logger.info(f"[{batch_completed}/{len(batch)}] Processed {file_path} in {elapsed:.1f}s")
-                        result_logger.log_success(file_path, elapsed)
-                    else:
-                        error = result.get('error', 'Unknown error') if result else 'No result'
-                        logger.warning(f"[{batch_completed}/{len(batch)}] Failed {file_path} after {elapsed:.1f}s: {error}")
-                        result_logger.log_failure(file_path, error, elapsed)
-                        failed_count += 1
-
-                    # Mark file as processed
-                    checkpoint_manager.mark_file_processed(file_path)
-
-                except TimeoutError:
-                    timeout_count += 1
-                    failed_count += 1
-                    logger.error(f"[{batch_completed}/{len(batch)}] TIMEOUT: {file_path} exceeded {file_timeout}s limit - skipping")
-                    result_logger.log_timeout(file_path, file_timeout)
-                    checkpoint_manager.mark_file_processed(file_path)
-                    # Cancel the future if possible
-                    future.cancel()
-
+                    result = future.result()
                 except Exception as e:
                     failed_count += 1
                     logger.error(f"[{batch_completed}/{len(batch)}] Exception processing {file_path} after {elapsed:.1f}s: {e}")
                     result_logger.log_failure(file_path, str(e), elapsed)
                     checkpoint_manager.mark_file_processed(file_path)
+                    continue
 
-        # Save checkpoint after each batch
-        batch_elapsed = time.time() - batch_start_time
+                if result and result.get('success'):
+                    successful_count += 1
+                    if result.get('state'):
+                        merge_global_states(main_state, result['state'])
+                    logger.info(f"[{batch_completed}/{len(batch)}] Processed {file_path} in {elapsed:.1f}s")
+                    result_logger.log_success(file_path, elapsed)
+                else:
+                    failed_count += 1
+                    error = result.get('error', 'Unknown error') if result else 'No result'
+                    logger.warning(f"[{batch_completed}/{len(batch)}] Failed {file_path} after {elapsed:.1f}s: {error}")
+                    result_logger.log_failure(file_path, error, elapsed)
+
+                checkpoint_manager.mark_file_processed(file_path)
+        except FutureTimeout:
+            timed_out = True
+            for future, info in future_to_info.items():
+                if future.done():
+                    continue
+                timeout_count += 1
+                failed_count += 1
+                total_processed += 1
+                logger.error(f"TIMEOUT: {info['file_path']} still running after the batch limit of {batch_timeout:.0f}s - skipping")
+                result_logger.log_timeout(info['file_path'], batch_timeout)
+                checkpoint_manager.mark_file_processed(info['file_path'])
+        finally:
+            # On timeout do not wait for the stuck workers; the subprocess timeouts bound them.
+            executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
+
         checkpoint_manager.save_checkpoint()
-        logger.info(f"Batch {batch_num} complete in {batch_elapsed:.1f}s. Progress: {total_processed}/{len(files_to_process)} files")
+        logger.info(f"Batch {batch_index} complete in {time.time() - batch_start_time:.1f}s. "
+                    f"Progress: {total_processed}/{len(files_to_process)} files")
 
     if timeout_count > 0:
         logger.warning(f"Total files that timed out: {timeout_count}")
-
     if failed_count > 0:
-        logger.warning(f"Total files that failed: {failed_count}")
-        logger.info(f"See failed files in: {result_logger.failed_file}")
+        logger.warning(f"Total files that failed: {failed_count} (see {result_logger.failed_file})")
 
-    logger.info(f"Parallel processing complete: {successful_count}/{len(files_to_process)} successful (skipped {skipped_count})")
-    logger.info(f"Results logged to: {result_logger.success_file} and {result_logger.failed_file}")
-    return successful_count, len(file_paths), skipped_count
+    logger.info(f"Parallel processing complete: {successful_count}/{len(files_to_process)} successful "
+                f"(skipped {skipped_count}, failed {failed_count})")
+    return successful_count, len(file_paths), skipped_count, failed_count
 
 
 def _process_files_sequential(
@@ -476,44 +333,39 @@ def _process_files_sequential(
     checkpoint_manager,
     logger: logging.Logger,
     skipped_count: int
-) -> Tuple[int, int, int]:
+) -> Tuple[int, int, int, int]:
     """
-    Process files sequentially (fallback when parallel processing is disabled).
-
-    Args:
-        file_paths: List of file paths to process
-        file_type: The file type being processed
-        main_state: The main GlobalState
-        checkpoint_manager: CheckpointManager instance
-        logger: Logger instance
-        skipped_count: Number of already skipped files
+    Process files sequentially in this process.
 
     Returns:
-        Tuple of (successful_count, total_count, skipped_count)
+        tuple: (successful_count, total_count, skipped_count, failed_count)
     """
     logger.info(f"Processing {len(file_paths)} files sequentially")
-
-    parser = FileParser(main_state)
-    mutator = FileMutator(main_state)
+    result_logger = FileResultLogger(Config.CURRENT_LOG_DIR) if Config.CURRENT_LOG_DIR else None
 
     successful_count = 0
-
+    failed_count = 0
     for i, file_path in enumerate(file_paths, 1):
         logger.info(f"Processing file {i}/{len(file_paths)}: {file_path}")
-
+        start = time.time()
         try:
-            original_byte_ranges, byte_ranges = parser.parse_file_structure(file_path)
-
-            if byte_ranges:
-                mutator.mutate_file_completely(file_path, byte_ranges, original_byte_ranges)
-                successful_count += 1
-            else:
-                logger.warning(f"No byte ranges found for {file_path}")
+            success, error = process_one_file(file_path, main_state)
         except Exception as e:
-            logger.error(f"Error processing file {file_path}: {e}")
+            success, error = False, str(e)
+        elapsed = time.time() - start
+
+        if success:
+            successful_count += 1
+            if result_logger:
+                result_logger.log_success(file_path, elapsed)
+        else:
+            failed_count += 1
+            logger.warning(f"Failed {file_path}: {error}")
+            if result_logger:
+                result_logger.log_failure(file_path, error or "unknown", elapsed)
 
         checkpoint_manager.mark_file_processed(file_path)
 
-    total_files = len(file_paths) + skipped_count
-    logger.info(f"Sequential processing complete: {successful_count}/{len(file_paths)} successful (skipped {skipped_count})")
-    return successful_count, total_files, skipped_count
+    logger.info(f"Sequential processing complete: {successful_count}/{len(file_paths)} successful "
+                f"(skipped {skipped_count}, failed {failed_count})")
+    return successful_count, len(file_paths) + skipped_count, skipped_count, failed_count
