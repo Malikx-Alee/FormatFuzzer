@@ -1,0 +1,1638 @@
+{
+  "meta": {
+    "format": "bmp",
+    "source_template": "templates_originals/bmp-orig.bt",
+    "model": "qwen3.8-max",
+    "strategy": "tiered",
+    "spec_reference": "Microsoft BMP/DIB format: BITMAPFILEHEADER, BITMAPINFOHEADER, RGBQUAD and RGBTRIPLE as documented in the Windows SDK headers (wingdi.h / minwindef.h) and MSDN 'Bitmap Storage' and 'Compression of Bitmaps' (BI_RGB, BI_RLE4, BI_RLE8, BI_BITFIELDS, BI_JPEG, BI_PNG, BI_ALPHABITFIELDS); cross-checked against the Wikipedia 'BMP file format' article that the template itself cites at line 19. Template version: 010 Editor BMP.bt v2.3, 2016-02-26, SweetScape Software.",
+    "schema_extensions": [
+      {
+        "name": "GLOBAL.<identifier>",
+        "where": "keys of the constraints map (GLOBAL.aColors, GLOBAL.rleData, GLOBAL.lines)",
+        "why": "aColors, rleData and lines are declared at file scope in the .bt (lines 97/99, 108/110, 137) with no enclosing struct, so the required STRUCT_TYPENAME.field_name key form has no struct name available. The pseudo-prefix GLOBAL. marks a top-level file-scope declaration; the identifier after the dot is spelled exactly as in the .bt."
+      },
+      {
+        "name": "calculated_value keys (algorithm, covers, includes_self, endianness, depends_on) attached to a fixed_value entry",
+        "where": "constraints['BITMAPINFOHEADER.biSize']",
+        "why": "biSize is simultaneously a literal (40, because this template declares exactly one 40-byte BITMAPINFOHEADER) and the byte count of the structure it sizes. Both descriptions are emitted so the requirement that every size/length field carry algorithm, covers and includes_self is met without losing the exact pin the generator needs."
+      },
+      {
+        "name": "section / required / forbidden keys inside dependencies[].then",
+        "where": "dependencies array",
+        "why": "Several BMP rules make a whole region appear or disappear (the colour table exists only below 24 bpp; rleData and lines are mutually exclusive on biCompression) rather than changing a field's value set. The schema permits 'then may mark a section required/forbidden' but does not name the keys, so 'section', 'required' and 'forbidden' are used for that purpose."
+      },
+      {
+        "name": "when.min / when.max",
+        "where": "dependencies[].when",
+        "why": "Two of the template's guards are numeric comparisons rather than equality or set membership: 'if( bmih.biCompression > 0 )' at line 104 and the sign test '(bmih.biHeight < 0)' at line 137. 'min' and 'max' express those guards directly (min is inclusive, max is inclusive) so the predicate matches the .bt instead of being flattened into a value list."
+      },
+      {
+        "name": "then.min / then.max / then.sign / then.on_exceed",
+        "where": "dependencies[].then",
+        "why": "Records a soft, format-level bound on a field that stays Tier C and unconstrained, together with what a decoder actually does when the bound is exceeded (clamp, ignore, treat as 'all important'). These keys never express a generation range: the field's own constraint entry keeps type 'unconstrained' with no bounds, so the rewrite step is still free to emit out-of-bound values as a malformed-input class."
+      },
+      {
+        "name": "then.detail",
+        "where": "dependencies[].then",
+        "why": "Free-text elaboration for a section-level requirement whose content cannot be expressed as a value set - used once, for the BI_BITFIELDS colour-mask block, which the .bt does not declare at all."
+      },
+      {
+        "name": "then.section naming a structure[].subject",
+        "where": "dependencies[12].then",
+        "why": "Every other 'section' value is a constraints key (GLOBAL.aColors, GLOBAL.lines, GLOBAL.rleData). The bitfield colour-mask block has no .bt declaration and therefore no constraints key, so its dependency points at the exact 'subject' string of the structure rule that describes it, keeping the two sections cross-referenceable."
+      },
+      {
+        "name": "structure[].condition / structure[].output_budget",
+        "where": "structure array",
+        "why": "'condition' states the header predicate under which the structural rule applies (the template's guards at lines 93, 104 and 112). 'output_budget' is a total-bytes budget for a repeating region, always satisfied by re-sampling the driving header fields until the derived size fits - never by narrowing a Tier C field and never by emitting fewer repetitions than the headers declare."
+      },
+      {
+        "name": "diversity_axes[].also_covers / decoder_paths / diversity_budget / how_varied / must_emit_full_legal_set / must_remain_unconstrained",
+        "where": "diversity_axes array",
+        "why": "Same axis schema as the sibling png/jpeg/gif tiered files. 'also_covers' lets one axis stand for a set of identically-behaved fields (the three RGBQUAD colour bytes, the two reserved header words, the two resolution fields) without losing per-field key coverage, so every one of the 30 constraints keys is named by some axis."
+      },
+      {
+        "name": "declared_at",
+        "where": "constraints.<key>",
+        "why": "BITMAPINFOHEADER.biPlanes is the one entry with source 'spec', so per the extraction prompt its evidence is a {note} rather than a line/snippet. declared_at still carries the .bt declaration line 36 and its verbatim snippet, so the key stays traceable to the template exactly as it is in the sibling PNG file."
+      },
+      {
+        "name": "derives_from listing Tier A agreement targets",
+        "where": "constraints.GLOBAL.rleData, constraints.BITMAPLINE.imageData",
+        "why": "derives_from names every field the payload's size or shape must agree with. For BMP those include four Tier A calculated_value fields (BITMAPFILEHEADER.bfSize, BITMAPFILEHEADER.bfOffBits, BITMAPINFOHEADER.biSizeImage, BITMAPLINE.padBytes) which are recomputed rather than free, so their diversity_axes entries carry must_remain_unconstrained false, while the genuine free drivers (biWidth, biHeight, biBitCount, biCompression) carry true. The instruction to the rewrite step runs in one direction only: derive the payload and the lengths from the declared dimensions, never adjust a dimension to suit a payload. This mirrors the sibling PNG file, which likewise lists PNG_CHUNK.length in its derives_from."
+      }
+    ],
+    "structure_note": "A BMP is a flat little-endian sequence with no chunk framing, no markers and no CRCs: a fixed 14-byte BITMAPFILEHEADER, immediately followed by a fixed 40-byte BITMAPINFOHEADER, then an optional RGBQUAD colour table (present only when biBitCount is below 24), then exactly one pixel-data region whose representation is selected by biCompression - either an opaque byte stream in rleData (an RLE8/RLE4 run-length stream, or an embedded JPEG/PNG) or a bottom-up array of 4-byte-aligned scanlines in lines[]. The format therefore does have a compressed payload: GLOBAL.rleData, which the .bt declares as a bare UBYTE array and says nothing about, is the highest-value Tier A entry here; the uncompressed alternative is not compressed but is still encoded (sub-byte MSB-first index packing plus mandatory 4-byte row alignment), recorded as BITMAPLINE.imageData.",
+    "tier_counts": {
+      "A": 13,
+      "B": 2,
+      "C": 15
+    },
+    "axis_coverage": {
+      "constraints_total": 30,
+      "constraints_named_by_an_axis": 30,
+      "diversity_axes": 24,
+      "not_axed": [],
+      "reason": "Every one of the 30 constraints keys is named either as an axis 'field' or inside an axis 'also_covers', so nothing is left without a sampling instruction. Four axes are protection notes rather than freedom notes (bfType, biSize, biPlanes, and the three derived size/offset fields bfSize, bfOffBits, biSizeImage): they carry must_remain_unconstrained false so the rewrite step recomputes or pins them instead of diversifying them. Every Tier C field has its own axis with must_remain_unconstrained true, and both payload_wellformedness entries (GLOBAL.rleData and BITMAPLINE.imageData) have an axis whose how_varied states that the payload is derived from the declared dimensions, never the reverse."
+    },
+    "unused_declarations": [
+      {
+        "name": "ReadRGBQUAD / ReadRGBTRIPLE",
+        "lines": [
+          63,
+          70
+        ],
+        "note": "Display helpers registered through the <read=...> attributes at lines 51 and 57. They only SPrintf a '#RRGGBBAA' / '#RRGGBB' string for the 010 Editor tree and write nothing to the file, so they carry no constraints of their own. They are still the evidence for the byte order of the colour records: ReadRGBTRIPLE prints red-green-blue from a record whose file order is blue-green-red, which is why RGBQUAD.rgbBlue and RGBTRIPLE.rgbBlue are keyed as the first byte of their records."
+      },
+      {
+        "name": "RGBTRIPLE as a colour-table record",
+        "lines": [
+          53,
+          57
+        ],
+        "note": "The type is declared but is instantiated only inside struct BITMAPLINE at 24 bpp (line 129). The colour table always uses RGBQUAD (lines 97 and 99), so no constraints entry treats RGBTRIPLE as a palette record and the 3-byte-versus-4-byte palette question does not arise for this template."
+      },
+      {
+        "name": "BITMAPLINE at biBitCount == 16",
+        "lines": [
+          124,
+          131
+        ],
+        "note": "A declaration gap rather than an unused declaration: the four-way chain covers <8, ==8, ==24 and ==32 and has no arm for 16, so an uncompressed 16-bpp file parsed by this template yields a BITMAPLINE containing only padBytes while bytesPerLine (line 115) is still 2 * biWidth. 16 remains in biBitCount's valid_values because the format allows it, and the biBitCount notes record that a generator must emit 2 bytes per pixel even though the .bt has nowhere to put them."
+      },
+      {
+        "name": "bytesPerLine / padding (local int)",
+        "lines": [
+          115,
+          116
+        ],
+        "note": "Derived locals, not file fields, so they get no constraints keys of their own. Their formulas are recorded as the 'algorithm' on BITMAPLINE.imageData, BITMAPLINE.colorIndex, BITMAPLINE.colors and BITMAPLINE.padBytes, and the padding normalisation at lines 117-118 ('if( padding == 4 ) padding = 0;') is what makes padBytes absent whenever rowBytes is already a multiple of 4."
+      }
+    ]
+  },
+  "constraints": {
+    "BITMAPFILEHEADER.bfType": {
+      "tier": "A",
+      "tier_rationale": "This is the format's magic number: the template's own guard at line 86 compares it against \"BM\" and aborts the parse with 'File is not a bitmap. Template stopped.' for any other value, and every real decoder refuses the file at once, so nothing downstream executes.",
+      "type": "fixed_value",
+      "description": "The two-byte BMP file signature; it must be the ASCII characters 'B' (0x42) and 'M' (0x4D), stored little-endian as the WORD 0x4D42.",
+      "field_type": "CHAR[2]",
+      "source": "both",
+      "evidence": {
+        "line": 86,
+        "snippet": "if( bmfh.bfType != \"BM\" )"
+      },
+      "confidence": "high",
+      "required_value": "BM",
+      "required_value_hex": "42 4D",
+      "required_value_ascii": "BM",
+      "endianness": "little",
+      "notes": "Three independent pieces of template evidence: the declaration at line 25 (CHAR bfType[2]), the file's ID Bytes comment at line 10 ('//  ID Bytes: 42 4D //BM'), and the failing guard at lines 86-90 which calls Warning() then 'return -1'. The spec also defines sibling signatures 'BA' (bitmap array), 'IC', 'CP', 'CI' and 'PT' for other Windows bitmap containers; none of them is a BMP file and a BMP decoder refuses them, so this is a single fixed value and not an enumeration. Never give this field an evil value."
+    },
+    "BITMAPFILEHEADER.bfSize": {
+      "tier": "A",
+      "tier_rationale": "bfSize is the whole-file byte count and the template itself uses it as an array bound (line 110, rleData[bmfh.bfSize - FTell()]); a decoder that trusts it truncates or over-reads the pixel data, and validators comparing it against the real file length refuse the file outright, so a wrong value stops useful work.",
+      "type": "calculated_value",
+      "description": "The size of the entire BMP file in bytes, counting the file header, info header, colour table, any bitfield masks and the pixel data.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 110,
+        "snippet": "UBYTE rleData[ bmfh.bfSize - FTell() ];"
+      },
+      "confidence": "high",
+      "algorithm": "byte count: bfSize = total number of bytes in the file = 14 (BITMAPFILEHEADER) + biSize + colourTableBytes + bitfieldMaskBytes + pixelDataBytes",
+      "covers": "the entire file, from byte offset 0 through the last byte of the pixel-data region (rleData or lines)",
+      "includes_self": true,
+      "endianness": "little",
+      "depends_on": [
+        "BITMAPINFOHEADER.biSize",
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrUsed",
+        "GLOBAL.aColors",
+        "GLOBAL.rleData",
+        "GLOBAL.lines"
+      ],
+      "notes": "The template computes the residual RLE length as bmfh.bfSize - FTell() at line 110 when biSizeImage is 0, so bfSize is a live length field, not decorative metadata. Decoders use it to bound reads: a bfSize smaller than the real file truncates the image, a larger one makes them read past EOF and fail. It must be written last, after every other region's length is known."
+    },
+    "BITMAPFILEHEADER.bfReserved1": {
+      "tier": "C",
+      "tier_rationale": "The published spec says this word is reserved and should be zero, but no conforming BMP decoder branches on it or refuses a file because of it, so pinning it buys no depth and only removes free bytes from every generated file.",
+      "type": "unconstrained",
+      "description": "Reserved word in the file header, documented as 'must be zero' but never read by decoders.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 27,
+        "snippet": "WORD    bfReserved1;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Close call, resolved towards Tier C by the rule 'reserved fields nobody checks -> Tier C'. The template never reads it, and neither do GDI/GDI+, ImageMagick, libgd, stb_image or ffmpeg's bmp decoder. It is not a diversity axis in the control-flow sense, but leaving it free costs nothing and it must not be given a value set, a minimum or a maximum."
+    },
+    "BITMAPFILEHEADER.bfReserved2": {
+      "tier": "C",
+      "tier_rationale": "Same reasoning as bfReserved1: reserved by the specification and unchecked by every decoder, so a constraint here would have no depth payoff and a real diversity cost.",
+      "type": "unconstrained",
+      "description": "Second reserved word in the file header, documented as 'must be zero' but never read by decoders.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 28,
+        "snippet": "WORD    bfReserved2;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "See the note on BITMAPFILEHEADER.bfReserved1."
+    },
+    "BITMAPFILEHEADER.bfOffBits": {
+      "tier": "A",
+      "tier_rationale": "bfOffBits is the seek target for the pixel data: a decoder jumps to that offset and starts decoding scanlines or the RLE stream from there, so a wrong value makes it decode header or palette bytes as pixels, read out of bounds, or reject the file - useful work stops either way.",
+      "type": "calculated_value",
+      "description": "The offset in bytes from the start of the file to the first byte of the pixel-data region (rleData or the first BITMAPLINE).",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 29,
+        "snippet": "DWORD   bfOffBits;"
+      },
+      "confidence": "high",
+      "algorithm": "byte offset: bfOffBits = 14 + biSize + bitfieldMaskBytes + 4 * colourTableEntries, where bitfieldMaskBytes is 12 when biCompression == BI_BITFIELDS with a 40-byte info header and 0 otherwise, and colourTableEntries is biClrUsed when biClrUsed > 0, else (1 << biBitCount) when biBitCount < 24, else 0",
+      "covers": "all bytes from file offset 0 up to but excluding the first byte of the pixel-data region",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "BITMAPINFOHEADER.biSize",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biCompression",
+        "GLOBAL.aColors"
+      ],
+      "notes": "The template never reads bfOffBits (it parses regions sequentially), but real decoders seek to it, so it must agree exactly with the number of header, mask and palette bytes actually emitted. It is the join between the header block and the pixel block and must be recomputed whenever biBitCount or biClrUsed changes."
+    },
+    "BITMAPINFOHEADER.biSize": {
+      "tier": "A",
+      "tier_rationale": "Decoders dispatch on biSize to choose which header layout to read (12 = BITMAPCOREHEADER, 40 = BITMAPINFOHEADER, 52/56 = V2/V3, 108 = V4, 124 = V5); a value that does not match the number of header bytes actually present makes every following field land in the wrong place, so the decoder refuses the file or misparses it before any pixel work.",
+      "type": "fixed_value",
+      "description": "The size in bytes of the info-header structure that immediately follows the 14-byte file header; for the BITMAPINFOHEADER this template declares it is exactly 40.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 33,
+        "snippet": "DWORD   biSize;"
+      },
+      "confidence": "high",
+      "required_value": 40,
+      "required_value_hex": "00000028",
+      "required_value_ascii": "\\x28\\x00\\x00\\x00",
+      "endianness": "little",
+      "algorithm": "sizeof(BITMAPINFOHEADER) as emitted: 4 DWORD/LONG (4x4=16) + 2 WORD (2x2=4) + ... = 40 bytes, i.e. the exact byte count of the structure declared at lines 32-44",
+      "covers": "the BITMAPINFOHEADER structure itself, from its first byte at file offset 14 through its last byte at file offset 53",
+      "includes_self": true,
+      "depends_on": [],
+      "notes": "Recorded as fixed_value because the template declares exactly one 40-byte BITMAPINFOHEADER (lines 32-44) and the generator cannot emit a V4/V5 layout without inventing structures that do not exist in the .bt. The spec's full legal set for this field is {12, 16, 40, 52, 56, 108, 124}; if a rewrite ever emits a different header layout, biSize must equal the byte count of whatever it actually writes - never a value chosen independently. The calculated_value keys above are attached for that reason (see meta.schema_extensions)."
+    },
+    "BITMAPINFOHEADER.biWidth": {
+      "tier": "C",
+      "tier_rationale": "A decoder does not refuse a file for any particular width - it simply decodes that many pixels per row - so width is pure diversity; capping it is exactly the GIF mistake, since the scanline length, the padding arithmetic and the RLE run decomposition all vary with it.",
+      "type": "unconstrained",
+      "description": "The width of the bitmap in pixels; the sign is not meaningful for width and the value feeds every row-length calculation.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 34,
+        "snippet": "LONG    biWidth;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "The template uses biWidth as the element count of colorIndex/colors (lines 127, 129, 131) and inside bytesPerLine at line 115. Those derived lengths are Tier A; biWidth itself is not. Do not narrow it to make the pixel data small - total output size is governed by the output_budget on GLOBAL.lines and GLOBAL.aColors in the structure section, and the budget must be met by re-sampling the width draw, never by clamping the value written into the file. Widths that are not multiples of 4 or 8 are the interesting ones because they exercise the sub-byte packing and the padBytes path."
+    },
+    "BITMAPINFOHEADER.biHeight": {
+      "tier": "C",
+      "tier_rationale": "Any magnitude is accepted by a conforming decoder, and the sign selects a genuinely different storage order (negative = top-down, positive = bottom-up), so this field is both a diversity axis and a decoder branch; bounding it would delete rows of the decoder's row-loop and the top-down path.",
+      "type": "unconstrained",
+      "description": "The height of the bitmap in pixels; positive means the rows are stored bottom-up, negative means top-down, and the row count is always the absolute value.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 35,
+        "snippet": "LONG    biHeight;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Line 12 of the header comment records the deliberate change '2.3 2016-02-26 SweetScape: Allow negative heights', and line 137 uses the absolute value as the repeat count: lines[(bmih.biHeight < 0) ? -bmih.biHeight : bmih.biHeight]. Emit both signs. The absolute value must equal the number of BITMAPLINE rows actually written - the row count is derived from biHeight, never the other way round."
+    },
+    "BITMAPINFOHEADER.biPlanes": {
+      "tier": "A",
+      "tier_rationale": "The specification mandates the value 1 and conforming decoders validate it (ffmpeg's bmp decoder aborts with 'invalid planes'; several other loaders reject anything else), so any other value stops the parse before pixel decoding - and no decoder branches usefully on a second plane, so there is no diversity to lose.",
+      "type": "fixed_value",
+      "description": "The number of colour planes in the target device; a valid Windows BMP always carries exactly 1.",
+      "field_type": "WORD",
+      "source": "spec",
+      "evidence": {
+        "note": "The Windows BITMAPINFOHEADER specification fixes biPlanes at 1 and reserves it: 'Specifies the number of planes for the target device. This value must be set to 1.' No other value is legal, and no BMP dialect ever uses a plane count above 1 (the multi-plane OS/2 variant expresses it differently). The .bt declares the field at line 36 and never reads or checks it, so the requirement is spec-only; the declaration line is carried in declared_at."
+      },
+      "confidence": "high",
+      "required_value": 1,
+      "required_value_hex": "0001",
+      "required_value_ascii": "\\x01\\x00",
+      "endianness": "little",
+      "notes": "The .bt declares the field at line 36 inside struct BITMAPINFOHEADER and never reads it anywhere, so this constraint comes from the specification alone: MSDN BITMAPINFOHEADER states 'biPlanes - Specifies the number of planes for the target device. This value must be set to 1.' Close call between Tier A and Tier C: the template does not check it and some permissive loaders ignore it. Resolved as Tier A because the format rule is unconditional ('must be set to 1'), at least one widely used decoder refuses other values, and a plane count of 1 is the only value that ever occurs in real files - so pinning it costs zero diversity while removing a whole-file rejection risk.",
+      "declared_at": {
+        "line": 36,
+        "snippet": "WORD    biPlanes;"
+      }
+    },
+    "BITMAPINFOHEADER.biBitCount": {
+      "tier": "B",
+      "tier_rationale": "A wrong bit depth does not make a decoder refuse the file - it selects one of the decoder's per-depth branches - so this is a finite enumeration and every member of it is a distinct code path (bit-unpacking for 1/4, index lookup for 8, 5-5-5 or mask shifting for 16, direct RGB for 24, RGBA for 32); dropping any of them deletes that branch.",
+      "type": "enumerated_values",
+      "description": "The number of bits per pixel; it selects the pixel-data encoding, whether a colour table exists, and which compression methods are legal.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 93,
+        "snippet": "if( (bmih.biBitCount != 24) && (bmih.biBitCount != 32) )"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        4,
+        8,
+        16,
+        24,
+        32
+      ],
+      "value_names": [
+        "0 - depth implied by the embedded JPEG/PNG payload (legal only with BI_JPEG or BI_PNG)",
+        "BI_BITCOUNT_1 - monochrome, 1 bit per pixel, colour table of 2",
+        "BI_BITCOUNT_4 - 16 colours, 4 bits per pixel packed two per byte",
+        "BI_BITCOUNT_8 - 256 colours, one palette index per byte",
+        "BI_BITCOUNT_16 - high-colour, 5-5-5 by default or explicit masks with BI_BITFIELDS",
+        "BI_BITCOUNT_24 - true colour, 3-byte RGBTRIPLE per pixel",
+        "BI_BITCOUNT_32 - true colour with a fourth byte, 4-byte RGBQUAD per pixel"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        24,
+        8,
+        1,
+        4
+      ],
+      "notes": "The template switches on this field in five places: line 93 (colour table only when it is neither 24 nor 32), line 99 (colour-table size 1 << biBitCount), line 115 (bytesPerLine), and the four-way chain at lines 124-131 (<8, ==8, ==24, ==32). preferred_value favours 24 and 8 because those are the deepest and most commonly implemented decode paths, and 1 and 4 because the sub-byte unpacking loop is only reachable there; every value in valid_values must still be emitted. A 2-bpp encoding exists only in OS/2 BITMAPCOREHEADER2 and is not legal for the 40-byte BITMAPINFOHEADER this template declares, so it is deliberately absent from valid_values - the template's 'biBitCount < 8' branch would nevertheless parse it if a rewrite ever added it. Note that 16 bpp reaches the template's line-124 branch ('< 8' is false, '== 8' is false, '== 24' is false, '== 32' is false), leaving the row with no pixel field at all; a generator should therefore emit 16-bpp pixel data as 2 bytes per pixel even though the .bt has no arm for it."
+    },
+    "BITMAPINFOHEADER.biCompression": {
+      "tier": "B",
+      "tier_rationale": "This DWORD is the format's method selector and the template branches on it at line 104 ('if( bmih.biCompression > 0 )'); each legal value routes the decoder into a different payload interpreter (raw scanlines, RLE4, RLE8, mask-shifted 16/32-bit, embedded JPEG, embedded PNG), so narrowing the set deletes whole decoders worth of code rather than adding depth.",
+      "type": "enumerated_values",
+      "description": "The compression method applied to the pixel data; it decides whether the pixel region is an array of scanlines or an encoded byte stream.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 104,
+        "snippet": "if( bmih.biCompression > 0 )"
+      },
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "value_names": [
+        "BI_RGB - no compression, uncompressed scanlines",
+        "BI_RLE8 - 8-bit run-length encoding (requires biBitCount == 8)",
+        "BI_RLE4 - 4-bit run-length encoding (requires biBitCount == 4)",
+        "BI_BITFIELDS - raw pixel data plus explicit colour masks (requires biBitCount 16 or 32)",
+        "BI_JPEG - the pixel region is an embedded JPEG/JFIF stream (requires biBitCount == 0)",
+        "BI_PNG - the pixel region is an embedded PNG stream (requires biBitCount == 0)",
+        "BI_ALPHABITFIELDS - as BI_BITFIELDS with explicit alpha masks (V3 and later headers, biBitCount 16 or 32)"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "little",
+      "preferred_value": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "notes": "The template's only test is the boolean 'biCompression > 0' at line 104, which lumps all six non-zero methods into the rleData path; that is why rleData's payload_wellformedness entry has to describe the RLE framing, the bitfield-mask case and the embedded JPEG/PNG case. valid_values is exhaustive for a 40-byte BITMAPINFOHEADER. The LCS_* colour-space constants (LCS_CALIBRATED_RGB 0x00000000, LCS_sRGB 0x73524742, LCS_WINDOWS_COLOR_SPACE 0x57696E20, PROFILE_LINKED 0x50524F46, PROFILE_EMBEDDED 0x50524F42) live in the bV4CSType/bV5CSType fields of the V4/V5 headers and are not legal values of biCompression in a BITMAPINFOHEADER, so they are excluded here rather than dropped as unproductive. preferred_value keeps 0 and the two RLE methods first because 0 is the deepest generic path and 1/2 unlock a completely separate decoder loop; 4, 5 and 6 must still be emitted."
+    },
+    "BITMAPINFOHEADER.biSizeImage": {
+      "tier": "A",
+      "tier_rationale": "The template uses this value directly as the array bound for the compressed payload (line 108, UBYTE rleData[bmih.biSizeImage]); a decoder uses it to bound the RLE loop and to validate the file, so a value that disagrees with the bytes actually present makes the decoder stop mid-stream, over-read, or reject the file.",
+      "type": "calculated_value",
+      "description": "The size in bytes of the pixel-data region; it must equal the exact number of bytes written for rleData (compressed) or for the whole lines[] block (uncompressed), and may legally be 0 only for BI_RGB.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 108,
+        "snippet": "UBYTE rleData[ bmih.biSizeImage ];"
+      },
+      "confidence": "high",
+      "algorithm": "byte count of the pixel-data region: when biCompression > 0 it is the length in bytes of the emitted RLE / JPEG / PNG stream; when biCompression == 0 it is either 0 (explicitly permitted by the spec for BI_RGB) or stride * |biHeight| where stride = bytesPerLine + padding, bytesPerLine = (biWidth * biBitCount + 7) / 8 and padding = (4 - bytesPerLine % 4) % 4",
+      "covers": "the pixel-data region only - GLOBAL.rleData when biCompression > 0, or the entire GLOBAL.lines block when biCompression == 0; it never covers the file header, the info header or the colour table",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "GLOBAL.rleData",
+        "GLOBAL.lines"
+      ],
+      "notes": "Lines 107-110 show the template's precedence: use biSizeImage when it is greater than 0, otherwise fall back to bfSize - FTell(). A generator should always take the first branch by writing the true byte count, because the fallback makes bfSize and biSizeImage redundant and hides length bugs. For RLE the byte count is only known after the stream is built, so biSizeImage (and bfSize) must be patched once rleData has been emitted."
+    },
+    "BITMAPINFOHEADER.biXPelsPerMeter": {
+      "tier": "C",
+      "tier_rationale": "This is display metadata: no decoder refuses a file or takes a different pixel-decoding path because of it (at most it is copied into the output image's resolution field), so any value is accepted and pinning it would remove a free 4-byte diversity source for no depth gain.",
+      "type": "unconstrained",
+      "description": "The horizontal resolution of the target device in pixels per metre; a signed value that decoders pass through to image metadata.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 40,
+        "snippet": "LONG    biXPelsPerMeter;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "The template never reads it. It is a signed LONG, so negative and very large values are structurally legal and are consumed by metadata paths without affecting pixel decoding. Do not pin it to 0 or to a 'typical' 96-dpi equivalent; it is not a size driver and needs no bound."
+    },
+    "BITMAPINFOHEADER.biYPelsPerMeter": {
+      "tier": "C",
+      "tier_rationale": "Identical reasoning to biXPelsPerMeter: unchecked metadata that cannot stop a decoder doing useful work, so a constraint here would only cost diversity.",
+      "type": "unconstrained",
+      "description": "The vertical resolution of the target device in pixels per metre; a signed value passed through to image metadata.",
+      "field_type": "LONG",
+      "source": "both",
+      "evidence": {
+        "line": 41,
+        "snippet": "LONG    biYPelsPerMeter;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Never read by the template. Leave free."
+    },
+    "BITMAPINFOHEADER.biClrUsed": {
+      "tier": "C",
+      "tier_rationale": "biClrUsed is a count, and counts are where the diversity of indexed-colour files comes from: it sets the colour-table length, hence bfOffBits, hence the offset at which the decoder starts reading pixels. A decoder handed a smaller-than-maximum palette still decodes the image, so this is not a front gate; pinning it to 1 << biBitCount would delete every partial-palette path.",
+      "type": "unconstrained",
+      "description": "The number of colour-table entries actually present in the file; 0 means the maximum for the bit depth (1 << biBitCount).",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 96,
+        "snippet": "if( bmih.biClrUsed > 0 )"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Lines 96-99 make it the colour-table element count when positive and fall back to 1 << biBitCount otherwise. The only format-imposed restriction is the ceiling 1 << biBitCount at indexed depths, recorded as a dependency (decoders clamp to the maximum rather than rejecting). Total palette size is bounded by the output_budget on GLOBAL.aColors in the structure section, never by narrowing this field."
+    },
+    "BITMAPINFOHEADER.biClrImportant": {
+      "tier": "C",
+      "tier_rationale": "It declares how many palette entries matter for faithful reproduction on limited hardware; decoders copy it into metadata and at most use it to pick a dithering strategy, so no value stops useful work and a value set here would only shrink the file population.",
+      "type": "unconstrained",
+      "description": "The number of colour-table entries considered important for displaying the bitmap; 0 means all of them.",
+      "field_type": "DWORD",
+      "source": "both",
+      "evidence": {
+        "line": 43,
+        "snippet": "DWORD   biClrImportant;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Never read by the template. The spec treats 0 as 'all colours are important' and expects any non-zero value not to exceed the colour-table entry count; that expectation is recorded as a dependency, not as a range on this field."
+    },
+    "RGBQUAD.rgbBlue": {
+      "tier": "C",
+      "tier_rationale": "Palette colour components are free-form data: any value produces a file the decoder processes identically, so restricting them would shrink the colour space of every generated file with no depth payoff.",
+      "type": "unconstrained",
+      "description": "The blue component of one colour-table entry, in the blue-green-red-reserved order that RGBQUAD uses.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 47,
+        "snippet": "UBYTE   rgbBlue;"
+      },
+      "confidence": "high",
+      "notes": "The custom read function ReadRGBQUAD at lines 63-68 only formats these bytes for display; nothing validates them. Note the byte order: RGBQUAD and RGBTRIPLE store blue first and red last, the reverse of the usual RGB order - getting it wrong yields wrong colours but never a rejected file. This same struct is reused as the 32-bpp pixel type at line 131, where the fourth byte becomes an alpha/unused channel and is equally free."
+    },
+    "RGBQUAD.rgbGreen": {
+      "tier": "C",
+      "tier_rationale": "Free-form colour data; a decoder looks it up and stores it, so any value is accepted and a value set would only reduce diversity.",
+      "type": "unconstrained",
+      "description": "The green component of one colour-table entry.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 48,
+        "snippet": "UBYTE   rgbGreen;"
+      },
+      "confidence": "high",
+      "notes": "Second byte of the four-byte RGBQUAD; see the note on RGBQUAD.rgbBlue."
+    },
+    "RGBQUAD.rgbRed": {
+      "tier": "C",
+      "tier_rationale": "Free-form colour data; no decoder branches on it, so it must stay free.",
+      "type": "unconstrained",
+      "description": "The red component of one colour-table entry.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 49,
+        "snippet": "UBYTE   rgbRed;"
+      },
+      "confidence": "high",
+      "notes": "Third byte of the four-byte RGBQUAD; see the note on RGBQUAD.rgbBlue."
+    },
+    "RGBQUAD.rgbReserved": {
+      "tier": "C",
+      "tier_rationale": "This is the tempting one - the name says 'reserved' and the spec says it should be zero - but no BMP decoder reads or validates the fourth byte of a palette entry, so pinning it to 0 removes a free byte per palette entry for zero depth.",
+      "type": "unconstrained",
+      "description": "The fourth byte of a colour-table entry, reserved by the specification and ignored by decoders; in the V4/V5 variants of RGBQUAD this byte is repurposed as an alpha channel.",
+      "field_type": "UBYTE",
+      "source": "both",
+      "evidence": {
+        "line": 50,
+        "snippet": "UBYTE   rgbReserved;"
+      },
+      "confidence": "medium",
+      "notes": "Close call with Tier A fixed_value 0, resolved towards Tier C: the template's ReadRGBQUAD (line 66) formats it into the display string but nothing checks it, and GDI, ImageMagick, libgd and ffmpeg all ignore the palette's fourth byte for indexed BMPs. Confidence is medium because a few strict validators warn on non-zero reserved palette bytes; a generator that emits 0 here is perfectly acceptable, it is simply not required. Record no value set, no minimum and no maximum."
+    },
+    "RGBTRIPLE.rgbBlue": {
+      "tier": "C",
+      "tier_rationale": "Direct 24-bit pixel colour data: every value yields a decodable file, and this is the largest source of byte-level variety in an uncompressed true-colour BMP.",
+      "type": "unconstrained",
+      "description": "The blue component of one 24-bpp pixel, stored blue-green-red in file order.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 54,
+        "snippet": "UBYTE   rgbBlue;"
+      },
+      "confidence": "high",
+      "notes": "ReadRGBTRIPLE at lines 70-75 only formats these bytes for display. Blue comes first in file order (see line 73, which prints red-green-blue)."
+    },
+    "RGBTRIPLE.rgbGreen": {
+      "tier": "C",
+      "tier_rationale": "Free-form pixel colour data with no decoder-visible effect beyond the colour that is stored.",
+      "type": "unconstrained",
+      "description": "The green component of one 24-bpp pixel.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 55,
+        "snippet": "UBYTE   rgbGreen;"
+      },
+      "confidence": "high",
+      "notes": "Middle byte of the three-byte RGBTRIPLE."
+    },
+    "RGBTRIPLE.rgbRed": {
+      "tier": "C",
+      "tier_rationale": "Free-form pixel colour data with no decoder-visible effect beyond the colour that is stored.",
+      "type": "unconstrained",
+      "description": "The red component of one 24-bpp pixel.",
+      "field_type": "UBYTE",
+      "source": "template",
+      "evidence": {
+        "line": 56,
+        "snippet": "UBYTE   rgbRed;"
+      },
+      "confidence": "high",
+      "notes": "Last byte of the three-byte RGBTRIPLE; a 24-bpp row is therefore 3 * biWidth bytes plus padding to a 4-byte boundary."
+    },
+    "GLOBAL.aColors": {
+      "tier": "A",
+      "tier_rationale": "The colour table's entry count is a length: it fixes where the pixel data begins, because bfOffBits must equal 14 + biSize + 4 * entries. Emit fewer or more RGBQUADs than biClrUsed / biBitCount declares and the decoder seeks into the middle of the palette (or into the pixel data) and produces garbage or refuses the file.",
+      "type": "calculated_value",
+      "description": "The colour table: an array of 4-byte RGBQUAD entries that exists only when biBitCount is below 24, sized by biClrUsed when that is positive and by the maximum for the bit depth otherwise.",
+      "field_type": "RGBQUAD[]",
+      "source": "both",
+      "evidence": {
+        "line": 97,
+        "snippet": "RGBQUAD aColors[ bmih.biClrUsed ];"
+      },
+      "confidence": "high",
+      "algorithm": "element count: entries = (biClrUsed > 0) ? biClrUsed : (1 << biBitCount); byte length = 4 * entries; the table is present only when biBitCount is neither 24 nor 32 (template line 93)",
+      "covers": "the colour-table region, which starts at file offset 14 + biSize (or 14 + biSize + 12 when BI_BITFIELDS masks are present) and ends exactly at bfOffBits",
+      "includes_self": false,
+      "endianness": "little",
+      "depends_on": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPFILEHEADER.bfOffBits"
+      ],
+      "notes": "Lines 96-99 give both arms of the count. The entry contents (RGBQUAD.rgbBlue/rgbGreen/rgbRed/rgbReserved) are Tier C - pin the count, free the colours. At biBitCount 1/4/8 with biClrUsed == 0 the table is 2/16/256 entries, i.e. 8/64/1024 bytes, which is the main size driver for indexed files and is governed by the output_budget on this structure rather than by narrowing biClrUsed."
+    },
+    "GLOBAL.rleData": {
+      "tier": "A",
+      "tier_rationale": "This byte run is the entire payload whenever biCompression > 0 and its internal framing is a real encoded stream: with random bytes a decoder's RLE loop hits an end-of-bitmap escape or an out-of-bounds delta in the first tuple and bails out, so none of the RLE decode code - the row loop, the absolute-run copy, the delta move, the pixel writes - ever runs.",
+      "type": "payload_wellformedness",
+      "description": "The compressed or embedded-image pixel data: an RLE8 stream when biCompression == BI_RLE8, an RLE4 stream when biCompression == BI_RLE4, a raw mask-interpreted pixel block when biCompression == BI_BITFIELDS or BI_ALPHABITFIELDS, or a complete embedded JPEG or PNG file when biCompression == BI_JPEG or BI_PNG.",
+      "field_type": "UBYTE[biSizeImage]",
+      "source": "both",
+      "evidence": {
+        "line": 108,
+        "snippet": "UBYTE rleData[ bmih.biSizeImage ];"
+      },
+      "confidence": "high",
+      "codec": "BMP RLE8 / RLE4 run-length encoding as specified in MSDN 'Compression of Bitmaps' (BI_RLE8 = 1, BI_RLE4 = 2); the same field carries a complete JPEG/JFIF (ITU-T T.81) stream or a complete PNG (ISO/IEC 15948: 8-byte signature plus IHDR/IDAT/IEND chunks with zlib-compressed IDAT) when biCompression is BI_JPEG (4) or BI_PNG (5), and an uncompressed masked pixel block when biCompression is BI_BITFIELDS (3) or BI_ALPHABITFIELDS (6).",
+      "must_produce": "For RLE8/RLE4 the stream is a sequence of two-byte tuples, each either ENCODED mode (byte0 = run length 1..255; byte1 = one colour index for RLE8, or two packed 4-bit indices with the high nibble first for RLE4) or ESCAPE mode (byte0 = 0x00, byte1 = control code): 0x00 = end of line, 0x01 = end of bitmap, 0x02 = delta followed by two further bytes deltaX and deltaY, 0x03 = absolute run followed by one count byte in 0x03..0xFF and then that many colour-index bytes, with a single 0x00 pad byte appended when the count is odd so the next tuple starts on an even byte. The stream must terminate with the end-of-bitmap escape 0x00 0x01, must not address a pixel outside the biWidth x |biHeight| image, its total byte length must equal biSizeImage when biSizeImage is non-zero, and it must end exactly at bfSize. For BI_BITFIELDS/BI_ALPHABITFIELDS the region is not a stream: it is 2 or 4 bytes per pixel times biWidth per row, 4-byte aligned, with the three (or four) DWORD colour masks written between the info header and the colour table. For BI_JPEG/BI_PNG the region must be a self-contained JPEG or PNG file beginning with its own signature (FF D8 FF, or 89 50 4E 47 0D 0A 1A 0A) and ending at its own EOI marker or IEND chunk.",
+      "decoder_gate": "Decoders enter a byte-at-a-time state machine (ImageMagick's DecodeImage for BI_RLE4/BI_RLE8, ffmpeg's DecodeRLE4/DecodeRLE8 in libavcodec/bmp.c, GDI's internal RLE blitter). Fed random bytes, the first tuple is overwhelmingly likely to be either 00 01 (end of bitmap, so the loop exits with zero rows written) or 00 02 dx dy (a delta landing outside the image, so the decoder reports 'corrupt BMP' / 'RLE decode error' and aborts). Either way only the prologue and the error path execute: the per-row loop body, the absolute-run copy, the run-length pixel fill and the palette-to-RGB conversion - essentially all of the RLE code - are never reached. For BI_JPEG/BI_PNG the gate is worse, because a random stream fails the inner codec's own signature check.",
+      "generation_strategy": "Derive the stream from the declared dimensions, never the other way round. (1) Take biWidth and |biHeight| from the header the generator has already chosen. (2) For each row emit ENCODED tuples until the row's pixels are consumed: byte0 = min(pixelsRemainingInRow, 255), byte1 = a freely chosen colour index; for RLE4 byte1 holds two nibble indices and one tuple covers 2 * byte0 pixels, so use byte0 = min(ceil(pixelsRemainingInRow / 2), 255). This is the RLE analogue of a deflate stored block and is valid for any width. (3) After each row except the last emit the end-of-line escape 00 00. (4) After the last row emit the end-of-bitmap escape 00 01. (5) On some files, replace part of a row with an ABSOLUTE tuple (00 03 <n> <n free index bytes> <00 if n is odd>) or a DELTA tuple (00 02 <dx> <dy>) that stays inside the image, then finish the row - this reaches the absolute-run and delta branches. (6) Count the bytes produced, write that count into biSizeImage, and write the resulting total file length into bfSize. If the generator cannot emit RLE for a chosen method it must select biCompression = BI_RGB (0) and write uncompressed scanlines instead; it must never write an RLE method with non-RLE bytes. For BI_JPEG/BI_PNG embed a real minimal JPEG or PNG; if neither can be produced, do not select that method.",
+      "derives_from": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biSizeImage",
+        "BITMAPFILEHEADER.bfSize",
+        "BITMAPFILEHEADER.bfOffBits"
+      ],
+      "content_is_free": true,
+      "endianness": "n/a",
+      "notes": "The template gives no hint of any of this: lines 104-111 declare rleData as an opaque UBYTE array sized either by biSizeImage or by bfSize - FTell(). The colour-index byte of every ENCODED tuple, the index bytes inside ABSOLUTE runs and the deltaX/deltaY of DELTA tuples are all unconstrained content - that is where the diversity lives, while the two-byte tuple framing is Tier A. Indices should nominally be below the colour-table entry count for the decoded colour to be meaningful; decoders clamp or index the palette rather than rejecting, so treat that as a soft rule and keep the bytes free. The end-of-line escape is optional in principle (a decoder can infer row ends from the pixel count) but emitting it is safer and exercises the EOL branch. RLE4 counts pixels in pairs: with an odd biWidth the final tuple of a row would cover one pixel too many, so the generator must clip the run length at the row end."
+    },
+    "BITMAPLINE.imageData": {
+      "tier": "A",
+      "tier_rationale": "Below 8 bpp the pixel data is a bit-packed encoding, not raw bytes: the row must contain exactly ceil(biWidth * biBitCount / 8) bytes with indices packed most-significant-bit first, and rows must be 4-byte aligned. A generator that gets the packing or the stride wrong makes the decoder read the wrong bits for every pixel after the first row, and the declared lengths (biSizeImage, bfSize) then disagree with the file, which strict decoders treat as corruption and refuse.",
+      "type": "payload_wellformedness",
+      "description": "One scanline of sub-byte indexed pixel data (biBitCount 1, 2 or 4): the packed index bits for biWidth pixels, MSB-first within each byte, plus the row's 4-byte alignment padding.",
+      "field_type": "UBYTE[bytesPerLine]",
+      "source": "both",
+      "evidence": {
+        "line": 125,
+        "snippet": "UBYTE     imageData[ bytesPerLine ];"
+      },
+      "confidence": "high",
+      "codec": "BMP packed indexed-colour scanline encoding: biBitCount bits per pixel packed into bytes most-significant-bit first, rows laid out bottom-up (or top-down when biHeight < 0), each row's stride padded to a multiple of 4 bytes",
+      "must_produce": "Per row, exactly bytesPerLine = (biWidth * biBitCount + 7) / 8 bytes (template line 115) holding biWidth indices of biBitCount bits each, written left to right starting at the most significant bit of the first byte; the final byte's unused low bits are filler. Then exactly padding = (4 - bytesPerLine % 4) % 4 further bytes (lines 116-118) so the next row starts on a 4-byte boundary. Repeat for |biHeight| rows (line 137). Index values must be below the colour-table entry count for the colours to be meaningful, but the bits themselves are unconstrained.",
+      "decoder_gate": "Decoders compute the row base as pixelStart + row * stride and then walk the row with a shift/mask loop (for example ((byte >> (biBitCount * (biBitCount_pixels_per_byte - 1 - i))) & mask)). If the stride or the packing width is wrong the loop still runs - so this is not a hard abort - but every pixel after the first row is read from the wrong offset, the image is garbage, and any decoder that cross-checks stride * |biHeight| against biSizeImage or against bfSize - bfOffBits rejects the file as truncated or corrupt before decoding.",
+      "generation_strategy": "Compute rowBytes = (biWidth * biBitCount + 7) / 8 from the already-chosen biWidth and biBitCount; emit rowBytes bytes whose contents are completely free (random index bits are fine, and are the diversity here); emit pad = (4 - rowBytes % 4) % 4 free pad bytes; repeat that pair |biHeight| times, in bottom-up order when biHeight > 0 and top-down when biHeight < 0; then write stride * |biHeight| into biSizeImage (or 0, which BI_RGB permits) and the resulting total into bfSize, and 14 + biSize + 4 * paletteEntries into bfOffBits. The dimensions drive the byte counts; never pick dimensions that happen to fit a precomputed row length.",
+      "derives_from": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPLINE.padBytes",
+        "BITMAPINFOHEADER.biSizeImage",
+        "BITMAPFILEHEADER.bfSize"
+      ],
+      "content_is_free": true,
+      "endianness": "n/a",
+      "notes": "The .bt declares this as a plain byte run (line 125) and says nothing about the bit packing; the packing rule comes from the format. Widths that are not a multiple of 8 / biBitCount are the valuable ones because they exercise the partial-final-byte and padding paths. The template's bytesPerLine formula is applied uniformly at line 115 but is only used by this sub-8-bpp arm, so the formula is exact here."
+    },
+    "BITMAPLINE.colorIndex": {
+      "tier": "A",
+      "tier_rationale": "This array's element count is a row length: a decoder computes each row's start as base + row * stride and reads exactly biWidth index bytes, so a row that is too short or too long desynchronises every following row and the image is rejected or decoded as garbage.",
+      "type": "calculated_value",
+      "description": "One scanline of 8-bpp pixel data: exactly biWidth palette-index bytes, followed by that row's pad bytes.",
+      "field_type": "UBYTE[biWidth]",
+      "source": "template",
+      "evidence": {
+        "line": 127,
+        "snippet": "UBYTE     colorIndex[ bmih.biWidth ];"
+      },
+      "confidence": "high",
+      "algorithm": "element count: biWidth bytes per row, one palette index per pixel at 8 bpp",
+      "covers": "the pixel bytes of a single scanline, excluding BITMAPLINE.padBytes",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount"
+      ],
+      "notes": "Present only when biBitCount == 8 (line 126). The index bytes themselves are free content; only the count is fixed, and an index at or above the palette size is clamped or masked by decoders rather than rejected."
+    },
+    "BITMAPLINE.colors": {
+      "tier": "A",
+      "tier_rationale": "Same row-length rule as colorIndex: the pixel count per scanline is what makes the stride arithmetic work, and a mismatch shifts every subsequent row so the decoder either fails a length check or decodes nonsense.",
+      "type": "calculated_value",
+      "description": "One scanline of true-colour pixel data: biWidth pixels, each a 3-byte RGBTRIPLE at 24 bpp or a 4-byte RGBQUAD at 32 bpp, followed by that row's pad bytes.",
+      "field_type": "RGBTRIPLE[biWidth] | RGBQUAD[biWidth]",
+      "source": "template",
+      "evidence": {
+        "line": 129,
+        "snippet": "RGBTRIPLE colors[ bmih.biWidth ];"
+      },
+      "confidence": "high",
+      "algorithm": "element count: biWidth pixels per row; byte length = 3 * biWidth when biBitCount == 24 (line 129) and 4 * biWidth when biBitCount == 32 (line 131)",
+      "covers": "the pixel bytes of a single scanline, excluding BITMAPLINE.padBytes",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount"
+      ],
+      "notes": "The identifier 'colors' is declared twice inside struct BITMAPLINE under mutually exclusive branches (lines 129 and 131), so exactly one of them exists in any file. Note the stride consequence: at 24 bpp the row length 3 * biWidth is a multiple of 4 only when biWidth itself is a multiple of 4, which is precisely why padBytes exists and why widths that are not multiples of 4 are the interesting ones."
+    },
+    "BITMAPLINE.padBytes": {
+      "tier": "A",
+      "tier_rationale": "BMP mandates that every scanline is a multiple of 4 bytes, so the padding count is a derived length; getting it wrong shifts every subsequent row and every pixel the decoder reads after the first row.",
+      "type": "calculated_value",
+      "description": "The 0 to 3 trailing bytes that bring one scanline's stride up to a multiple of 4.",
+      "field_type": "UBYTE[padding]",
+      "source": "both",
+      "evidence": {
+        "line": 116,
+        "snippet": "local int padding      = 4 - (bytesPerLine % 4);"
+      },
+      "confidence": "high",
+      "algorithm": "byte count: padding = 4 - (bytesPerLine % 4), with padding set to 0 when that expression evaluates to 4 (template lines 116-118); bytesPerLine = (biWidth * biBitCount + 7) / 8 (line 115) for the sub-8-bpp packed arm, and biWidth * (biBitCount / 8) for the 8/16/24/32 bpp arms",
+      "covers": "the trailing bytes of a single scanline only; it never spans rows",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount"
+      ],
+      "notes": "Line 135 declares the array and line 134 gates it on padding != 0, so a row whose length is already 4-byte aligned carries no pad array at all. The byte VALUES are unchecked by decoders (they are skipped, not interpreted) and are therefore free; only the count is Tier A. Note that the template's bytesPerLine at line 115 multiplies biWidth by biBitCount for every depth, which over-counts for 8/24/32 bpp - a generator should compute the row length from the depth-specific arm at lines 124-131 and pad that."
+    },
+    "GLOBAL.lines": {
+      "tier": "A",
+      "tier_rationale": "The repeat count of the scanline array is a length the decoder derives from biHeight; if the file holds fewer rows than biHeight declares the decoder reads past the end of the pixel data and fails, and if it holds more, bfSize and biSizeImage no longer match.",
+      "type": "calculated_value",
+      "description": "The uncompressed pixel-data region: one BITMAPLINE per image row, stored bottom-up when biHeight is positive and top-down when biHeight is negative.",
+      "field_type": "BITMAPLINE[|biHeight|]",
+      "source": "template",
+      "evidence": {
+        "line": 137,
+        "snippet": "} lines[ (bmih.biHeight < 0) ? -bmih.biHeight : bmih.biHeight] <optimize=true>;"
+      },
+      "confidence": "high",
+      "algorithm": "element count: |biHeight| = (biHeight < 0) ? -biHeight : biHeight; byte length = |biHeight| * (rowBytes + padding)",
+      "covers": "the whole uncompressed pixel-data region, from bfOffBits through bfOffBits + biSizeImage (and, when biSizeImage is 0 for BI_RGB, through bfSize)",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPFILEHEADER.bfOffBits",
+        "BITMAPFILEHEADER.bfSize"
+      ],
+      "notes": "The sign of biHeight only reverses row order - it does not change the count - and that reversal is a real decoder branch (top-down versus bottom-up blit), so emit both signs. Row count is derived from biHeight; never adjust biHeight to match a row count the generator happened to produce."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "in": [
+          1,
+          2,
+          4,
+          8
+        ]
+      },
+      "then": {
+        "section": "GLOBAL.aColors",
+        "required": true,
+        "tier": "A",
+        "type": "calculated_value",
+        "algorithm": "entries = biClrUsed > 0 ? biClrUsed : 1 << biBitCount, each entry 4 bytes (RGBQUAD)"
+      },
+      "description": "Indexed-colour depths must be followed by a colour table, and its entry count is set by biClrUsed or by the depth maximum; the template encodes exactly this choice at lines 96-99.",
+      "source": "both",
+      "confidence": "high",
+      "notes": "The unconditional GLOBAL.aColors entry keeps the derived length; this rule is what makes the colour table exist at all, and the ternary at lines 96-99 is the only place the template computes its size. Restricting which depths get a palette is a format rule, not a generation bound."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "in": [
+          24,
+          32
+        ]
+      },
+      "then": {
+        "section": "GLOBAL.aColors",
+        "forbidden": true
+      },
+      "description": "At 24 and 32 bpp the pixels carry their own colour, so no colour table is written and bfOffBits is simply 14 + biSize; the template's guard at line 93 skips the whole aColors block for these two depths.",
+      "source": "template",
+      "confidence": "high",
+      "notes": "Template line 93 excludes exactly 24 and 32 from the aColors block, so at those depths the palette must be absent and bfOffBits must not count one. Emitting a palette at 24 bpp shifts every pixel by 4 * entries bytes."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "in": [
+          24,
+          32
+        ]
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biClrUsed",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          0
+        ],
+        "completeness": "exhaustive"
+      },
+      "description": "The palette-count field is meaningless for direct-colour depths and the specification requires it to be zero; a non-zero value makes strict validators reject the file and makes permissive ones look for a colour table that is not there.",
+      "source": "spec",
+      "confidence": "medium",
+      "notes": "biClrUsed is Tier C and unconstrained in general; this rule pins it to 0 only for the two direct-colour depths, where the specification says a palette count is meaningless. That is a format rule narrowing one field in one branch, not a generation range on the field."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 1
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          8
+        ],
+        "completeness": "exhaustive"
+      },
+      "description": "BI_RLE8 encodes one palette index per byte, so it is legal only at 8 bpp; a decoder handed RLE8 data with any other depth refuses the file or decodes it as garbage.",
+      "source": "spec",
+      "confidence": "high",
+      "notes": "BI_RLE8 stores one 8-bit index per encoded byte, so the codec is defined only at 8 bpp. Decoders reject any other pairing; the template reads rleData as an opaque array and never checks it, so this rule is the only thing preventing an inconsistent file."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 2
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          4
+        ],
+        "completeness": "exhaustive"
+      },
+      "description": "BI_RLE4 packs two 4-bit indices per byte and is legal only at 4 bpp.",
+      "source": "spec",
+      "confidence": "high",
+      "notes": "BI_RLE4 packs two 4-bit indices per encoded byte and is defined only at 4 bpp. Same reasoning as BI_RLE8: nothing in the .bt validates the pairing."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "in": [
+          3,
+          6
+        ]
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          16,
+          32
+        ],
+        "completeness": "exhaustive"
+      },
+      "description": "Explicit colour masks (BI_BITFIELDS) and explicit alpha masks (BI_ALPHABITFIELDS) apply only to 16- and 32-bpp direct-colour images; BI_ALPHABITFIELDS additionally requires a V3 or later info header, which this template does not declare.",
+      "source": "spec",
+      "confidence": "medium",
+      "notes": "Colour masks describe how to split a direct-colour pixel, so they only make sense at 16 or 32 bpp. BI_ALPHABITFIELDS additionally needs the extra mask fields of a V3 header, which this template's 40-byte BITMAPINFOHEADER does not provide."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "in": [
+          4,
+          5
+        ]
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          0
+        ],
+        "completeness": "exhaustive"
+      },
+      "description": "When the pixel region is an embedded JPEG (BI_JPEG) or PNG (BI_PNG) the bit depth is carried by the embedded image, so biBitCount must be 0.",
+      "source": "spec",
+      "confidence": "high",
+      "notes": "An embedded JPEG or PNG carries its own depth, so the DIB depth field must be 0. This is the only legal use of biBitCount == 0."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "equals": 0
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "tier": "B",
+        "type": "enumerated_values",
+        "valid_values": [
+          4,
+          5
+        ],
+        "completeness": "exhaustive"
+      },
+      "description": "The converse of the previous rule: a zero bit depth is only legal when the pixel region is an embedded JPEG or PNG, because nothing else can supply the depth.",
+      "source": "spec",
+      "confidence": "high",
+      "notes": "The converse of the previous rule and the one the generator must apply first: a zero depth leaves nothing to unpack, so only the two embedded-image methods are legal. Draw biCompression and biBitCount together, never independently."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "min": 1
+      },
+      "then": {
+        "section": "GLOBAL.rleData",
+        "required": true,
+        "tier": "A",
+        "type": "payload_wellformedness"
+      },
+      "description": "Any non-zero biCompression replaces the scanline array with the encoded byte stream, so rleData must be present and must satisfy the RLE / bitfield / embedded-image framing for the chosen method.",
+      "source": "both",
+      "confidence": "high",
+      "notes": "GLOBAL.rleData is the format's only real payload gate. Its content must be built from the declared biWidth, biHeight and biBitCount - never the reverse - so the obligation is a well-formedness rule on a region rather than a value set on a field."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "min": 1
+      },
+      "then": {
+        "section": "GLOBAL.lines",
+        "forbidden": true
+      },
+      "description": "The uncompressed scanline array and the encoded stream are mutually exclusive: the template's if/else at lines 104-112 emits exactly one of them, and a file carrying both has a bfSize that cannot match.",
+      "source": "template",
+      "confidence": "high",
+      "notes": "Template lines 104-112 are an if/else, so exactly one pixel region exists. A file carrying both cannot satisfy bfSize, and a decoder reading the wrong one desynchronises on the first byte."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 0
+      },
+      "then": {
+        "section": "GLOBAL.lines",
+        "required": true
+      },
+      "description": "BI_RGB means the pixel region is the bottom-up array of 4-byte-aligned scanlines, so exactly |biHeight| BITMAPLINE records must follow the header and optional colour table.",
+      "source": "both",
+      "confidence": "high",
+      "notes": "The else arm at line 112 declares lines[] unconditionally, so BI_RGB always means |biHeight| rows at a constant stride. The row count comes from biHeight; never adjust biHeight to match a row count the generator happened to produce."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 0
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biSizeImage",
+        "tier": "A",
+        "type": "calculated_value",
+        "algorithm": "either exactly 0, which the spec permits for BI_RGB, or exactly stride * |biHeight| where stride = rowBytes + padding"
+      },
+      "description": "For uncompressed data biSizeImage is either zero or the exact byte count of the scanline block; any other value disagrees with what the decoder is about to read.",
+      "source": "both",
+      "confidence": "high",
+      "notes": "The template branches on biSizeImage > 0 at line 107 only in the compressed arm; for BI_RGB the field is advisory and the specification permits 0. Both poles are legal, so this is a two-valued derivation rather than a bound."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "equals": 3
+      },
+      "then": {
+        "section": "bitfield colour-mask block (3 DWORDs: red, green, blue)",
+        "required": true,
+        "detail": "three DWORDs (red, green, blue masks) immediately after the 40-byte info header and before any colour table; bfOffBits must count them"
+      },
+      "description": "BI_BITFIELDS with a BITMAPINFOHEADER stores the colour masks in a 12-byte block between the header and the pixel data, which the .bt does not declare at all, so a generator emitting method 3 must add it and extend bfOffBits by 12.",
+      "source": "spec",
+      "confidence": "medium",
+      "notes": "The .bt declares no mask block, so this rule exists purely to keep a BI_BITFIELDS file self-consistent: without those 12 bytes the decoder falls back to default masks and bfOffBits points into the palette or the pixels."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "in": [
+          1,
+          2,
+          4,
+          8
+        ]
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biClrUsed",
+        "tier": "C",
+        "type": "unconstrained",
+        "max": "1 << biBitCount",
+        "on_exceed": "decoders clamp to the maximum rather than rejecting"
+      },
+      "description": "At indexed depths the palette cannot legitimately declare more entries than the bit depth allows; the ceiling is a format rule, not a size preference, and decoders that see a larger value use the maximum instead.",
+      "source": "spec",
+      "confidence": "medium",
+      "notes": "biClrUsed stays Tier C and unconstrained; this records only the format's own ceiling at indexed depths and what a decoder does when it is exceeded. It must not be turned into a generation range that stops the generator emitting over-maximum values, which are a useful malformed class."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biClrImportant",
+        "min": 1
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biClrImportant",
+        "tier": "C",
+        "type": "unconstrained",
+        "max": "colour-table entry count",
+        "on_exceed": "treated as 'all colours are important'"
+      },
+      "description": "biClrImportant counts a subset of the palette, so a non-zero value is expected not to exceed the number of entries actually present.",
+      "source": "spec",
+      "confidence": "low",
+      "notes": "biClrImportant likewise stays Tier C: the ceiling is advisory and exceeding it is harmless in conforming decoders, which treat it as 'all colours are important'."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biCompression",
+        "in": [
+          1,
+          2
+        ]
+      },
+      "then": {
+        "field": "BITMAPINFOHEADER.biHeight",
+        "tier": "C",
+        "type": "unconstrained",
+        "min": 1,
+        "sign": "positive only"
+      },
+      "description": "RLE-compressed BMPs must be bottom-up: the specification excludes negative heights for BI_RLE4 and BI_RLE8 because the RLE decoder advances rows from the bottom edge upward.",
+      "source": "spec",
+      "confidence": "medium",
+      "notes": "The RLE decoders advance rows from the bottom edge upward, so a negative (top-down) height is undefined for BI_RLE4 and BI_RLE8. biHeight remains Tier C and unbounded above; only its sign is restricted, and only in this branch."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biHeight",
+        "max": -1
+      },
+      "then": {
+        "field": "GLOBAL.lines",
+        "tier": "A",
+        "type": "calculated_value",
+        "algorithm": "row order reversed: the first BITMAPLINE in the file is the top row of the image"
+      },
+      "description": "A negative biHeight declares a top-down DIB; the row count is still |biHeight| but the storage order flips, which is a separate branch in every decoder's blit loop.",
+      "source": "both",
+      "confidence": "high",
+      "notes": "Line 137 takes the absolute value, so the sign never changes the row count - it only reverses which row comes first. Emit both signs: the reversal is a real branch in every decoder's blit loop."
+    },
+    {
+      "when": {
+        "field": "BITMAPINFOHEADER.biBitCount",
+        "in": [
+          1,
+          2,
+          4,
+          8
+        ]
+      },
+      "then": {
+        "field": "BITMAPFILEHEADER.bfOffBits",
+        "tier": "A",
+        "type": "calculated_value",
+        "algorithm": "bfOffBits = 14 + biSize + 4 * paletteEntries (+12 if biCompression == BI_BITFIELDS), where paletteEntries = biClrUsed > 0 ? biClrUsed : 1 << biBitCount"
+      },
+      "description": "The pixel-data offset must account for the colour table that indexed depths require, otherwise the decoder starts reading palette bytes as pixels.",
+      "source": "both",
+      "confidence": "high",
+      "notes": "bfOffBits is Tier A and always derived; this rule supplies the palette term of that derivation. Omitting it makes the decoder read colour-table bytes as the first pixels of the image."
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "BITMAPFILEHEADER",
+      "detail": "The file must begin at byte 0 with the 14-byte BITMAPFILEHEADER whose first two bytes are the signature 'BM' (0x42 0x4D). Nothing may precede it - no BOM, no padding, no container wrapper.",
+      "description": "The signature is the decoder's front gate: the template checks it at line 86 and stops the parse with 'File is not a bitmap. Template stopped.' otherwise.",
+      "source": "both",
+      "output_budget": "Fixed 14 bytes for the whole header; not a repeating structure.",
+      "generation_note": "Emit as a fixed head element: 'B', 'M', bfSize (patched last), bfReserved1, bfReserved2, bfOffBits (patched after the palette size is known)."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "BITMAPFILEHEADER",
+      "detail": "Exactly one per file. BMP has no multi-image variant in this form (the 'BA' bitmap-array signature is a different container and is not a BMP file), so the file header and the info header are each emitted once.",
+      "description": "Both headers are singletons; the only repeating regions are the colour table and the scanline array.",
+      "source": "both",
+      "output_budget": "Fixed 14 bytes; a singleton, so the budget is a constant.",
+      "generation_note": "Never loop over the header block."
+    },
+    {
+      "rule": "ordering",
+      "subject": "top-level region sequence",
+      "detail": "BITMAPFILEHEADER (14 bytes) -> BITMAPINFOHEADER (biSize bytes, 40 here) -> optional bitfield colour masks (only when biCompression is BI_BITFIELDS or BI_ALPHABITFIELDS) -> optional RGBQUAD colour table (only when biBitCount < 24) -> pixel data (rleData when biCompression > 0, otherwise lines) -> end of file. The sequence is fixed; no region may be reordered, duplicated or omitted except where its own condition says so.",
+      "description": "This is the whole document shape: two fixed headers, two conditionally present blocks, one pixel region and nothing else.",
+      "source": "both",
+      "output_budget": "The sum of the region budgets above; the fixed heads cost 54 bytes plus masks and palette, leaving the whole remainder to the pixel region's 4 MiB budget.",
+      "generation_note": "Emit as a fixed head (file header + info header), then a conditional mask block, then a repeated palette array bounded by its own output_budget, then a repeated scanline array (or a single encoded stream) bounded by the pixel-data output_budget, then stop."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "chunk markers, section terminators, CRCs and checksums",
+      "detail": "BMP contains none of these. There is no chunk type/length framing, no IEND-style terminator, no CRC-32 and no Adler-32 anywhere in the file; regions are located purely by fixed offsets and by the three length fields bfSize, bfOffBits and biSizeImage.",
+      "description": "Recording this explicitly so the rewrite step does not invent markers or checksums that no BMP decoder expects.",
+      "source": "both",
+      "output_budget": "0 bytes.",
+      "generation_note": "Do not emit any tag, length-prefix or digest between regions; the only integrity mechanism in the format is the agreement between bfSize, bfOffBits, biSizeImage and the bytes actually written."
+    },
+    {
+      "rule": "required",
+      "subject": "BITMAPINFOHEADER",
+      "detail": "Exactly one, always present, always 40 bytes, always starting at file offset 14 - immediately after BITMAPFILEHEADER with no gap and no intervening data.",
+      "description": "The info header is not optional and not repeatable; the template reads it unconditionally at line 83 and derives every subsequent decision from it.",
+      "source": "template",
+      "output_budget": "Fixed 40 bytes; not a repeating structure.",
+      "generation_note": "Emit as a fixed block right after the file header, with biSize = 40 and biPlanes = 1 pinned and every other field drawn or derived as its tier specifies."
+    },
+    {
+      "rule": "contiguous",
+      "subject": "colour table and bitfield-mask block boundaries",
+      "detail": "When present, the bitfield masks start at 14 + biSize and the colour table starts immediately after them (or at 14 + biSize when there are no masks); the colour table's last byte is at bfOffBits - 1 and the pixel data begins at bfOffBits. There may be no gap, no filler and no reordering between these regions.",
+      "description": "The regions are positionally defined, so any slack between them shifts the pixel data away from bfOffBits.",
+      "source": "both",
+      "output_budget": "0 bytes of slack; the region lengths are exactly those computed by GLOBAL.aColors and the mask block.",
+      "generation_note": "Write the regions in order with no alignment filler, then set bfOffBits to the current file position."
+    },
+    {
+      "rule": "required",
+      "subject": "pixel-data region (GLOBAL.rleData or GLOBAL.lines)",
+      "detail": "Exactly one pixel-data region, always present, always starting at file offset bfOffBits and always running to the end of the file.",
+      "description": "A header-only BMP is not a valid file: every decoder that survives the header goes on to read pixels from bfOffBits.",
+      "source": "both",
+      "output_budget": "The 4 MiB pixel-data budget recorded on GLOBAL.lines and GLOBAL.rleData; the region must be non-empty.",
+      "generation_note": "Build the region after the headers, then back-patch bfOffBits, biSizeImage and bfSize from the byte counts that resulted."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "GLOBAL.aColors (the RGBQUAD colour table)",
+      "detail": "biClrUsed entries when biClrUsed > 0, otherwise 1 << biBitCount entries; each entry is exactly 4 bytes (blue, green, red, reserved). Zero entries - and therefore no colour table at all - when biBitCount is 24 or 32.",
+      "condition": "only when biBitCount is 1, 2, 4 or 8 (template line 93)",
+      "description": "The colour table is the format's other repeating structure and its count is fully determined by two header fields.",
+      "source": "template",
+      "output_budget": "Colour-table total: 1024 bytes (256 RGBQUAD entries) across the whole file. Rationale: the format's own ceiling at the deepest indexed depth (8 bpp, biClrUsed == 0) is exactly 256 entries, so this budget can never bind on a legal file - it is recorded to make explicit that the palette is bounded by biBitCount and biClrUsed, not by any generator-imposed cap on either field. It is enforced through the dependency biClrUsed <= 1 << biBitCount, never by narrowing biClrUsed below its legal ceiling or by fixing biBitCount.",
+      "generation_note": "Compute entries from biBitCount and the freely chosen biClrUsed, emit that many 4-byte RGBQUAD records with completely free colour bytes, then add 4 * entries into bfOffBits and bfSize."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "GLOBAL.lines (the BITMAPLINE scanline array)",
+      "detail": "Exactly |biHeight| = (biHeight < 0) ? -biHeight : biHeight rows, each rowBytes + padding bytes, written back to back with no separator and no per-row length prefix. Row order is bottom-up for positive biHeight and top-down for negative biHeight.",
+      "condition": "only when biCompression == BI_RGB (0)",
+      "description": "The uncompressed pixel region repeats once per image row and is, with the colour table, one of only two repeating structures in the format.",
+      "source": "template",
+      "output_budget": "Pixel-data region total: 4 MiB (4194304 bytes) across the whole file. The generator keeps a running total of bytes written into the pixel region and stops when it reaches the budget. The budget is met by re-sampling the biWidth / biHeight draw until stride * |biHeight| fits - never by clamping biWidth or biHeight in the emitted file, and never by emitting fewer rows than biHeight declares, which would make bfSize and biSizeImage lie and cost depth. 4 MiB still admits 4096x1024 at 8 bpp, 1024x4096, 2048x2048 and 640x480 at 24 bpp, so it does not bias the width, height, aspect-ratio or depth distribution; it exists only to bound generation time and disk use.",
+      "generation_note": "Emit a fixed 14-byte BITMAPFILEHEADER head, a fixed 40-byte BITMAPINFOHEADER, the optional colour table, then |biHeight| rows from a loop that writes rowBytes free bytes plus padding pad bytes per row. Choose biWidth and biHeight first and freely; derive rowBytes, padding, biSizeImage, bfOffBits and bfSize from them; if the derived pixel total exceeds the output_budget, redraw the dimensions instead of shrinking them in the output."
+    },
+    {
+      "rule": "contiguous",
+      "subject": "BITMAPLINE rows",
+      "detail": "Rows are packed contiguously at a fixed stride of rowBytes + padding, with no gap, no marker and no length field between them, and the stride is identical for every row of the image.",
+      "condition": "only when biCompression == BI_RGB (0)",
+      "description": "Because rows carry no framing, a single mis-sized row desynchronises the whole remainder of the image.",
+      "source": "both",
+      "output_budget": "Subsumed by the GLOBAL.lines budget above; one row contributes rowBytes + padding bytes to the same running total.",
+      "generation_note": "Compute the stride once from biWidth and biBitCount and reuse it for every row; never vary it between rows."
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "GLOBAL.rleData versus GLOBAL.lines",
+      "detail": "Exactly one pixel-data representation exists per file: rleData when biCompression > 0 (template line 104), lines when biCompression == 0 (template line 112). Never both, never neither.",
+      "description": "The if/else at lines 104-137 is the format's only top-level alternative, and it is decided solely by biCompression.",
+      "source": "template",
+      "output_budget": "Both arms share the single 4 MiB pixel-data budget described on GLOBAL.lines; for rleData the budget applies to the encoded byte count, which is then written into biSizeImage.",
+      "generation_note": "Select biCompression first, build the matching region, then patch biSizeImage and bfSize from the byte count actually produced."
+    },
+    {
+      "rule": "last_element",
+      "subject": "pixel-data region (GLOBAL.rleData or GLOBAL.lines)",
+      "detail": "The pixel data is the final region of the file and its last byte is byte bfSize - 1; the format defines no trailer, no end marker, no directory and no checksum after it.",
+      "description": "Everything from bfOffBits onward belongs to the pixel region, so bfSize must equal bfOffBits plus that region's byte length.",
+      "source": "both",
+      "output_budget": "Same 4 MiB pixel-data budget as GLOBAL.lines; bfSize is then 14 + biSize + maskBytes + paletteBytes + pixelBytes and is written last.",
+      "generation_note": "Emit nothing after the pixel region. Compute bfSize from the actual byte count of the finished file rather than predicting it."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "trailing bytes after the pixel-data region",
+      "detail": "No data may follow the last pixel byte: trailing garbage makes bfSize disagree with the real file length, which decoders that bound their reads by bfSize treat as a corrupt or truncated file.",
+      "description": "BMP has no chunk chain, so unlike PNG or RIFF there is no legal home for extra sections after the image.",
+      "source": "spec",
+      "output_budget": "0 bytes.",
+      "generation_note": "Do not append padding, filler or a second image; if a larger file is wanted, increase biWidth, biHeight or biBitCount instead."
+    },
+    {
+      "rule": "requires",
+      "subject": "bitfield colour-mask block (3 DWORDs: red, green, blue)",
+      "detail": "When biCompression is BI_BITFIELDS (3) or BI_ALPHABITFIELDS (6) with a 40-byte BITMAPINFOHEADER, three DWORD masks (four for BI_ALPHABITFIELDS) must be written immediately after the info header and before any colour table, and bfOffBits must include them. The .bt does not declare this block.",
+      "condition": "only when biCompression is 3 or 6",
+      "description": "A format requirement the template silently omits: a generator following the .bt literally would emit method 3 with no masks and produce a file the decoder rejects or renders with default masks.",
+      "source": "spec",
+      "output_budget": "Fixed 12 bytes (16 for BI_ALPHABITFIELDS); not a repeating structure, so the budget is a constant.",
+      "generation_note": "Emit the masks right after biClrImportant, add 12 to bfOffBits, and keep them consistent with biBitCount (5-5-5 or 5-6-5 at 16 bpp, 8-8-8 at 32 bpp)."
+    },
+    {
+      "rule": "ordering",
+      "subject": "byte order of the whole document",
+      "detail": "Every multi-byte numeric field in the file is little-endian, established by the template's LittleEndian() call at line 80.",
+      "description": "BMP is strictly little-endian with no per-file byte-order switch, unlike TIFF.",
+      "source": "template",
+      "output_budget": "n/a - byte order does not change the file's size.",
+      "generation_note": "Write all WORD/DWORD/LONG fields least-significant byte first; do not offer a big-endian variant."
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "BITMAPFILEHEADER.bfType",
+      "name": "bmp_signature",
+      "tier": "A",
+      "why": "Listed so the rewrite step sees the pin explicitly and does not try to 'diversify' the magic: this is the one field that must never vary, because the template aborts with 'File is not a bitmap. Template stopped.' (lines 86-90) and every real decoder rejects the file before reading anything else.",
+      "decoder_paths": "None. A wrong signature ends the parse at the front gate, so no downstream code runs.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [],
+      "how_varied": "Never: emit the two bytes 0x42 0x4D ('BM') at offset 0 of every file.",
+      "notes": "An axis with must_remain_unconstrained false is a protection note, not a freedom note."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biBitCount",
+      "name": "bit_count",
+      "tier": "B",
+      "why": "The format's primary shape selector. It decides whether a colour table exists at all (the guard at line 93 excludes 24 and 32), which of the four BITMAPLINE pixel representations is used (lines 124-131), how many palette entries are implied when biClrUsed is 0 (line 99), the row byte count and therefore the padding (lines 115-118), and which compression methods are legal.",
+      "decoder_paths": "Each depth selects a different pixel-unpacking routine: bit-reverse extraction at 1/2/4 bpp, a direct palette index at 8 bpp, mask-and-shift at 16 bpp, 3-byte and 4-byte copies at 24/32 bpp. Depth 0 routes the pixel region to a JPEG or PNG decoder instead.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biWidth",
+        "GLOBAL.aColors",
+        "BITMAPLINE.imageData",
+        "BITMAPLINE.colorIndex",
+        "BITMAPLINE.colors"
+      ],
+      "how_varied": "Draw uniformly from the full legal set {0, 1, 4, 8, 16, 24, 32} per file, and make sure every value appears in the corpus together with each compression method that permits it. Never fix a 'typical' depth: 24 bpp alone would leave the whole colour-table branch, all sub-byte packing and both RLE codecs unexercised.",
+      "diversity_budget": "Bounded only by the 4 MiB pixel-data output_budget, since depth multiplies the per-row byte count.",
+      "notes": "2 is legal but extremely rare; include it occasionally. Depth 0 must be paired with BI_JPEG or BI_PNG only."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biCompression",
+      "name": "compression_method",
+      "tier": "B",
+      "why": "Selects the entire pixel-data representation: the if/else at line 104 chooses between the opaque rleData byte stream and the BITMAPLINE scanline array purely on this value. It also gates the colour table, the bitfield mask block, the legality of a negative biHeight and the meaning of biSizeImage.",
+      "decoder_paths": "BI_RGB takes the row-by-row blit loop; BI_RLE8 and BI_RLE4 take a run-length state machine with escape handling for deltas, absolute runs and end-of-line; the bitfield methods take mask-driven pixel conversion; BI_JPEG and BI_PNG hand the region to a completely different image decoder.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biSizeImage",
+        "BITMAPFILEHEADER.bfOffBits",
+        "GLOBAL.rleData",
+        "GLOBAL.lines"
+      ],
+      "how_varied": "Draw from {0, 1, 2, 3, 4, 5, 6} per file, always with the biBitCount the method requires (8 for RLE8, 4 for RLE4, 16 or 32 for the bitfield methods, 0 for JPEG/PNG, any non-zero depth for RGB). Weight BI_RGB below uniform so the compressed and mask-based paths get real coverage, and include a share of deliberately illegal method/depth pairs as a malformed-input class.",
+      "diversity_budget": "Shares the single 4 MiB pixel-data output_budget with GLOBAL.lines and GLOBAL.rleData.",
+      "notes": "BI_ALPHABITFIELDS (6) implies a V3-or-later info header, which this template does not declare; emit it only as an explicitly malformed variant."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biWidth",
+      "name": "image_width",
+      "tier": "C",
+      "why": "The most influential free field in the format: it sets rowBytes (line 115), the padding count (lines 116-118) and the pixel-array bounds (lines 125-131), and through them biSizeImage, bfOffBits and bfSize. Sweeping it across the sub-byte packing boundaries and the 4-byte alignment modulus hits every branch of a decoder's row-advance and index-extraction logic.",
+      "decoder_paths": "Row-length computation, sub-byte index extraction at 1/2/4 bpp, alignment padding insertion and removal, and the per-row bounds check. Width 0 and very large widths probe degenerate and integer-overflow handling.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biSizeImage",
+        "BITMAPLINE.imageData",
+        "BITMAPLINE.padBytes",
+        "GLOBAL.lines"
+      ],
+      "how_varied": "Draw freely over the whole DWORD range with no practical cap. Deliberately include 0, 1, the packing boundaries 7/8/9, 15/16/17 and 31/32/33, widths that make rowBytes an exact multiple of 4 and widths that leave it one byte off, and large widths up to the pixel output_budget. Never clamp the emitted value to make a file smaller - redraw the dimensions instead.",
+      "diversity_budget": "Bounded only by the 4 MiB pixel-data output_budget on GLOBAL.lines / GLOBAL.rleData, satisfied by re-sampling the dimension draw rather than by narrowing this field.",
+      "notes": "Tier C: the format places no bound on it and the template applies none, so no generation range may be recorded here."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biHeight",
+      "name": "image_height_and_row_order",
+      "tier": "C",
+      "why": "The magnitude sets the number of BITMAPLINE records (line 137) and therefore the size of the repeating pixel region; the sign selects bottom-up versus top-down storage, a genuinely different branch in every decoder's blit loop. Both aspects must be swept.",
+      "decoder_paths": "Row-count iteration, the top-down versus bottom-up row-order decision, the zero-height degenerate case, and the RLE decoder's assumption of a positive height.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biSizeImage",
+        "GLOBAL.lines",
+        "BITMAPFILEHEADER.bfSize"
+      ],
+      "how_varied": "Draw the magnitude freely over the LONG range with no practical cap and draw the sign independently, so both bottom-up and top-down files appear. Include 0, 1, 2, 3 and large magnitudes up to the pixel output_budget. Pair a negative height only with BI_RGB, since RLE requires bottom-up.",
+      "diversity_budget": "Shares the 4 MiB pixel-data output_budget with biWidth; the budget is met by redrawing the dimension pair, never by shrinking the emitted magnitude or by writing fewer rows than declared.",
+      "notes": "Tier C: signed, unbounded by the format, and unchecked by the template apart from the sign test at line 137."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biClrUsed",
+      "name": "palette_entry_count",
+      "tier": "C",
+      "why": "This field alone decides the colour-table length through the ternary at lines 96-99, so sweeping it varies the palette size and the bfOffBits offset without touching any other field. It is the cheapest way to make the repeating colour-table structure take many different lengths.",
+      "decoder_paths": "The 'biClrUsed > 0' branch versus the '1 << biBitCount' branch, palette allocation sizing, and the clamping path a decoder takes when the declared count exceeds the depth maximum.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrImportant",
+        "GLOBAL.aColors",
+        "BITMAPFILEHEADER.bfOffBits",
+        "BITMAPFILEHEADER.bfSize"
+      ],
+      "how_varied": "At indexed depths draw freely over the DWORD range: 0 (meaning 'use the depth maximum'), 1, 2, half the depth maximum, exactly the depth maximum, and values deliberately larger than the maximum. At 24/32 bpp emit 0 only, since a palette is illegal there. Never bound the field itself - the ceiling at indexed depths is a format rule expressed as a dependency, not a generation range.",
+      "diversity_budget": "Bounded by the 1024-byte colour-table output_budget on GLOBAL.aColors, which is itself exactly the format's own 256-entry ceiling and so can never bind on a legal file.",
+      "notes": "Tier C. Values above 1 << biBitCount are a distinct malformed-input class that permissive decoders handle by clamping."
+    },
+    {
+      "field": "BITMAPFILEHEADER.bfOffBits",
+      "name": "pixel_data_offset",
+      "tier": "A",
+      "why": "A derived field, but the derivation is itself the axis: bfOffBits has to track whichever of the optional blocks (bitfield masks, colour table) the current biCompression and biBitCount combination actually produced. Getting it wrong silently reinterprets palette bytes as pixels, so the rewrite step must recompute it per file rather than pin a constant.",
+      "decoder_paths": "The seek to the start of pixel data, and the disagreement check between bfOffBits and the real header-plus-palette length that stricter loaders perform.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biSize",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biCompression",
+        "GLOBAL.aColors"
+      ],
+      "how_varied": "Never drawn: always computed as 14 + biSize + maskBytes + 4 * paletteEntries after the headers and palette have been emitted. Vary it only indirectly, by varying biBitCount, biClrUsed and biCompression.",
+      "notes": "Listed as an axis so the generator does not treat it as a free DWORD; it is the most commonly corrupted field in hand-made BMPs."
+    },
+    {
+      "field": "BITMAPFILEHEADER.bfSize",
+      "name": "declared_file_size",
+      "tier": "A",
+      "why": "Also derived, and also worth an explicit axis entry: bfSize must equal the true byte length of the finished file, so it varies with every dimension, depth, palette-size and payload-size draw. A file whose bfSize disagrees with its real length is rejected or truncated by decoders that bound their reads by it.",
+      "decoder_paths": "The whole-file length check, the truncation test in the template's fallback rleData sizing at line 110 (bfSize - FTell()), and any decoder that pre-allocates from bfSize.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPFILEHEADER.bfOffBits",
+        "BITMAPINFOHEADER.biSizeImage",
+        "GLOBAL.lines",
+        "GLOBAL.rleData",
+        "GLOBAL.aColors"
+      ],
+      "how_varied": "Never drawn: patch it last, from the actual byte count of the finished file. Do not precompute it from a predicted layout.",
+      "notes": "Because line 110 uses bfSize to size rleData when biSizeImage is 0, this field is load-bearing for the template itself, not just for external validators."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biSizeImage",
+      "name": "pixel_region_byte_count",
+      "tier": "A",
+      "why": "Doubles as a size field and as a payload selector: at line 107 the template branches on biSizeImage > 0 to decide whether rleData is sized from this field or from the remaining file length, so the choice between 0 and an exact count is a real behavioural axis rather than bookkeeping.",
+      "decoder_paths": "The RLE stream length bound, the zero-means-uncompressed special case for BI_RGB, and the trust-or-recompute decision that different decoders make when this field disagrees with stride * |biHeight|.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "GLOBAL.rleData",
+        "GLOBAL.lines"
+      ],
+      "how_varied": "For BI_RGB alternate between exactly 0, which the specification permits, and exactly stride * |biHeight|. For any compressed method emit the exact encoded byte count, since 0 there makes the template fall back to bfSize - FTell(). Include a share of deliberately wrong values (off by one, doubled, huge) as a malformed-input class.",
+      "notes": "Tier A for the legal poles; the wrong values are an intentional corruption axis, not a generation range on a Tier C field."
+    },
+    {
+      "field": "GLOBAL.aColors",
+      "name": "colour_table",
+      "tier": "A",
+      "why": "The first of the format's two repeating structures, and its length is set by a header branch the template spells out at lines 96-99. Varying the entry count changes the palette size, bfOffBits, bfSize and every index-to-colour mapping the decoder builds, so it is a structural axis rather than a content axis.",
+      "decoder_paths": "Palette allocation and lookup table construction, the biClrUsed-versus-depth-maximum selection branch, and the index bounds check performed on every pixel at 1/2/4/8 bpp.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "also_covers": [
+        "RGBQUAD.rgbBlue",
+        "RGBQUAD.rgbGreen",
+        "RGBQUAD.rgbRed",
+        "RGBQUAD.rgbReserved"
+      ],
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPFILEHEADER.bfOffBits",
+        "BITMAPLINE.colorIndex",
+        "BITMAPLINE.imageData"
+      ],
+      "how_varied": "Compute the entry count from biBitCount and the freely drawn biClrUsed, then emit that many 4-byte RGBQUAD records. Cover: the full depth maximum, a small palette (1, 2, 4 entries), and - as a malformed class - a count above the depth maximum. Emit no colour table at all at 24 and 32 bpp, per the guard at line 93.",
+      "diversity_budget": "Colour-table output_budget 1024 bytes (256 RGBQUAD entries), which equals the format's own ceiling at 8 bpp and so can never bind; the palette is bounded by biBitCount and biClrUsed, never by a generator cap on either field.",
+      "notes": "The count is derived; the bytes inside it are free, which is what the RGBQUAD colour-byte axes below cover."
+    },
+    {
+      "field": "RGBQUAD.rgbBlue",
+      "name": "palette_colour_bytes",
+      "tier": "C",
+      "why": "The template reads palette bytes verbatim and never constrains them, so the actual colours are pure free entropy inside a derived-length structure. Greyscale ramps, all-zero, all-0xFF, duplicate entries and high-entropy entries each stress palette lookup and colour conversion differently, and duplicates additionally test whether a decoder de-duplicates or indexes positionally.",
+      "decoder_paths": "Palette-to-RGB conversion, colour-management and gamma paths triggered by particular triples, and the index-to-entry lookup that every indexed pixel goes through.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "also_covers": [
+        "RGBQUAD.rgbGreen",
+        "RGBQUAD.rgbRed"
+      ],
+      "interacts_with": [
+        "GLOBAL.aColors",
+        "BITMAPLINE.colorIndex",
+        "BITMAPLINE.imageData"
+      ],
+      "how_varied": "Draw each of the three colour bytes independently and uniformly over 0-255, with no correlation between entries. Additionally seed a few structured palettes into the corpus (identity ramp, all-zero, all-0xFF, two duplicate entries) so both random and degenerate lookups appear.",
+      "notes": "Tier C: three unconstrained bytes per entry, repeated paletteEntries times. No range may be recorded because the full byte range is already legal."
+    },
+    {
+      "field": "RGBQUAD.rgbReserved",
+      "name": "palette_reserved_byte",
+      "tier": "C",
+      "why": "The fourth byte of every RGBQUAD is reserved by the specification and never read by the template, so it is free entropy that costs nothing to vary. It is a direct probe of whether a decoder wrongly validates reserved bytes, and of how much of a file a consumer actually inspects.",
+      "decoder_paths": "None in conforming decoders; a non-zero value only matters to loaders that mistakenly treat the byte as alpha.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "GLOBAL.aColors"
+      ],
+      "how_varied": "Draw freely over 0-255 per entry. Emit 0 in most files, since that is what real writers produce, but include a share of non-zero values so alpha-confusing decoders are exercised.",
+      "notes": "Tier C. Distinct from RGBQUAD at 32 bpp, where the same byte position is a real alpha channel inside BITMAPLINE.colors."
+    },
+    {
+      "field": "RGBTRIPLE.rgbBlue",
+      "name": "direct_colour_pixel_bytes",
+      "tier": "C",
+      "why": "At 24 bpp each pixel is one RGBTRIPLE (line 129), so these three bytes are the whole image content and are entirely free. This is where per-pixel coverage comes from for the most common depth: solid fills, gradients, checkerboards and high-entropy noise each drive different conversion and dithering paths.",
+      "decoder_paths": "The 3-byte-per-pixel row copy, BGR-to-RGB channel reordering, and any colour conversion or dithering applied when the display depth is lower.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "also_covers": [
+        "RGBTRIPLE.rgbGreen",
+        "RGBTRIPLE.rgbRed"
+      ],
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPLINE.colors",
+        "BITMAPLINE.padBytes"
+      ],
+      "how_varied": "Draw each channel byte independently and uniformly over 0-255 for every pixel of every row, with no correlation between neighbouring pixels. Seed a few structured images into the corpus (all-zero, all-0xFF, horizontal gradient, single-channel noise) so both random and degenerate pixel data appear.",
+      "notes": "Tier C. RGBTRIPLE is the 3-byte record; the 4-byte RGBQUAD variant at 32 bpp is covered by BITMAPLINE.colors."
+    },
+    {
+      "field": "BITMAPLINE.imageData",
+      "name": "sub_byte_pixel_packing",
+      "tier": "A",
+      "why": "At depths below 8 the row is a packed byte array (line 125) whose bits are MSB-first palette indices, so the content is free but its interpretation is a real encoding rule. This axis drives the bit-extraction loop, the handling of indices that fall outside a short palette, and the interaction between the last partial byte of a row and the mandatory padding.",
+      "decoder_paths": "MSB-first bit extraction at 1, 2 and 4 bpp, the shift/mask sequence per pixel, the end-of-row partial-byte case, and the palette bounds check on every extracted index.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPLINE.padBytes",
+        "GLOBAL.aColors"
+      ],
+      "how_varied": "Fill rowBytes bytes with uniformly random content, then additionally seed structured rows into the corpus: all indices 0, all indices at the palette maximum, an index ramp that wraps, and rows whose final partial byte is non-zero so the padding boundary is exercised. Also include a share of out-of-range indices as a malformed class.",
+      "notes": "Recorded as a payload_wellformedness constraint because the bytes are free but their packing is not: the generator must pack MSB-first and must not let biWidth disagree with rowBytes."
+    },
+    {
+      "field": "BITMAPLINE.colorIndex",
+      "name": "index_per_byte_pixels",
+      "tier": "A",
+      "why": "At 8 bpp the row is one palette index per byte across biWidth bytes (line 127), so the content is free while the count and the index-to-palette relationship are not. This is the most common indexed depth and the one both RLE codecs target, so its content axis matters for coverage of palette lookup.",
+      "decoder_paths": "The one-byte-per-pixel row copy, palette lookup per pixel, and the index bounds check against the palette entry count.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biClrUsed",
+        "GLOBAL.aColors",
+        "BITMAPLINE.padBytes"
+      ],
+      "how_varied": "Emit exactly biWidth bytes per row, drawn uniformly over 0-255. Seed structured rows as well (all 0, all 255, an ascending ramp, runs of a single index) so both random and RLE-like content appear, plus a share of indices above the palette size as a malformed class.",
+      "notes": "The array length is derived from biWidth and is not itself an axis; only the byte values are free."
+    },
+    {
+      "field": "BITMAPLINE.colors",
+      "name": "direct_colour_pixel_records",
+      "tier": "A",
+      "why": "At 24 and 32 bpp the row is an array of biWidth RGBTRIPLE or RGBQUAD records (lines 129-131). The record count is derived from biWidth, but the choice of 3-byte versus 4-byte record and the bytes inside it are the whole image content, and a wrong record size desynchronises every offset after it.",
+      "decoder_paths": "The per-pixel record copy at 3 or 4 bytes, BGR versus BGRA channel ordering, and at 32 bpp the alpha-blending path that the fourth byte enables.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "also_covers": [
+        "RGBTRIPLE.rgbBlue",
+        "RGBTRIPLE.rgbGreen",
+        "RGBTRIPLE.rgbRed"
+      ],
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPLINE.padBytes"
+      ],
+      "how_varied": "Emit exactly biWidth records of the size the depth selects, with every channel byte drawn uniformly over 0-255. At 32 bpp vary the alpha byte across the full range too, including 0 and 255, so opaque and fully transparent pixels both appear. Seed structured images (solid, gradient, checkerboard) alongside random noise.",
+      "notes": "With BI_BITFIELDS the masks, not the depth alone, decide which bits are which channel; keep the emitted bytes consistent with the masks chosen."
+    },
+    {
+      "field": "BITMAPLINE.padBytes",
+      "name": "row_alignment_padding",
+      "tier": "A",
+      "why": "Every row is padded to a 4-byte boundary (lines 116-118, 134-135), and the padding count is derived from rowBytes while the padding bytes themselves are free. Flipping them between zero and non-zero is a cheap, high-value probe of whether a decoder actually skips the padding or consumes it as pixel data.",
+      "decoder_paths": "The row-advance step, the alignment skip, and the desynchronisation that follows if a decoder ignores padding.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPLINE.imageData",
+        "BITMAPLINE.colors",
+        "GLOBAL.lines"
+      ],
+      "how_varied": "Emit exactly padding bytes per row, where padding is 0 when rowBytes is already a multiple of 4. Draw the padding byte values freely over 0-255 rather than always zeroing them, so the corpus contains rows whose padding is non-zero and therefore detects any decoder that reads past rowBytes.",
+      "notes": "The count is a format rule, not an axis; only the byte values are free. Rows with padding == 0 must emit nothing at all."
+    },
+    {
+      "field": "GLOBAL.lines",
+      "name": "scanline_array",
+      "tier": "A",
+      "why": "The second repeating structure and the uncompressed pixel region itself: |biHeight| rows back to back with no framing (line 137). Its repetition count is the axis that most changes file size and shape, and the row order is a genuine decoder branch.",
+      "decoder_paths": "The row iteration loop, bottom-up versus top-down row addressing, the per-row stride computation, and the truncation check when fewer bytes remain than the declared row count requires.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPLINE.imageData",
+        "BITMAPLINE.padBytes"
+      ],
+      "how_varied": "Derive the row count from |biHeight| and emit exactly that many rows at a constant stride of rowBytes + padding. Vary the shape of the image freely - tall and thin, wide and short, square, single-row, single-column - and vary the sign of biHeight independently so both row orders appear. Never emit fewer rows than declared.",
+      "diversity_budget": "Pixel-data output_budget 4 MiB across the whole file, kept by redrawing the biWidth/biHeight pair until stride * |biHeight| fits; never by clamping the emitted dimensions and never by truncating the row array. 4 MiB still admits 4096x1024 at 8 bpp, 1024x4096, 2048x2048 and 640x480 at 24 bpp, so the budget does not bias the width, height, aspect-ratio or depth distribution.",
+      "notes": "Mutually exclusive with GLOBAL.rleData; exactly one of the two exists per file."
+    },
+    {
+      "field": "GLOBAL.rleData",
+      "name": "encoded_pixel_payload",
+      "tier": "A",
+      "why": "The only genuinely compressed or externally-encoded payload in the format, and the .bt says nothing about it beyond sizing a bare UBYTE array (lines 108 and 110). Its content is the highest-value axis in the whole specification: the generator chooses the runs, the deltas, the escape mix, where the terminator lands, or whether the region is an embedded JPEG or PNG at all.",
+      "decoder_paths": "The RLE8 and RLE4 state machines - encoded-mode pairs, escape 0x00 with sub-codes 0x00 (end of line), 0x01 (end of bitmap), 0x02 (delta) and 0x03 (absolute run), the odd-length absolute-run padding rule, and the row/column advance against the declared biWidth and biHeight. For BI_JPEG and BI_PNG the region is handed to a completely different decoder, with its own markers, chunks and CRCs.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biSizeImage",
+        "BITMAPFILEHEADER.bfSize",
+        "GLOBAL.aColors"
+      ],
+      "how_varied": "Build the payload from the declared biWidth, biHeight and biBitCount - never the reverse - and vary every aspect of it: long and short runs, single-pixel runs, every escape sub-code, deltas that move down and right, deltas that would leave the image bounds, absolute runs of odd and even length, terminators placed early or omitted, and streams that end without a terminator so the decoder must fall back on biSizeImage. For BI_JPEG and BI_PNG emit a real minimal embedded image, plus truncated and corrupt variants. Include a share of well-formed streams whose decoded size disagrees with the declared dimensions, which is the classic malformed-BMP class.",
+      "diversity_budget": "Shares the single 4 MiB pixel-data output_budget with GLOBAL.lines; the budget applies to the encoded byte count, which is then written into biSizeImage and included in bfSize.",
+      "notes": "Recorded as payload_wellformedness because the format defines a codec here that the template does not describe. The payload must be derived from the declared dimensions; adjusting biWidth or biHeight to match a payload the generator happened to produce inverts the dependency and destroys the axis."
+    },
+    {
+      "field": "BITMAPFILEHEADER.bfReserved1",
+      "name": "reserved_header_words",
+      "tier": "C",
+      "why": "Two 16-bit words the specification calls reserved and the template never reads, so they are unconstrained entropy that costs nothing to vary. They probe whether a decoder wrongly validates reserved fields and measure how much of a file a consumer actually inspects.",
+      "decoder_paths": "None in conforming decoders.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "also_covers": [
+        "BITMAPFILEHEADER.bfReserved2"
+      ],
+      "interacts_with": [],
+      "how_varied": "Draw each word freely over 0-65535. Emit 0 in most files, since that is what real writers produce, but include a share of non-zero values so any decoder that mistakenly checks them is caught.",
+      "notes": "Tier C. Distinct from RGBQUAD.rgbReserved, which is a per-entry reserved byte inside the colour table."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biXPelsPerMeter",
+      "name": "physical_resolution",
+      "tier": "C",
+      "why": "Purely advisory metadata that no structural check depends on, so it is a safe free axis. Real files carry 0, 2835 (72 dpi) or 3780 (96 dpi); negative, zero and absurd values test whether a decoder scales the image or ignores the field.",
+      "decoder_paths": "The physical-size reporting path and any DPI-based scaling a viewer applies; no pixel decoding depends on it.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "also_covers": [
+        "BITMAPINFOHEADER.biYPelsPerMeter"
+      ],
+      "interacts_with": [],
+      "how_varied": "Draw each LONG freely over its whole range, including negative values. Seed the common real-world values 0, 2835 and 3780 into the corpus so typical files appear, and vary the two fields independently so asymmetric resolutions occur.",
+      "notes": "Tier C: the format treats these as hints, so no generation range may be recorded."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biClrImportant",
+      "name": "important_colour_count",
+      "tier": "C",
+      "why": "An advisory count of how many palette entries actually matter, with a soft ceiling at the palette size and no structural effect. Spanning 0 (all colours important), small values and the full palette size exercises the code path where a decoder optimises for a partial palette or builds a reduced colour cube.",
+      "decoder_paths": "The palette-importance check and any partial-palette optimisation; conforming decoders otherwise ignore it.",
+      "must_remain_unconstrained": true,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biBitCount",
+        "GLOBAL.aColors"
+      ],
+      "how_varied": "Draw freely over the DWORD range: 0 in most files, then values up to the palette entry count, plus a share of values above it as a malformed class. At 24/32 bpp emit 0.",
+      "notes": "Tier C. Its soft ceiling is recorded as a dependency, not as a generation range on this field."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biSize",
+      "name": "info_header_size",
+      "tier": "A",
+      "why": "Listed as a protection note: the value is pinned to 40 because this template declares exactly one 40-byte BITMAPINFOHEADER, and it also determines where the next region starts. The rewrite step must not treat it as a diversity axis, but it should know that other legal values (12, 52, 56, 108, 124) select header variants this template does not model.",
+      "decoder_paths": "The header-variant dispatch that real decoders perform on this field, and the offset computation for everything after the header.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [
+        "BITMAPFILEHEADER.bfOffBits",
+        "BITMAPINFOHEADER.biCompression"
+      ],
+      "how_varied": "Never: emit 40 in every file this generator produces. If a header variant is ever wanted it must come with the extra fields that variant defines, which is outside this template's scope.",
+      "notes": "Tier A fixed_value with calculated_value metadata attached, since the field is simultaneously a literal and the byte count of the structure it sizes."
+    },
+    {
+      "field": "BITMAPINFOHEADER.biPlanes",
+      "name": "colour_plane_count",
+      "tier": "A",
+      "why": "Another protection note: the specification requires exactly 1 and at least one widely used decoder aborts with 'invalid planes' on any other value. Pinning it costs zero diversity, since no decoder branches usefully on a second plane, so the rewrite step must not vary it.",
+      "decoder_paths": "The plane-count validation check that some decoders perform before touching pixel data; nothing else reads the field.",
+      "must_remain_unconstrained": false,
+      "must_emit_full_legal_set": false,
+      "interacts_with": [],
+      "how_varied": "Never: emit 1 (bytes 01 00) in every file.",
+      "notes": "Close call between Tier A and Tier C, resolved as Tier A because the format rule is unconditional and the field is unread by the template; the reasoning is recorded on the constraint entry."
+    }
+  ]
+}

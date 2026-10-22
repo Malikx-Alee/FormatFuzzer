@@ -1,0 +1,2639 @@
+{
+  "meta": {
+    "format": "avi",
+    "source_template": "templates_originals/avi-orig.bt",
+    "model": "qwen3.8-max",
+    "strategy": "tiered",
+    "spec_reference": "Microsoft 'AVI RIFF File Reference' (Audio-Video Interleaved, MSDN/DirectX SDK, 1994-1997 revisions); RIFF chunk framing per 'Multimedia Programming Interface and Data Specifications v1.0' (Microsoft/IBM, August 1990); 'OpenDML AVI Extensions for Large Files v1.02' (Matrox, April 1997); BITMAPINFOHEADER/RGBQUAD and WAVEFORMATEX field definitions per the Win32 SDK headers (wingdi.h, mmsystem.h, mmreg.h); decoder-gate behaviour cross-checked against the conventions of FFmpeg libavformat/avi.c, libavcodec/bmp.c, libavcodec/rawdec.c and libavcodec/mjpegdec.c",
+    "schema_extensions": [
+      {
+        "name": "template_line",
+        "where": "any entry in constraints whose source is spec",
+        "why": "the schema requires evidence to be {note: ...} for spec-sourced entries, but the rewrite step still needs to know which .bt line declares the field; template_line carries that integer without bending the evidence key"
+      },
+      {
+        "name": "valid_values / value_names / preferred_value on pattern_constraint entries",
+        "where": "constraints entries for the RIFF FOURCC identifier fields (AVIStreamHeader.fccHandler, genericblock.id, AVIINDEXENTRY.ckid)",
+        "why": "a FOURCC field's legal set is defined by a shape (two ASCII digits plus a two-letter AVI code, or a registered codec tag) rather than by a closed list; supplying the regex together with concrete high-value examples keeps the entry Tier B-complete without pretending the codec registry is closed"
+      },
+      {
+        "name": "template_imposed",
+        "where": "structure[*] and dependencies[*]",
+        "why": "marks rules the .bt's fixed parse order enforces but the AVI spec does not (a mandatory 'strn' after 'strf', a flat movi with no nested LIST, top-level ids restricted to LIST/JUNK/idx1), so the rewrite step does not emit spec-legal files this template cannot walk"
+      }
+    ],
+    "structure_note": "AVI is a RIFF form: a 12-byte head ('RIFF' + little-endian size + 'AVI ') followed by a flat sequence of length-prefixed chunks, canonically LIST 'hdrl' (an 'avih' MainAVIHeader, then one LIST 'strl' per stream carrying 'strh'/'strf'/'strn'), LIST 'movi' (the media samples as '##dc'/'##db'/'##wb' chunks), an optional trailing 'idx1' index, and 'JUNK' padding permitted anywhere; the format's only compressed or encoded payloads are the media samples inside the movi chunks, whose codec is named by BITMAPINFOHEADER.biCompression / AVIStreamHeader.fccHandler for video and by WAVEFORMATEX.wFormatTag for audio, so payload well-formedness is a pure function of those identifiers and of the free dimensions they are derived from.",
+    "tier_counts": {
+      "A": 34,
+      "B": 12,
+      "C": 40
+    }
+  },
+  "constraints": {
+    "WAVEFORMATEX.wFormatTag": {
+      "tier": "B",
+      "tier_rationale": "Audio codec identifier: a tag with no registered decoder leaves codec_id as AV_CODEC_ID_NONE so the audio samples in movi are never decoded, but every registered tag is legal and each one selects a different decoder, so the whole registry must stay reachable.",
+      "type": "enumerated_values",
+      "description": "WAVE_FORMAT tag naming the audio codec described by this WAVEFORMATEX block; valid values are the tags registered in Microsoft's mmreg.h.",
+      "field_type": "WORD",
+      "source": "spec",
+      "evidence": {
+        "note": "wFormatTag selects the audio codec; the legal set is the WAVE_FORMAT_* registry in mmreg.h plus vendor tags. The template declares the field but never compares it, reading a fixed 18-byte WAVEFORMATEX instead (line 145)."
+      },
+      "confidence": "high",
+      "template_line": 20,
+      "endianness": "little",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        32,
+        34,
+        49,
+        64,
+        80,
+        85,
+        112,
+        146,
+        172,
+        255,
+        256,
+        352,
+        353,
+        354,
+        8192,
+        8193,
+        65534,
+        65535
+      ],
+      "value_names": [
+        "WAVE_FORMAT_UNKNOWN",
+        "WAVE_FORMAT_PCM",
+        "WAVE_FORMAT_ADPCM",
+        "WAVE_FORMAT_IEEE_FLOAT",
+        "WAVE_FORMAT_VSELP",
+        "WAVE_FORMAT_IBM_CVSD",
+        "WAVE_FORMAT_ALAW",
+        "WAVE_FORMAT_MULAW",
+        "WAVE_FORMAT_OKI_ADPCM",
+        "WAVE_FORMAT_DVI_ADPCM (IMA ADPCM)",
+        "WAVE_FORMAT_MEDIASPACE_ADPCM",
+        "WAVE_FORMAT_SIERRA_ADPCM",
+        "WAVE_FORMAT_G723_ADPCM",
+        "WAVE_FORMAT_DIGISTD",
+        "WAVE_FORMAT_DIGIFIX",
+        "WAVE_FORMAT_YAMAHA_ADPCM",
+        "WAVE_FORMAT_DSPGROUP_TRUESPEECH",
+        "WAVE_FORMAT_GSM610",
+        "WAVE_FORMAT_MPEG (0x0040)",
+        "WAVE_FORMAT_MPEG (0x0050)",
+        "WAVE_FORMAT_MPEGLAYER3 (MP3 in AVI)",
+        "WAVE_FORMAT_MSAUDIO1",
+        "WAVE_FORMAT_DOLBY_AC3_SPDIF",
+        "WAVE_FORMAT_MPEG_HEAAC (0x00AC)",
+        "WAVE_FORMAT_MPEG_ADTS_AAC",
+        "WAVE_FORMAT_MPEG_RAW_AAC",
+        "WAVE_FORMAT_WMAUDIO2",
+        "WAVE_FORMAT_WMAUDIO3",
+        "WAVE_FORMAT_WMAUDIO_LOSSLESS",
+        "WAVE_FORMAT_DVM / AC3 in AVI (0x2000)",
+        "WAVE_FORMAT_DTS (0x2001)",
+        "WAVE_FORMAT_EXTENSIBLE",
+        "WAVE_FORMAT_DEVELOPMENT"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "wFormatTag is an open registry (mmreg.h plus vendor-allocated tags); the list covers every Microsoft-registered tag that actually appears in AVI files, including the awkward ones (UNKNOWN, DEVELOPMENT, EXTENSIBLE, the DVM/DTS passthrough tags) rather than only the decodable ones.",
+      "preferred_value": [
+        1,
+        3,
+        17
+      ],
+      "notes": "Depth ranking for a generator that must also emit the sample payload: 1 (PCM) and 3 (IEEE float) need no codec configuration at all and are always decoded; 17 (IMA/DVI ADPCM) and 85 (MP3) reach much deeper into the audio decoders but require the movi samples to be real ADPCM/MP3 frames. Emit the whole list; prefer 1 and 3 when the sample bytes are synthetic."
+    },
+    "WAVEFORMATEX.nChannels": {
+      "tier": "C",
+      "tier_rationale": "Channel count drives buffer layout, the interleave/de-interleave code and the channel-map branches of every audio decoder and resampler; capping it to mono or stereo would delete exactly those branches and cost diversity for no depth.",
+      "type": "unconstrained",
+      "description": "Number of audio channels in the stream; any value is accepted and re-derived by the decoder.",
+      "field_type": "WORD",
+      "source": "template",
+      "evidence": {
+        "line": 21,
+        "snippet": "WORD  nChannels;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "nBlockAlign and nAvgBytesPerSec are derived FROM this field (nBlockAlign = nChannels * bytes-per-sample for PCM); derive those, never narrow this one."
+    },
+    "WAVEFORMATEX.nSamplesPerSec": {
+      "tier": "C",
+      "tier_rationale": "Sample rate selects the resampler path, the frame-duration arithmetic and the codec's block-size tables; it is a pure rate with no gate behind it, and narrowing it would make every generated file exercise the same timing branch.",
+      "type": "unconstrained",
+      "description": "Audio sampling rate in samples per second.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 22,
+        "snippet": "DWORD nSamplesPerSec;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A zero rate makes duration arithmetic degenerate; decoders guard the division, so it yields a shallower but not a refused parse. Left free."
+    },
+    "WAVEFORMATEX.nAvgBytesPerSec": {
+      "tier": "A",
+      "tier_rationale": "Splitters and muxers validate the format block against this byte rate when sizing their streaming buffer and computing stream duration; a value inconsistent with nSamplesPerSec * nBlockAlign makes DirectShow / Media-Foundation based readers reject or mis-time the stream before any sample is delivered.",
+      "type": "calculated_value",
+      "description": "Nominal byte rate of the audio stream.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "For WAVE_FORMAT_PCM and WAVE_FORMAT_IEEE_FLOAT the WAVEFORMATEX contract is nAvgBytesPerSec = nSamplesPerSec * nBlockAlign; for block-compressed codecs it is the encoder's nominal output rate."
+      },
+      "confidence": "medium",
+      "template_line": 23,
+      "endianness": "little",
+      "algorithm": "byte rate: nSamplesPerSec * nBlockAlign for uncompressed formats, codec nominal rate otherwise",
+      "covers": "no byte range in the file; it is a rate, not a length, but it is a derived quantity that must agree with nSamplesPerSec and nBlockAlign",
+      "includes_self": false,
+      "depends_on": [
+        "WAVEFORMATEX.nSamplesPerSec",
+        "WAVEFORMATEX.nBlockAlign",
+        "WAVEFORMATEX.wFormatTag"
+      ],
+      "notes": "Derived, therefore diversity-neutral: nSamplesPerSec and nChannels stay free and this field follows them."
+    },
+    "WAVEFORMATEX.nBlockAlign": {
+      "tier": "A",
+      "tier_rationale": "FFmpeg's AVI demuxer takes the stream's sample_size from block_align and splits every audio chunk into exactly nBlockAlign-byte packets before decoding; a value that disagrees with the format hands the audio decoder mis-framed packets and it fails on the very first sample.",
+      "type": "calculated_value",
+      "description": "Byte size of one atomic audio sample block (all channels, one sample instant for PCM).",
+      "field_type": "WORD",
+      "source": "spec",
+      "evidence": {
+        "note": "WAVEFORMATEX contract: nBlockAlign = nChannels * (wBitsPerSample / 8) for PCM and IEEE float; for block-compressed codecs it is the codec's block size (IMA ADPCM: nChannels * 2, GSM610: nChannels * 65, MP3: the frame size)."
+      },
+      "confidence": "high",
+      "template_line": 24,
+      "endianness": "little",
+      "algorithm": "block size in bytes: nChannels * ceil(wBitsPerSample / 8) for PCM/float, codec block size for compressed formats",
+      "covers": "no byte range in the file; it is the packet-splitting granularity the demuxer applies to every audio chunk in movi",
+      "includes_self": false,
+      "depends_on": [
+        "WAVEFORMATEX.nChannels",
+        "WAVEFORMATEX.wBitsPerSample",
+        "WAVEFORMATEX.wFormatTag"
+      ],
+      "notes": "AVIStreamHeader.dwSampleSize is normally this same number for audio and 0 for video; derive both from nChannels/wBitsPerSample rather than restricting either."
+    },
+    "WAVEFORMATEX.wBitsPerSample": {
+      "tier": "B",
+      "tier_rationale": "Sample width selects the PCM unpacking routine, the shift/scale code and the float-versus-integer path; only a handful of widths are legal and each is a separate branch, so the full set must be emitted even though 8 and 16 decode most reliably.",
+      "type": "enumerated_values",
+      "description": "Bits per sample per channel; the legal widths are those defined for the WAVE_FORMAT tags.",
+      "field_type": "WORD",
+      "source": "spec",
+      "evidence": {
+        "note": "PCM accepts 8/16/24/32; IEEE float accepts 32/64; IMA/DVI ADPCM and Microsoft ADPCM use 4; GSM610 uses 0 or 12; compressed formats that carry their own configuration leave it 0."
+      },
+      "confidence": "high",
+      "template_line": 25,
+      "endianness": "little",
+      "valid_values": [
+        0,
+        4,
+        8,
+        12,
+        16,
+        20,
+        24,
+        32,
+        64
+      ],
+      "value_names": [
+        "0 = unspecified (compressed formats)",
+        "4 = ADPCM nibble width",
+        "8 = PCM u8",
+        "12 = GSM610 nominal",
+        "16 = PCM s16",
+        "20 = packed 20-bit",
+        "24 = PCM s24 / packed 24-bit",
+        "32 = PCM s32 or IEEE float32",
+        "64 = IEEE float64"
+      ],
+      "completeness": "exhaustive",
+      "completeness_reason": "these are every sample width defined by the WAVEFORMATEX/mmreg contract; any other value leaves the decoder unable to size a sample, and no width has been dropped for being awkward (0, 4, 12, 20 and 64 are all retained).",
+      "preferred_value": [
+        8,
+        16,
+        32
+      ],
+      "notes": "The legal subset narrows with wFormatTag (see dependencies): PCM takes 8/16/24/32, IEEE float takes 32/64, ADPCM takes 4. That narrowing is a format rule, not a diversity cut."
+    },
+    "WAVEFORMATEX.cbSize": {
+      "tier": "A",
+      "tier_rationale": "FFmpeg's ff_get_wav_header reads exactly cbSize further bytes and fails with 'invalid WAV format' when the strf chunk is shorter; the template mirrors that arithmetic with exData[datalen - 18], so a cbSize that disagrees with datalen either kills the stream or desynchronises the chunk walk.",
+      "type": "calculated_value",
+      "description": "Byte count of the codec-specific extension data that follows the 18-byte WAVEFORMATEX core.",
+      "field_type": "WORD",
+      "source": "both",
+      "evidence": {
+        "line": 146,
+        "snippet": "char exData[datalen - 18];"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: cbSize = strfHEADER_WAVE.datalen - 18 (0 for PCM/float/A-law/mu-law, 22 for WAVE_FORMAT_EXTENSIBLE, 12 for MPEGLAYER3WAVEFORMAT, 32 for ADPCM with coefficient sets)",
+      "covers": "the cbSize bytes of strfHEADER_WAVE.exData that follow the 18-byte WAVEFORMATEX",
+      "includes_self": false,
+      "depends_on": [
+        "strfHEADER_WAVE.datalen",
+        "WAVEFORMATEX.wFormatTag"
+      ],
+      "notes": "Because the template always consumes 18 bytes of WAVEFORMATEX and then datalen-18 bytes of exData, the pair (datalen, cbSize) must be emitted together; the simplest always-valid choice is cbSize = 0 with datalen = 18 or 20 (the 2-byte pad is traditional)."
+    },
+    "MainAVIHeader.dwMicroSecPerFrame": {
+      "tier": "C",
+      "tier_rationale": "Frame duration drives the timestamp arithmetic, the frame-rate reduction path and the A/V sync branches in the demuxer; nothing refuses a file over it, and pinning it would make every generated file follow one timing path.",
+      "type": "unconstrained",
+      "description": "Nominal microseconds per video frame; the classic AVI frame-rate field.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 32,
+        "snippet": "DWORD  dwMicroSecPerFrame;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A zero value is legal-looking and makes duration math degenerate; decoders guard the division and fall back to dwRate/dwScale, which is itself a distinct code path worth reaching."
+    },
+    "MainAVIHeader.dwMaxBytesPerSec": {
+      "tier": "C",
+      "tier_rationale": "Peak bandwidth hint only; decoders read it for statistics and never gate on it, so any value is free diversity.",
+      "type": "unconstrained",
+      "description": "Maximum instantaneous byte rate of the file, informational.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 33,
+        "snippet": "DWORD  dwMaxBytesPerSec;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "MainAVIHeader.dwReserved1": {
+      "tier": "C",
+      "tier_rationale": "Reserved field that no decoder in the AVI path validates (the spec says 'do not use'), so pinning it to 0 buys no depth at all while removing a free 32-bit diversity axis.",
+      "type": "unconstrained",
+      "description": "Reserved DWORD in MainAVIHeader; conventionally 0 but unchecked.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 34,
+        "snippet": "DWORD  dwReserved1;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Close call against Tier A: the AVI spec marks it reserved and 'must be zero', but the .bt never compares it and mainstream demuxers skip it, so per the reserved-field rule it stays Tier C."
+    },
+    "MainAVIHeader.dwFlags": {
+      "tier": "B",
+      "tier_rationale": "Flag word whose individual bits switch whole demuxer behaviours on and off (index use, interleaving, chunk-size trust); each bit is a separate branch and unlisted bits are simply ignored, so the complete flag set must be emitted rather than a safe subset.",
+      "type": "bitmask_constraint",
+      "description": "AVIF_* flags for the whole file.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference, MainAVIHeader dwFlags: AVIF_HASINDEX 0x00000010, AVIF_MUSTUSEINDEX 0x00000020, AVIF_ISINTERLEAVED 0x00000100, AVIF_TRUSTCKSIZE 0x00000800, AVIF_WASCAPTUREFILE 0x00010000, AVIF_COPYRIGHTED 0x00020000; all other bits are reserved and ignored."
+      },
+      "confidence": "high",
+      "template_line": 35,
+      "endianness": "little",
+      "valid_bits": 198960,
+      "valid_bits_hex": "0x00030930",
+      "valid_values": [
+        0,
+        16,
+        32,
+        48,
+        256,
+        272,
+        2048,
+        65536,
+        131072
+      ],
+      "value_names": [
+        "(no flags)",
+        "AVIF_HASINDEX 0x00000010",
+        "AVIF_MUSTUSEINDEX 0x00000020",
+        "AVIF_HASINDEX|AVIF_MUSTUSEINDEX 0x00000030",
+        "AVIF_ISINTERLEAVED 0x00000100",
+        "AVIF_HASINDEX|AVIF_ISINTERLEAVED 0x00000110 (the combination real files carry)",
+        "AVIF_TRUSTCKSIZE 0x00000800",
+        "AVIF_WASCAPTUREFILE 0x00010000",
+        "AVIF_COPYRIGHTED 0x00020000"
+      ],
+      "completeness": "exhaustive",
+      "completeness_reason": "the six atomic flags above are the complete defined set; every OR-subset of valid_bits (64 combinations including 0) is legal and no bit has been dropped.",
+      "preferred_value": [
+        272
+      ],
+      "notes": "0x110 = AVIF_HASINDEX|AVIF_ISINTERLEAVED is the combination real files carry and it opens both the idx1-loading path and the interleaved read path. Emit the others too: clearing AVIF_ISINTERLEAVED switches FFmpeg into its non_interleaved chunk-reordering loop, and setting AVIF_MUSTUSEINDEX forces the index-driven read path even when interleaving is fine - each is a different function body."
+    },
+    "MainAVIHeader.dwTotalFrames": {
+      "tier": "C",
+      "tier_rationale": "Frame count used only for duration reporting; demuxers recount the real frames from the movi chunks, so a wrong value costs no depth while a pinned value would collapse a free count axis.",
+      "type": "unconstrained",
+      "description": "Total number of frames of data in the file.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 36,
+        "snippet": "DWORD  dwTotalFrames;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "If the generator wants a coherent file it derives this from the number of video chunks it emitted into movi; the derivation runs count -> header, never header -> count."
+    },
+    "MainAVIHeader.dwInitialFrames": {
+      "tier": "C",
+      "tier_rationale": "Interleave skew hint that no sequential decoder gates on; free.",
+      "type": "unconstrained",
+      "description": "Number of frames of interleaved data preceding the initial frames of the stream (0 for non-interleaved files).",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 37,
+        "snippet": "DWORD  dwInitialFrames;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "MainAVIHeader.dwStreams": {
+      "tier": "C",
+      "tier_rationale": "Stream count that demuxers ignore in favour of counting LIST 'strl' chunks; pinning it to 1 would forbid multi-stream files, which are a large share of the demuxer's per-stream branches.",
+      "type": "unconstrained",
+      "description": "Number of streams in the file.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 38,
+        "snippet": "DWORD  dwStreams;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A coherent file carries the number of LIST 'strl' chunks here; the stream count is itself one of the strongest structural diversity axes in AVI (video-only, audio-only, video+audio, video+audio+text)."
+    },
+    "MainAVIHeader.dwSuggestedBufferSize": {
+      "tier": "C",
+      "tier_rationale": "Buffer-sizing hint only; a wrong value never stops a decoder, and it is one of the few places a file can differ in magnitude without changing structure.",
+      "type": "unconstrained",
+      "description": "Suggested player buffer size in bytes, normally the largest chunk in the file.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 39,
+        "snippet": "DWORD  dwSuggestedBufferSize;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "MainAVIHeader.dwWidth": {
+      "tier": "C",
+      "tier_rationale": "Display width; decoders take the authoritative geometry from BITMAPINFOHEADER.biWidth and use this only as a fallback, so constraining it would shrink the frame-size space for zero depth.",
+      "type": "unconstrained",
+      "description": "Width of the AVI video in pixels.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 40,
+        "snippet": "DWORD  dwWidth;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A value that disagrees with biWidth is itself a divergence branch in decoders that reconcile the two - a further reason to leave it free rather than force agreement."
+    },
+    "MainAVIHeader.dwHeight": {
+      "tier": "C",
+      "tier_rationale": "Display height; same reasoning as dwWidth - the authoritative geometry is biWidth/biHeight and this field is a hint, so it must not be capped.",
+      "type": "unconstrained",
+      "description": "Height of the AVI video in pixels.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 41,
+        "snippet": "DWORD  dwHeight;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "MainAVIHeader.dwScale": {
+      "tier": "C",
+      "tier_rationale": "Time-scale unit; only the dwRate/dwScale ratio matters to a decoder and decoders guard the zero divisor, so any pair is free and together they are the timing diversity axis.",
+      "type": "unconstrained",
+      "description": "Time unit of the file clock: dwRate/dwScale gives frames per second.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 42,
+        "snippet": "DWORD  dwScale;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Extremes (very small scale, very large rate) exercise the fraction-reduction and overflow-guard paths inside the timestamp code."
+    },
+    "MainAVIHeader.dwRate": {
+      "tier": "C",
+      "tier_rationale": "Numerator of the file clock; paired with dwScale it decides the frame rate and therefore which timestamp and duration branches run. Free.",
+      "type": "unconstrained",
+      "description": "Number of dwScale units per second.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 43,
+        "snippet": "DWORD  dwRate;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "MainAVIHeader.dwStart": {
+      "tier": "C",
+      "tier_rationale": "Start time offset; shifts every timestamp and therefore the seek and first-frame branches without gating anything. Free.",
+      "type": "unconstrained",
+      "description": "Start time of the AVI file in dwScale units.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 44,
+        "snippet": "DWORD  dwStart;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "MainAVIHeader.dwLength": {
+      "tier": "C",
+      "tier_rationale": "Duration in dwScale units, used for the duration and nb_frames estimate only; it is a count that must stay free, and capping it is exactly the GIF-style mistake.",
+      "type": "unconstrained",
+      "description": "Length of the file in dwScale units.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 45,
+        "snippet": "DWORD  dwLength;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Total file size is bounded by output_budget on the movi LIST in the structure section, never by narrowing this field."
+    },
+    "BITMAPINFOHEADER.biSize": {
+      "tier": "A",
+      "tier_rationale": "FFmpeg's ff_get_bmp_header rejects the stream outright when this size is below 12 ('invalid BMP header size') and treats biSize - 40 as extra header data, so any other value either aborts the header read or makes the demuxer consume the palette as extension bytes - no video stream is ever created.",
+      "type": "fixed_value",
+      "description": "Size in bytes of the bitmap information header structure; 40 for the BITMAPINFOHEADER this template declares.",
+      "field_type": "uint32",
+      "source": "spec",
+      "evidence": {
+        "note": "BITMAPINFOHEADER is defined by wingdi.h as a 40-byte structure (BITMAPINFOHEADER biSize = 40); BITMAPV4HEADER (108) and BITMAPV5HEADER (124) are the only larger legal variants and they change every offset that follows."
+      },
+      "confidence": "high",
+      "template_line": 50,
+      "endianness": "little",
+      "required_value": 40,
+      "required_value_hex": "0x00000028",
+      "notes": "The template always reads exactly the 40 bytes of its BITMAPINFOHEADER typedef (line 128), so 40 is also the only value that keeps strfHEADER_BIH.datalen arithmetic consistent."
+    },
+    "BITMAPINFOHEADER.biWidth": {
+      "tier": "C",
+      "tier_rationale": "Frame width sets the row stride, the DIB padding arithmetic, the codec's macroblock-alignment path and the scaler's inner loops; a wrong value never stops a decoder, so this is pure diversity and must never be given a range.",
+      "type": "unconstrained",
+      "description": "Width of the video frame in pixels.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 51,
+        "snippet": "uint32 biWidth;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "The sample payload, biSizeImage, genericblock.datalen, AVIStreamHeader.dwSuggestedBufferSize and the idx1 chunk lengths are all DERIVED from this value. That is the whole point: derive the payload from the dimension, never shrink the dimension to suit a precomputed payload."
+    },
+    "BITMAPINFOHEADER.biHeight": {
+      "tier": "C",
+      "tier_rationale": "Frame height, and its sign additionally selects the bottom-up versus top-down DIB path in every raw-video decoder; both the magnitude and the sign are decoder branches, so neither may be capped.",
+      "type": "unconstrained",
+      "description": "Height of the video frame in pixels; positive means the rows are stored bottom-up, negative means top-down.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 52,
+        "snippet": "uint32 biHeight;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Declared uint32 in the .bt but read as a signed int32 by every real decoder; a value with the top bit set is a legal top-down DIB. Free means free: both signs and all magnitudes."
+    },
+    "BITMAPINFOHEADER.biPlanes": {
+      "tier": "A",
+      "tier_rationale": "Every published definition of BITMAPINFOHEADER fixes the plane count to 1, and GDI/VFW-based decompressors and the DirectShow video renderer refuse to instantiate a stream whose format block declares any other plane count, so no pixel is ever produced.",
+      "type": "fixed_value",
+      "description": "Number of colour planes; always 1 in a DIB.",
+      "field_type": "uint16",
+      "source": "spec",
+      "evidence": {
+        "note": "wingdi.h / MSDN BITMAPINFOHEADER: 'biPlanes - The number of planes for the target device. This value must be set to 1.'"
+      },
+      "confidence": "medium",
+      "template_line": 53,
+      "endianness": "little",
+      "required_value": 1,
+      "required_value_hex": "0x0001",
+      "notes": "Close call against Tier B: FFmpeg's ff_get_bmp_header reads and discards this field, so an FFmpeg-only harness would tolerate anything. Judged Tier A because the field has exactly one legal value in the specification - there is no set to enumerate - and other conforming decoders do check it."
+    },
+    "BITMAPINFOHEADER.biBitCount": {
+      "tier": "B",
+      "tier_rationale": "Bits per pixel selects the pixel format, the palette-versus-direct-colour path and the raw decoder's unpacking routine; each legal depth is a distinct branch and the awkward ones (1, 2, 4, 0) are exactly where decoder bugs live, so none may be dropped.",
+      "type": "enumerated_values",
+      "description": "Number of bits per pixel used to define the colour of each pixel.",
+      "field_type": "uint16",
+      "source": "spec",
+      "evidence": {
+        "note": "MSDN BITMAPINFOHEADER biBitCount: must be 1, 4, 8, 16, 24 or 32 for uncompressed BI_RGB data; 16 or 32 for BI_BITFIELDS; 8 for BI_RLE8; 4 for BI_RLE4; any value for BI_JPEG/BI_PNG; 0 is legal in AVI for codecs that carry the depth in their own configuration."
+      },
+      "confidence": "high",
+      "template_line": 54,
+      "endianness": "little",
+      "valid_values": [
+        0,
+        1,
+        2,
+        4,
+        8,
+        16,
+        24,
+        32
+      ],
+      "value_names": [
+        "0 = unspecified (codec-specific)",
+        "1 = monochrome, 2-entry palette",
+        "2 = 4-colour (legacy CGA-derived)",
+        "4 = 16-colour, RLE4 capable",
+        "8 = 256-colour palettised",
+        "16 = 5-5-5 or 5-6-5 RGB",
+        "24 = 8-8-8 BGR",
+        "32 = 8-8-8-8 BGRA"
+      ],
+      "completeness": "exhaustive",
+      "completeness_reason": "these are every bit depth defined by the BITMAPINFOHEADER contract, including the rare 2 and the AVI-specific 0; no depth has been omitted because it decodes badly.",
+      "preferred_value": [
+        24,
+        8,
+        32,
+        16
+      ],
+      "notes": "8/4/1/2 require a palette inside strfHEADER_BIH (see dependencies) and take the PAL8 expansion path in the decoder; 16 and 32 take the bitmask path. 24 is the safest raw format. Whatever the depth, the frame bytes must be derived from it, not the other way round."
+    },
+    "BITMAPINFOHEADER.biCompression": {
+      "tier": "B",
+      "tier_rationale": "This fourcc is what actually selects the video decoder: BI_RGB opens the raw path, MJPG opens the MJPEG parser, a codec fourcc opens that codec, and an unknown tag means no decoder is opened at all and the movi samples are never touched - but every registered tag is legal and each reaches different code.",
+      "type": "enumerated_values",
+      "description": "Compression identifier for the video stream: one of the BI_* constants or a codec FOURCC.",
+      "field_type": "uint32",
+      "source": "spec",
+      "evidence": {
+        "note": "MSDN BITMAPINFOHEADER biCompression: BI_RGB 0, BI_RLE8 1, BI_RLE4 2, BI_BITFIELDS 3, BI_JPEG 4, BI_PNG 5, otherwise a FOURCC from the installed video-compressor registry (ICOpen / mmioFOURCC), e.g. 'MJPG', 'I420', 'YUY2', 'DIVX', 'H264'."
+      },
+      "confidence": "high",
+      "template_line": 55,
+      "endianness": "little",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        541215044,
+        541214546,
+        808596553,
+        1448433993,
+        842094169,
+        844715353,
+        1498831189,
+        1431918169,
+        1431914056,
+        1196444237,
+        1734701162,
+        1145656899,
+        1145656920,
+        1482049860,
+        808802372,
+        842289229,
+        859066445,
+        875967048,
+        859189832,
+        826496577,
+        1195724877,
+        808865878,
+        1397178700,
+        1096241734
+      ],
+      "value_names": [
+        "BI_RGB (uncompressed, 24/32/16 bpp)",
+        "BI_RLE8 (run-length, 8 bpp)",
+        "BI_RLE4 (run-length, 4 bpp)",
+        "BI_BITFIELDS (raw with 3 colour masks)",
+        "BI_JPEG (JPEG still/video)",
+        "BI_PNG (PNG still)",
+        "DIB  (uncompressed device-independent bitmap)",
+        "RGB  (uncompressed, legacy tag)",
+        "I420 (planar YUV 4:2:0)",
+        "IYUV (planar YUV 4:2:0, Microsoft spelling)",
+        "YV12 (planar YUV 4:2:0, YVU order)",
+        "YUY2 (packed YUV 4:2:2)",
+        "UYVY (packed YUV 4:2:2, U first)",
+        "YVYU (packed YUV 4:2:2, YVYU order)",
+        "HFYU (HuffYUV lossless)",
+        "MJPG (Motion JPEG)",
+        "jpeg (Motion JPEG, lowercase spelling used by some muxers)",
+        "CVID (Cinepak)",
+        "XVID (MPEG-4 ASP)",
+        "DIVX (MPEG-4 ASP)",
+        "DX50 (DivX 5, MPEG-4 ASP)",
+        "MP42 (Microsoft MPEG-4 v2)",
+        "MP43 (Microsoft MPEG-4 v3)",
+        "H264 (AVC in AVI)",
+        "H263 (ITU H.263)",
+        "AVC1 (AVC, Apple spelling)",
+        "MPEG (MPEG-1 video in AVI)",
+        "VP60 (On2 VP6)",
+        "LAGS (Lagarith lossless)",
+        "FRWA (Fraps)"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "biCompression is an open FOURCC registry: any codec installed through ICM/VFW/ACM is legal, so no list can be closed. The values given are the six BI_* constants (which are closed and complete) plus every codec tag a mainstream demuxer maps to a real decoder, including the rare and lossless ones.",
+      "preferred_value": [
+        0,
+        1196444237,
+        808596553
+      ],
+      "notes": "Depth guidance: BI_RGB (0) makes each frame plain pixels that the generator derives from biWidth/biHeight/biBitCount with zero codec risk and reaches rawvideo + swscale; 'MJPG' reaches the MJPEG marker scanner, IDCT and colour conversion when the movi payload is a real JPEG; 'I420'/'YUY2' reach the packed/planar YUV converters. The chosen value MUST agree with AVIStreamHeader.fccHandler and with the payload actually emitted (see genericblock.data)."
+    },
+    "BITMAPINFOHEADER.biSizeImage": {
+      "tier": "A",
+      "tier_rationale": "VFW / Media-Foundation decompressors size the output frame buffer from biSizeImage, and demuxers use it to validate a raw chunk's length; a value smaller than one uncompressed frame makes ICDecompress fail before a single pixel is written, so the pixel pipeline is never entered.",
+      "type": "calculated_value",
+      "description": "Byte size of one uncompressed image, or 0 for BI_RGB where the size is implicit.",
+      "field_type": "uint32",
+      "source": "spec",
+      "evidence": {
+        "note": "MSDN BITMAPINFOHEADER biSizeImage: the size, in bytes, of the image; it is permissible to set it to 0 when biCompression is BI_RGB. For compressed formats it is the size of the largest compressed frame."
+      },
+      "confidence": "medium",
+      "template_line": 56,
+      "endianness": "little",
+      "algorithm": "byte count: stride * abs(biHeight) where stride = ((biWidth * biBitCount + 31) / 32) * 4; 0 is also legal when biCompression == BI_RGB",
+      "covers": "no byte range in the header itself; it declares the size of every video sample the file will carry in movi",
+      "includes_self": false,
+      "depends_on": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biCompression"
+      ],
+      "notes": "FFmpeg's ff_get_bmp_header skips this field, so it is a weaker gate than biSize - hence confidence medium. It stays Tier A because it is a derived length: computing it from the free dimensions costs no diversity, while leaving it inconsistent with the emitted frames is what makes real decoders bail."
+    },
+    "BITMAPINFOHEADER.biXPelsPerMeter": {
+      "tier": "C",
+      "tier_rationale": "Horizontal resolution metadata; decoders copy it into stream metadata and never gate on it, so any value is free diversity.",
+      "type": "unconstrained",
+      "description": "Horizontal resolution in pixels per metre of the target device.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 57,
+        "snippet": "uint32 biXPelsPerMeter;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "BITMAPINFOHEADER.biYPelsPerMeter": {
+      "tier": "C",
+      "tier_rationale": "Vertical resolution metadata, ignored by every decoder path; free.",
+      "type": "unconstrained",
+      "description": "Vertical resolution in pixels per metre of the target device.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 58,
+        "snippet": "uint32 biYPelsPerMeter;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "BITMAPINFOHEADER.biClrUsed": {
+      "tier": "C",
+      "tier_rationale": "Palette entry count; it decides how many RGBQUADs follow in the strf chunk and therefore how the palette-expansion loop in the decoder runs, so it is a count that must stay free - and the palette is derived from it, never the reverse.",
+      "type": "unconstrained",
+      "description": "Number of palette entries actually used; 0 means 'use 2^biBitCount entries' when biBitCount <= 8.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 59,
+        "snippet": "uint32 biClrUsed;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A value larger than 2^biBitCount is a genuine divergence case for palette validation - another reason not to clamp it. strfHEADER_BIH.datalen and strfHEADER_BIH.exData are derived from this field."
+    },
+    "BITMAPINFOHEADER.biClrImportant": {
+      "tier": "C",
+      "tier_rationale": "Count of significant colours; 0 means 'all of them'. No decoder refuses a file over it, so it stays free.",
+      "type": "unconstrained",
+      "description": "Number of colour indices that are significant for displaying the bitmap; 0 means all are significant.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 60,
+        "snippet": "uint32 biClrImportant;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "RGBQUAD.rgbBlue": {
+      "tier": "C",
+      "tier_rationale": "Palette colour component; a wrong value changes pixels, never the parse, and free colour bytes are cheap diversity inside every palettised file.",
+      "type": "unconstrained",
+      "description": "Blue intensity of one palette entry.",
+      "field_type": "unsigned char",
+      "source": "template",
+      "evidence": {
+        "line": 65,
+        "snippet": "unsigned char rgbBlue;"
+      },
+      "confidence": "high"
+    },
+    "RGBQUAD.rgbGreen": {
+      "tier": "C",
+      "tier_rationale": "Palette colour component; unchecked by every decoder, free.",
+      "type": "unconstrained",
+      "description": "Green intensity of one palette entry.",
+      "field_type": "unsigned char",
+      "source": "template",
+      "evidence": {
+        "line": 66,
+        "snippet": "unsigned char rgbGreen;"
+      },
+      "confidence": "high"
+    },
+    "RGBQUAD.rgbRed": {
+      "tier": "C",
+      "tier_rationale": "Palette colour component; unchecked by every decoder, free.",
+      "type": "unconstrained",
+      "description": "Red intensity of one palette entry.",
+      "field_type": "unsigned char",
+      "source": "template",
+      "evidence": {
+        "line": 67,
+        "snippet": "unsigned char rgbRed;"
+      },
+      "confidence": "high"
+    },
+    "RGBQUAD.rgbReserved": {
+      "tier": "C",
+      "tier_rationale": "Nominally reserved and spec'd as 0, but no AVI decoder validates it, so per the reserved-field rule it stays free rather than being pinned.",
+      "type": "unconstrained",
+      "description": "Reserved byte of a palette entry, conventionally 0.",
+      "field_type": "unsigned char",
+      "source": "template",
+      "evidence": {
+        "line": 68,
+        "snippet": "unsigned char rgbReserved;"
+      },
+      "confidence": "high",
+      "notes": "Close call against Tier A: wingdi.h documents this byte as reserved, but neither the .bt nor any mainstream demuxer compares it, so pinning it would buy zero depth and cost a free byte per palette entry."
+    },
+    "BITMAPINFO.bmiColors": {
+      "tier": "C",
+      "tier_rationale": "The palette itself is an array of free colour values; only its length is constrained (by biClrUsed / biBitCount), never its contents.",
+      "type": "unconstrained",
+      "description": "Palette entries that follow the BITMAPINFOHEADER in a BITMAPINFO block.",
+      "field_type": "RGBQUAD",
+      "source": "template",
+      "evidence": {
+        "line": 74,
+        "snippet": "RGBQUAD bmiColors;"
+      },
+      "confidence": "medium",
+      "notes": "BITMAPINFO is declared but never instantiated by this template's parse flow, and it declares a single RGBQUAD where the real structure is an array of biClrUsed (or 2^biBitCount) entries. Recorded so the rewrite step knows the palette lives in strfHEADER_BIH.exData instead."
+    },
+    "avihHEADER.id": {
+      "tier": "A",
+      "tier_rationale": "FFmpeg's hdrl handler only recognises the 'avih' fourcc; with anything else no MainAVIHeader is read, so no timebase, no dimensions and no streams are ever created and the file is rejected before the first media chunk.",
+      "type": "fixed_value",
+      "description": "Chunk identifier of the main AVI header chunk; must be the fourcc 'avih'.",
+      "field_type": "char[4]",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference: the 'avih' chunk holds the MainAVIHeader and is the first chunk inside LIST 'hdrl'. The template reads an avihHEADER unconditionally at line 181 without comparing its id."
+      },
+      "confidence": "high",
+      "template_line": 79,
+      "required_value": "avih",
+      "required_value_hex": "61766968",
+      "required_value_ascii": "avih",
+      "notes": "Also the ID Bytes hint at line 10 of the .bt: '52 49 46 46 [+4] 41 56 49 20 //RIFF????AVI' fixes only the RIFF/AVI head, which is why this id has to come from the spec."
+    },
+    "avihHEADER.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template reads a fixed 56-byte MainAVIHeader (line 81) and advances by exactly 64 bytes regardless of datalen, so any other value desynchronises the chunk walk and the next ReadBytes hits the 'unknown chunk' branch and returns -1; FFmpeg likewise rejects an avih chunk smaller than sizeof(MainAVIHeader).",
+      "type": "calculated_value",
+      "description": "Byte count of the MainAVIHeader payload that follows.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 81,
+        "snippet": "MainAVIHeader data;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: fixed 56 = sizeof(MainAVIHeader) (14 DWORDs, lines 32-45)",
+      "covers": "the 56 bytes of MainAVIHeader immediately following datalen",
+      "includes_self": false,
+      "depends_on": [],
+      "notes": "Even for a 56-byte payload the RIFF parity rule applies, but 56 is already even so no pad byte follows."
+    },
+    "AVIStreamHeader.fccType": {
+      "tier": "B",
+      "tier_rationale": "Stream type fourcc: the template selects an entirely different strf parser on it (lines 188, 192, 196) and every demuxer uses it to decide whether the stream is video or audio; the small closed set of registered types must all be emitted because each opens a different subsystem.",
+      "type": "enumerated_values",
+      "description": "Type of the data in the stream: video, audio, text, MIDI or interleaved A/V.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 188,
+        "snippet": "if (Memcmp(strh.data.fccType, \"vids\", 4) == 0)"
+      },
+      "confidence": "high",
+      "valid_values": [
+        "vids",
+        "auds",
+        "txts",
+        "mids",
+        "iavs"
+      ],
+      "value_names": [
+        "vids = video stream (strf is a BITMAPINFOHEADER)",
+        "auds = audio stream (strf is a WAVEFORMATEX)",
+        "txts = text/subtitle stream",
+        "mids = MIDI stream",
+        "iavs = interleaved audio-video stream (OpenDML)"
+      ],
+      "completeness": "exhaustive",
+      "completeness_reason": "these five are every stream type defined by the AVI RIFF File Reference and OpenDML 1.02; the fourcc space is open in principle but no other fccType value is registered for AVI.",
+      "preferred_value": [
+        "vids",
+        "auds"
+      ],
+      "notes": "'vids' and 'auds' are preferred because they are the two branches with real parsers in this template (strfHEADER_BIH at line 190, strfHEADER_WAVE at line 194) and the two that reach the media decoders; 'txts'/'mids'/'iavs' fall into the generic strfHEADER branch (line 198) and are still legal, so they must stay in the emitted set. Also compare line 192: 'else if (Memcmp(strh.data.fccType, \"auds\", 4) == 0)'."
+    },
+    "AVIStreamHeader.fccHandler": {
+      "tier": "B",
+      "tier_rationale": "Names the codec that will decompress the stream's samples; the demuxer falls back to it when biCompression is BI_RGB/0, and an unregistered tag means no decompressor is instantiated and not one frame is decoded - yet the tag registry is open, so this is a Tier B pattern with the full high-value set listed.",
+      "type": "pattern_constraint",
+      "description": "FOURCC of the video decompressor for this stream (or 0 / 'DIB ' for uncompressed).",
+      "field_type": "char[4]",
+      "source": "spec",
+      "evidence": {
+        "note": "AVISTREAMHEADER fccHandler: a FOURCC identifying the compressor/decompressor for the stream, or zero if no handler is required (uncompressed data). The template declares it and even has a commented-out Printf of it at line 187, but never compares it."
+      },
+      "confidence": "high",
+      "template_line": 89,
+      "pattern": "^([A-Za-z0-9 ]{4}|\\x00\\x00\\x00\\x00)$ - any registered 4-byte video codec FOURCC, or four zero bytes meaning 'uncompressed, no handler'; must name the same codec as BITMAPINFOHEADER.biCompression for the stream to decode",
+      "valid_values": [
+        "\u0000\u0000\u0000\u0000",
+        "DIB ",
+        "RGB ",
+        "I420",
+        "IYUV",
+        "YV12",
+        "YUY2",
+        "UYVY",
+        "HFYU",
+        "MJPG",
+        "jpeg",
+        "CVID",
+        "XVID",
+        "DIVX",
+        "DX50",
+        "MP42",
+        "MP43",
+        "H264",
+        "H263",
+        "AVC1",
+        "LAGS",
+        "VP60"
+      ],
+      "value_names": [
+        "all-zero = no handler, uncompressed",
+        "DIB  = device-independent bitmap",
+        "RGB  = uncompressed RGB",
+        "I420 = planar YUV 4:2:0",
+        "IYUV = planar YUV 4:2:0",
+        "YV12 = planar YUV 4:2:0 YVU",
+        "YUY2 = packed YUV 4:2:2",
+        "UYVY = packed YUV 4:2:2",
+        "HFYU = HuffYUV lossless",
+        "MJPG = Motion JPEG",
+        "jpeg = Motion JPEG lowercase",
+        "CVID = Cinepak",
+        "XVID = MPEG-4 ASP",
+        "DIVX = MPEG-4 ASP",
+        "DX50 = DivX 5",
+        "MP42 = MS MPEG-4 v2",
+        "MP43 = MS MPEG-4 v3",
+        "H264 = AVC",
+        "H263 = ITU H.263",
+        "AVC1 = AVC Apple spelling",
+        "LAGS = Lagarith",
+        "VP60 = On2 VP6"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "the FOURCC codec registry is open (any ICM-registered compressor is legal), so completeness is impossible; the list holds every tag a mainstream demuxer maps to a decoder plus the uncompressed spellings.",
+      "preferred_value": [
+        "MJPG",
+        "DIB "
+      ],
+      "notes": "Must stay consistent with biCompression (see dependencies): 'MJPG' pairs with biCompression 'MJPG' and JPEG-framed payloads, 'DIB '/'RGB '/all-zero pair with BI_RGB and raw pixel payloads. For an 'auds' stream the field is normally zero or 'msad'/'ima4' and is not used to select the decoder."
+    },
+    "AVIStreamHeader.dwFlags": {
+      "tier": "B",
+      "tier_rationale": "Only two bits are defined and each switches a decoder behaviour (stream disabled, palette-change chunks present); with a 2-bit flag word the complete set is four values, so all four must be emitted rather than a safe 0.",
+      "type": "bitmask_constraint",
+      "description": "Per-stream AVISF_* flags.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "AVISTREAMHEADER dwFlags: AVISF_DISABLED 0x00000001, AVISF_VIDEO_PALCHANGES 0x00000002; all other bits reserved."
+      },
+      "confidence": "high",
+      "template_line": 90,
+      "endianness": "little",
+      "valid_bits": 3,
+      "valid_bits_hex": "0x00000003",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "value_names": [
+        "(no flags)",
+        "AVISF_DISABLED 0x01",
+        "AVISF_VIDEO_PALCHANGES 0x02",
+        "AVISF_DISABLED|AVISF_VIDEO_PALCHANGES 0x03"
+      ],
+      "completeness": "exhaustive",
+      "completeness_reason": "two defined bits give exactly four OR-subsets including 0; no combination is omitted.",
+      "preferred_value": [
+        0,
+        2
+      ],
+      "notes": "AVISF_VIDEO_PALCHANGES tells the reader that '##pc' palette-change chunks may appear in movi, which is a separate branch in the demuxer's chunk dispatch; emit it together with at least one '##pc' chunk for the deepest path. AVISF_DISABLED makes some readers skip the stream entirely, which is a different (shallower) path but still legal."
+    },
+    "AVIStreamHeader.dwReserved1": {
+      "tier": "C",
+      "tier_rationale": "Spec name is dwPriority, a hint for interleaving priority that no decoder validates; leaving it free costs nothing.",
+      "type": "unconstrained",
+      "description": "Priority of the stream when several compete for bandwidth; the .bt names it dwReserved1.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 91,
+        "snippet": "DWORD  dwReserved1;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "AVIStreamHeader.dwInitialFrames": {
+      "tier": "C",
+      "tier_rationale": "Interleave skew count; only matters to interleaving optimisation and is never a gate. Free.",
+      "type": "unconstrained",
+      "description": "Number of frames of interleaved data preceding the initial frames, for interleaved files.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 92,
+        "snippet": "DWORD  dwInitialFrames;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "AVIStreamHeader.dwScale": {
+      "tier": "C",
+      "tier_rationale": "Stream time-scale unit; only dwRate/dwScale is meaningful and decoders guard the zero divisor, so any pair is free and it drives which timestamp branch runs.",
+      "type": "unconstrained",
+      "description": "Stream time unit: dwRate/dwScale samples per second.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 93,
+        "snippet": "DWORD  dwScale;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A video stream conventionally uses dwScale/dwRate = frame duration; an audio stream normally uses 1/nSamplesPerSec so that dwLength counts samples. Both conventions are legal and they exercise different rounding code."
+    },
+    "AVIStreamHeader.dwRate": {
+      "tier": "C",
+      "tier_rationale": "Stream time-scale numerator; paired with dwScale it fixes the per-stream clock and hence the timestamp arithmetic. Free.",
+      "type": "unconstrained",
+      "description": "Number of dwScale units per second for this stream.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 94,
+        "snippet": "DWORD  dwRate;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "AVIStreamHeader.dwStart": {
+      "tier": "C",
+      "tier_rationale": "Per-stream start time; shifts that stream's timestamps and exercises the A/V offset branches without gating anything. Free.",
+      "type": "unconstrained",
+      "description": "Start time of this stream, in dwScale units.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 95,
+        "snippet": "DWORD  dwStart;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "AVIStreamHeader.dwLength": {
+      "tier": "C",
+      "tier_rationale": "Per-stream sample count; used for the duration and nb_frames estimate only, while the real count comes from the movi chunks. It is a count, so it is exactly the kind of field that must never be given a range.",
+      "type": "unconstrained",
+      "description": "Length of the stream in units of dwScale (frames for video, samples for audio).",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 96,
+        "snippet": "DWORD  dwLength;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "A coherent file derives this from the number of chunks it put into movi for that stream. A mismatch with the real chunk count is a legal file that exercises the demuxer's reconciliation path - leave it free."
+    },
+    "AVIStreamHeader.dwSuggestedBufferSize": {
+      "tier": "C",
+      "tier_rationale": "Buffer hint for this stream; no decoder gates on it and it is a free magnitude axis.",
+      "type": "unconstrained",
+      "description": "Suggested buffer size in bytes for reading this stream, normally the largest sample.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 97,
+        "snippet": "DWORD  dwSuggestedBufferSize;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "AVIStreamHeader.dwQuality": {
+      "tier": "C",
+      "tier_rationale": "Informational quality metric that decoders ignore entirely; pinning it (the spec's nominal scale would be the obvious temptation) would remove a free 32-bit axis and buy no depth.",
+      "type": "unconstrained",
+      "description": "Quality metric of the compressed data in the stream; -1 (0xFFFFFFFF) means 'use the default quality'.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 98,
+        "snippet": "DWORD  dwQuality;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "Deliberately no numeric span recorded here: the spec describes an informational scale, but because no decoder validates it, any value is legal for generation purposes and a range would be a disguised narrowing of a Tier C field."
+    },
+    "AVIStreamHeader.dwSampleSize": {
+      "tier": "A",
+      "tier_rationale": "FFmpeg's avi_read_packet splits every chunk of a stream with sample_size > 0 into dwSampleSize-byte packets before handing them to the decoder; a nonzero value on a video stream therefore delivers frame fragments instead of whole frames and the video decoder fails on every sample, so the pixel pipeline is never entered.",
+      "type": "calculated_value",
+      "description": "Size of one sample when all samples are the same size, otherwise 0.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "AVISTREAMHEADER dwSampleSize: 'the size of a single sample of data in the stream. If the samples in the stream are not of a fixed size, this field is set to zero.' For fixed-size audio streams it equals WAVEFORMATEX.nBlockAlign."
+      },
+      "confidence": "high",
+      "template_line": 99,
+      "endianness": "little",
+      "algorithm": "0 for every stream with variable-size samples (all video streams); for fixed-size audio streams, WAVEFORMATEX.nBlockAlign (0 is also accepted there, meaning 'use nBlockAlign')",
+      "covers": "no byte range in the header; it is the packet-splitting granularity the demuxer applies to that stream's chunks in movi",
+      "includes_self": false,
+      "depends_on": [
+        "AVIStreamHeader.fccType",
+        "WAVEFORMATEX.nBlockAlign",
+        "WAVEFORMATEX.nChannels",
+        "WAVEFORMATEX.wBitsPerSample"
+      ],
+      "notes": "This is the classic AVI trap: video frames are variable-size, so dwSampleSize must be 0 for 'vids'. See the dependency entry for fccType == 'vids'. For audio it is derived from nChannels/wBitsPerSample, so nothing needs to be narrowed."
+    },
+    "AVIStreamHeader.xdwQuality": {
+      "tier": "C",
+      "tier_rationale": "These two DWORDs are really rcFrame (the source rectangle to display, four 16-bit shorts); no decoder validates the rectangle, so all four shorts are free diversity.",
+      "type": "unconstrained",
+      "description": "Low half of the rcFrame source rectangle (left and top as two WORDs), named xdwQuality by the .bt.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 100,
+        "snippet": "DWORD  xdwQuality;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "notes": "AVISTREAMHEADER is 56 bytes in the spec because rcFrame occupies 16 bytes as four shorts; the .bt's names hide that, which is worth knowing when computing strhHEADER.datalen."
+    },
+    "AVIStreamHeader.xdwSampleSize": {
+      "tier": "C",
+      "tier_rationale": "Second half of rcFrame (right and bottom as two WORDs); a display hint, unchecked by decoders. Free.",
+      "type": "unconstrained",
+      "description": "High half of the rcFrame source rectangle (right and bottom as two WORDs), named xdwSampleSize by the .bt.",
+      "field_type": "DWORD",
+      "source": "template",
+      "evidence": {
+        "line": 101,
+        "snippet": "DWORD  xdwSampleSize;"
+      },
+      "confidence": "high",
+      "endianness": "little"
+    },
+    "strhHEADER.id": {
+      "tier": "A",
+      "tier_rationale": "FFmpeg's strl handler recognises a stream only through the 'strh' fourcc; without it no AVISTREAMHEADER is read, so the stream gets no codec parameters and none of its samples are ever decoded.",
+      "type": "fixed_value",
+      "description": "Chunk identifier of the stream header chunk; must be the fourcc 'strh'.",
+      "field_type": "char[4]",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference: each LIST 'strl' begins with a 'strh' chunk holding the AVISTREAMHEADER. The template reads a strhHEADER unconditionally at line 185 and never compares its id."
+      },
+      "confidence": "high",
+      "template_line": 106,
+      "required_value": "strh",
+      "required_value_hex": "73747268",
+      "required_value_ascii": "strh",
+      "notes": "The template would tolerate any four bytes here, so this is a spec-only gate - which is precisely why it has to be recorded rather than inferred from the .bt."
+    },
+    "strhHEADER.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template reads a fixed 56-byte AVIStreamHeader (line 108) and then expects 'strf' and 'strn' immediately after, so any other datalen desynchronises the strl list and the parse dies at 'unknown chunk'; FFmpeg requires size >= sizeof(AVISTREAMHEADER) before it will accept a stream header.",
+      "type": "calculated_value",
+      "description": "Byte count of the AVIStreamHeader payload that follows.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 108,
+        "snippet": "AVIStreamHeader data;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: fixed 56 = sizeof(AVIStreamHeader) (14 DWORDs, lines 88-101)",
+      "covers": "the 56 bytes of AVIStreamHeader immediately following datalen",
+      "includes_self": false,
+      "depends_on": [],
+      "notes": "56 is even, so no RIFF pad byte follows the strh chunk. Any strh payload larger than 56 (some writers append extra data) breaks this template's fixed read."
+    },
+    "strfHEADER.id": {
+      "tier": "A",
+      "tier_rationale": "The stream-format chunk id: FFmpeg reads the codec parameters only from a 'strf' chunk, so with any other fourcc the stream has no format block, no codec_id, and none of its samples are decoded.",
+      "type": "fixed_value",
+      "description": "Chunk identifier of the stream format chunk; must be the fourcc 'strf'.",
+      "field_type": "char[4]",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference: the 'strf' chunk immediately follows 'strh' inside LIST 'strl' and holds a BITMAPINFOHEADER for video or a WAVEFORMATEX for audio. The template reads a strfHEADER unconditionally at line 198 for non-vids/non-auds streams."
+      },
+      "confidence": "high",
+      "template_line": 115,
+      "required_value": "strf",
+      "required_value_hex": "73747266",
+      "required_value_ascii": "strf"
+    },
+    "strfHEADER.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template sizes the payload array directly from this field and advances by 8 + datalen (+1 pad byte when odd), so a datalen that does not match the emitted bytes desynchronises every following chunk and the parse ends at 'unknown chunk' with return -1.",
+      "type": "calculated_value",
+      "description": "Byte count of the stream-format payload that follows.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 120,
+        "snippet": "char data[datalen];"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: exactly the number of payload bytes emitted, with one 0x00 pad byte following (not counted here) when datalen is odd",
+      "covers": "the payload bytes immediately following datalen",
+      "includes_self": false,
+      "depends_on": [
+        "strfHEADER.data"
+      ],
+      "notes": "Line 117 is the parity rule: 'if (datalen % 2)' then data[datalen+1] is read so the chunk stays 2-byte aligned. That extra byte is padding, it is not counted in datalen, and the .bt's sizeof()-based advance depends on it being present."
+    },
+    "strfHEADER.data": {
+      "tier": "C",
+      "tier_rationale": "Reached only when fccType is neither 'vids' nor 'auds' (lines 196-199), i.e. for text, MIDI or OpenDML interleaved streams whose format block this generator does not implement; the bytes are format-specific and no depth is available without emitting real payload, so they stay free.",
+      "type": "unconstrained",
+      "description": "Opaque stream-format payload for a non-video, non-audio stream.",
+      "field_type": "char[]",
+      "source": "template",
+      "evidence": {
+        "line": 118,
+        "snippet": "char data[datalen+1];"
+      },
+      "confidence": "medium",
+      "notes": "For fccType 'mids' the AVI spec puts a MIDISTREAMHEADER here and for 'txts' a text format block; those structures are not modelled by this template. Only the framing is Tier A (datalen and the pad byte); the content is free."
+    },
+    "strfHEADER_BIH.id": {
+      "tier": "A",
+      "tier_rationale": "Same gate as strfHEADER.id: the video format block is only read from a chunk identified 'strf', and this is the variant the template picks for a 'vids' stream (line 190).",
+      "type": "fixed_value",
+      "description": "Chunk identifier of the video stream format chunk; must be the fourcc 'strf'.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 190,
+        "snippet": "strfHEADER_BIH strf;"
+      },
+      "confidence": "high",
+      "required_value": "strf",
+      "required_value_hex": "73747266",
+      "required_value_ascii": "strf",
+      "notes": "The template enters this struct only after Memcmp(strh.data.fccType, \"vids\", 4) == 0 at line 188, but the 'strf' id itself comes from the AVI spec."
+    },
+    "strfHEADER_BIH.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template computes exData[datalen - sz] after consuming 40 bytes of BITMAPINFOHEADER (line 136), so a datalen below 40 makes the array size negative and kills the parse, and one that does not account for the palette leaves the strl list misaligned; FFmpeg errors with 'invalid BMP header' when the chunk is too short to hold the palette implied by biBitCount.",
+      "type": "calculated_value",
+      "description": "Byte count of the video stream format payload: the BITMAPINFOHEADER plus the palette plus any codec extension.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 136,
+        "snippet": "char exData[datalen - sz];"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: 40 (sizeof BITMAPINFOHEADER) + 4 * palette_entries + any BITMAPV4/V5 or codec extension, where palette_entries = (biClrUsed != 0) ? biClrUsed : (biBitCount <= 8 ? 1 << biBitCount : 0)",
+      "covers": "the BITMAPINFOHEADER, the RGBQUAD palette and any extension bytes that follow datalen",
+      "includes_self": false,
+      "depends_on": [
+        "BITMAPINFOHEADER.biSize",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biCompression"
+      ],
+      "notes": "Template quirk worth preserving: line 130 'if (datalen == 44)' consumes exactly one extra RGBQUAD and adds 4 to sz, so a datalen of exactly 44 stays aligned; every real palettised file (e.g. 1064 for 8 bpp) takes the else path and its palette ends up inside exData, which is also aligned."
+    },
+    "strfHEADER_BIH.exData": {
+      "tier": "A",
+      "tier_rationale": "Its length is not free: the template derives it as datalen - sz, so the byte count must equal the palette (plus any extension) that biBitCount and biClrUsed imply. Its CONTENTS - the RGBQUAD colour values - are free and must not be pinned.",
+      "type": "calculated_value",
+      "description": "Trailing bytes of the video format chunk after the BITMAPINFOHEADER: the palette array when biBitCount <= 8, colour masks when biCompression == BI_BITFIELDS, plus any BITMAPV4/V5 extension.",
+      "field_type": "char[]",
+      "source": "both",
+      "evidence": {
+        "line": 136,
+        "snippet": "char exData[datalen - sz];"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: datalen - 40 (or datalen - 44 when the datalen == 44 branch at line 130 ran); contents = 4 * palette_entries RGBQUADs for biBitCount <= 8, or 12 bytes of three colour masks for BI_BITFIELDS",
+      "covers": "every byte of the strf payload after the 40-byte BITMAPINFOHEADER",
+      "includes_self": false,
+      "depends_on": [
+        "strfHEADER_BIH.datalen",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biClrUsed",
+        "BITMAPINFOHEADER.biCompression"
+      ],
+      "notes": "Split-tier entry: the length is Tier A and derived, the RGBQUAD colour bytes inside are Tier C in spirit and must remain free-form. For BI_BITFIELDS the 12 mask bytes are structural (three DWORDs) and must match biBitCount 16 or 32."
+    },
+    "strfHEADER_WAVE.id": {
+      "tier": "A",
+      "tier_rationale": "Same gate as strfHEADER.id: the audio format block is only read from a 'strf' chunk, and this is the variant the template picks for an 'auds' stream (line 194).",
+      "type": "fixed_value",
+      "description": "Chunk identifier of the audio stream format chunk; must be the fourcc 'strf'.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 194,
+        "snippet": "strfHEADER_WAVE strf;"
+      },
+      "confidence": "high",
+      "required_value": "strf",
+      "required_value_hex": "73747266",
+      "required_value_ascii": "strf",
+      "notes": "Entered only after Memcmp(strh.data.fccType, \"auds\", 4) == 0 at line 192; the 'strf' value itself is the AVI spec's."
+    },
+    "strfHEADER_WAVE.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template always consumes 18 bytes of WAVEFORMATEX and then exData[datalen - 18] (line 146), so datalen < 18 makes the array size negative and kills the parse; FFmpeg's ff_get_wav_header returns AVERROR_INVALIDDATA when the chunk cannot hold the format block.",
+      "type": "calculated_value",
+      "description": "Byte count of the audio stream format payload: the 18-byte WAVEFORMATEX plus cbSize extension bytes.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 146,
+        "snippet": "char exData[datalen - 18];"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: 18 + cbSize; must be even because this struct reads no RIFF pad byte (contrast strfHEADER at line 117), otherwise the following 'strn' chunk desynchronises",
+      "covers": "the 18-byte WAVEFORMATEX and the cbSize extension bytes that follow datalen",
+      "includes_self": false,
+      "depends_on": [
+        "WAVEFORMATEX.cbSize",
+        "WAVEFORMATEX.wFormatTag"
+      ],
+      "notes": "Template quirk, important for the rewrite step: strfHEADER_WAVE has no 'if (datalen % 2)' branch, so an odd datalen here shifts every later chunk in the strl list by one byte. Real files use datalen 18 or 18+cbSize where cbSize is 0, 12, 22 or 32, i.e. always even."
+    },
+    "strfHEADER_WAVE.exData": {
+      "tier": "A",
+      "tier_rationale": "This is the codec-configuration payload of the audio format block: FFmpeg's ff_get_wav_header reads exactly cbSize bytes here and, for WAVE_FORMAT_EXTENSIBLE, resolves codec_id from the SubFormat GUID it contains - without a well-formed extension the stream's codec stays AV_CODEC_ID_NONE and no audio decoder is ever opened.",
+      "type": "payload_wellformedness",
+      "description": "Codec-specific extension bytes of the WAVEFORMATEX block.",
+      "field_type": "char[]",
+      "source": "spec",
+      "evidence": {
+        "note": "mmreg.h: WAVEFORMATEXTENSIBLE appends WORD wValidBitsPerSample, DWORD dwChannelMask and a 16-byte GUID SubFormat after the 18-byte core (cbSize = 22); MPEGLAYER3WAVEFORMAT appends 12 bytes (cbSize = 12); ADPCMWAVEFORMAT appends ADPCMCOEFFSET pairs (cbSize = 32 for 7 coefficient pairs plus wNumCoef)."
+      },
+      "confidence": "high",
+      "template_line": 146,
+      "codec": "codec-specific WAVEFORMATEX extension: WAVEFORMATEXTENSIBLE (wFormatTag 0xFFFE), MPEGLAYER3WAVEFORMAT (0x0055), ADPCMWAVEFORMAT coefficient set (0x0002 / 0x0011)",
+      "must_produce": "exactly cbSize bytes: for 0xFFFE that is WORD wValidBitsPerSample (normally equal to wBitsPerSample), DWORD dwChannelMask (a legal speaker mask), then a 16-byte SubFormat GUID whose first two bytes carry the real format tag (KSDATAFORMAT_SUBTYPE_PCM = 00000001-0000-0010-8000-00aa00389b71, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = 00000003-...); for 0x0055 that is the 12-byte MPEGLAYER3WAVEFORMAT (wID, fdwFlags, nBlockSize, nFramesPerBlock, nCodecDelay); for the ADPCM tags a WORD wNumCoef followed by wNumCoef {iCoef1, iCoef2} pairs; for PCM/float/A-law/mu-law, nothing at all",
+      "decoder_gate": "ff_get_wav_header fails with 'invalid WAV format' when fewer than cbSize bytes are present, and leaves codec_id as AV_CODEC_ID_NONE when an EXTENSIBLE block has no readable SubFormat GUID - in both cases the audio stream is dropped and its movi chunks are never decoded",
+      "generation_strategy": "prefer a wFormatTag whose cbSize is 0 (1 PCM, 3 IEEE float, 6 A-law, 7 mu-law) so exData is empty and a zero-length extension is trivially well-formed; if 0xFFFE is emitted, write wValidBitsPerSample = wBitsPerSample, dwChannelMask = (1 << nChannels) - 1 clipped to the standard speaker masks, and the little-endian KSDATAFORMAT_SUBTYPE GUID for the real tag; if an ADPCM tag is emitted, write wNumCoef = 7 and the seven standard Microsoft coefficient pairs (256,0 / 512,-256 / 0,0 / 192,64 / 240,0 / 460,-208 / 392,-232)",
+      "derives_from": [
+        "WAVEFORMATEX.wFormatTag"
+      ],
+      "content_is_free": false,
+      "notes": "Unlike a media sample, these bytes are pure structure: there is no free payload inside them. cbSize itself is derived from strfHEADER_WAVE.datalen (see that entry), so the chain is wFormatTag -> cbSize -> exData bytes, and nothing is narrowed to fit."
+    },
+    "strnHEADER.id": {
+      "tier": "A",
+      "tier_rationale": "The template reads a strnHEADER unconditionally after the strf chunk (line 200), so a chunk at that position with a different id is still consumed as if it were a name chunk - and a real demuxer that does not find 'strn' there treats the bytes as the next chunk, mis-aligning the strl list.",
+      "type": "fixed_value",
+      "description": "Chunk identifier of the stream name chunk; must be the fourcc 'strn'.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 200,
+        "snippet": "strnHEADER strn;"
+      },
+      "confidence": "high",
+      "required_value": "strn",
+      "required_value_hex": "7374726e",
+      "required_value_ascii": "strn",
+      "notes": "Template-imposed requirement: the AVI spec makes 'strn' OPTIONAL inside LIST 'strl', but this .bt always reads one, so a file without a name chunk cannot be walked by this template at all. Recorded as a structure rule with template_imposed: true."
+    },
+    "strnHEADER.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template sizes the name array from this field and advances 8 + datalen (+1 when odd), and the strl LIST must end exactly at datalen - 4; a name length that does not match the emitted bytes breaks both the strl list and the hdrl walk.",
+      "type": "calculated_value",
+      "description": "Byte count of the stream name text that follows, including its terminating null when present.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 154,
+        "snippet": "if ( datalen % 2 )"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: length of the name text as emitted, plus the terminating 0x00 if one is written; an odd datalen is followed by exactly one RIFF pad byte that is not counted here",
+      "covers": "the name bytes immediately following datalen",
+      "includes_self": false,
+      "depends_on": [
+        "strnHEADER.data"
+      ],
+      "notes": "Lines 155/157 show the parity handling: char data[datalen+1] when odd, char data[datalen] when even."
+    },
+    "strnHEADER.data": {
+      "tier": "C",
+      "tier_rationale": "Free-form human-readable stream name text; it is metadata that no decoder gates on, so it is a zero-risk diversity axis.",
+      "type": "unconstrained",
+      "description": "ASCII stream name, optionally null terminated.",
+      "field_type": "char[]",
+      "source": "template",
+      "evidence": {
+        "line": 155,
+        "snippet": "char data[datalen+1];"
+      },
+      "confidence": "high",
+      "notes": "Length is Tier A via datalen; the characters themselves are free. A name whose length is odd exercises the pad-byte path."
+    },
+    "genericblock.id": {
+      "tier": "B",
+      "tier_rationale": "Fourcc that routes the chunk to a stream and to a handler: FFmpeg's get_stream_idx() accepts a movi chunk only when its first two bytes are ASCII decimal digits, so a malformed id yields stream index 100 and the chunk is dropped without a packet ever reaching a decoder - but every two-digit stream prefix and every registered two-letter code is legal and each is a different dispatch branch.",
+      "type": "pattern_constraint",
+      "description": "Movi sub-chunk identifier: two decimal digits naming the stream, followed by a two-letter AVI chunk code.",
+      "field_type": "char[4]",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference, chunk data in LIST 'movi': the fourcc is formed as the stream number (two ASCII digits, 00-99) followed by a code - 'dc' compressed video frame, 'db' uncompressed video frame, 'pc' palette change, 'tc' timecode, 'tx' text, 'wb' audio data; OpenDML adds 'ix##'/'xx##' super-index chunks and LIST 'rec ' record groups, and 'JUNK' padding is allowed inside movi."
+      },
+      "confidence": "high",
+      "template_line": 163,
+      "pattern": "^[0-9]{2}(dc|db|pc|tc|tx|wb)$ - two ASCII decimal digits (the stream index, matching a declared LIST 'strl') followed by one of the registered AVI chunk codes; also legal inside movi: 'JUNK' padding, LIST 'rec ' groups, and OpenDML 'ix[0-9]{2}' index chunks",
+      "valid_values": [
+        "00dc",
+        "00db",
+        "00pc",
+        "00tc",
+        "00tx",
+        "00wb",
+        "01dc",
+        "01db",
+        "01wb",
+        "01tx",
+        "02wb",
+        "09wb",
+        "99dc",
+        "JUNK"
+      ],
+      "value_names": [
+        "00dc = stream 0 compressed video frame",
+        "00db = stream 0 uncompressed video frame",
+        "00pc = stream 0 palette change (new RGBQUAD table)",
+        "00tc = stream 0 SMPTE timecode (8-byte payload)",
+        "00tx = stream 0 text sample",
+        "00wb = stream 0 audio data",
+        "01dc = stream 1 compressed video frame",
+        "01db = stream 1 uncompressed video frame",
+        "01wb = stream 1 audio data",
+        "01tx = stream 1 text sample",
+        "02wb = stream 2 audio data",
+        "09wb = stream 9 audio data",
+        "99dc = stream 99 compressed video frame (highest legal index)",
+        "JUNK = padding chunk, legal anywhere including inside movi"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "the leading two digits may be any decimal pair from 00 to 99 that names a declared stream, and the trailing two letters come from the registered AVI code list; the enumeration spells out the codes exhaustively and gives representative stream indices rather than all 100 of them.",
+      "preferred_value": [
+        "00dc",
+        "00wb"
+      ],
+      "notes": "Depth note: 'dc' versus 'db' selects the compressed-versus-uncompressed dispatch in demuxers that distinguish them, and 'pc'/'tc' chunks open dedicated handling branches that no other value reaches. The stream index must name a stream that was declared by a LIST 'strl' earlier in the file, otherwise the chunk is ignored. Inside LIST 'movi' this template swallows a nested LIST 'rec ' as a single opaque genericblock, because genericblock reads id/datalen/data without interpreting them."
+    },
+    "genericblock.datalen": {
+      "tier": "A",
+      "tier_rationale": "The movi loop only terminates when pointer == stop (line 214), and pointer accumulates sizeof(gb), i.e. 8 + datalen + (datalen & 1) (line 212); a datalen that does not match the emitted payload makes the loop overrun the LIST and the template aborts, while FFmpeg truncates or discards chunks that do not fit the declared movi size.",
+      "type": "calculated_value",
+      "description": "Byte count of the media sample that follows; the sample is one video frame or one audio block.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 212,
+        "snippet": "pointer += sizeof(gb);"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: exactly the number of sample payload bytes emitted. For an uncompressed video frame this is stride * abs(biHeight) with stride = ((biWidth * biBitCount + 31) / 32) * 4; for a compressed frame it is the encoded frame's length; for audio it is a multiple of nBlockAlign. One 0x00 pad byte follows (uncounted) when datalen is odd, and the running total of 8 + datalen + (datalen & 1) over all movi sub-chunks must land exactly on LISTHEADER.datalen - 4 (lines 205, 214).",
+      "covers": "the sample bytes immediately following datalen, plus the pad byte when datalen is odd",
+      "includes_self": false,
+      "depends_on": [
+        "genericblock.data",
+        "genericblock.id",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biSizeImage",
+        "WAVEFORMATEX.nBlockAlign",
+        "LISTHEADER.datalen"
+      ],
+      "notes": "This is the field that ties the container to the payload: it must be computed AFTER the sample bytes are chosen, from the dimensions the sample was derived from. Never pick a datalen first and then shrink biWidth/biHeight to match."
+    },
+    "genericblock.data": {
+      "tier": "A",
+      "tier_rationale": "This is the only encoded/compressed payload in AVI and it is the whole point of the container: the movi sample bytes must be a valid frame or audio block for the codec named in strf. With random bytes the selected decoder bails inside its first header scan, so the IDCT, the colour conversion, the palette expansion and the audio resampler are never reached - the parse stays shallow even though every container field is perfect.",
+      "type": "payload_wellformedness",
+      "description": "Payload of one media chunk in LIST 'movi': a video frame, an audio block, a palette table or a timecode record.",
+      "field_type": "char[]",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference: each data chunk in LIST 'movi' holds one sample - a compressed or uncompressed video frame whose format is given by the stream's BITMAPINFOHEADER (biCompression / biWidth / biHeight / biBitCount and, for palettised depths, the RGBQUAD table), or an audio block whose format is given by the stream's WAVEFORMATEX (wFormatTag / nChannels / wBitsPerSample / nBlockAlign). A '##pc' chunk holds a new RGBQUAD palette; a '##tc' chunk holds 8 bytes of SMPTE timecode."
+      },
+      "confidence": "high",
+      "template_line": 166,
+      "codec": "container-independent: the codec named by BITMAPINFOHEADER.biCompression and AVIStreamHeader.fccHandler for video streams (BI_RGB uncompressed DIB, MJPG Motion JPEG, MPEG-4 ASP, H263/H264, Cinepak, HuffYUV, the planar and packed YUV tags, BI_RLE8/BI_RLE4) and by WAVEFORMATEX.wFormatTag for audio streams (PCM, IEEE float, A-law, mu-law, IMA/DVI ADPCM, MS ADPCM, GSM610, MP3)",
+      "must_produce": "a sample that is well-formed for the codec the same stream's strf chunk declared, sized exactly to genericblock.datalen: for BI_RGB, stride * abs(biHeight) bytes with stride = ((biWidth * biBitCount + 31) / 32) * 4, rows bottom-up when biHeight > 0 and top-down when biHeight < 0, pixel indices below the palette size when biBitCount <= 8, three mask fields honoured when biCompression == BI_BITFIELDS; for MJPG, a complete baseline JPEG (SOI, DQT, SOF0 whose height and width equal abs(biHeight) and biWidth with 3 components, DHT or reliance on the decoder's default tables, SOS plus the entropy-coded scan, EOI); for BI_RLE8/BI_RLE4, valid run pairs terminated by an end-of-line/end-of-bitmap escape; for PCM audio, a whole number of nBlockAlign-byte interleaved samples; for IMA ADPCM, blocks whose 4-byte header carries a predictor and a step index in range; for a '##pc' chunk, 4 * palette_entries RGBQUADs; for a '##tc' chunk, 8 bytes of SMPTE timecode",
+      "decoder_gate": "FFmpeg's avi_read_packet passes the chunk bytes straight to the codec selected from strf; random bytes make the MJPEG decoder fail in its marker scan (mjpeg_decode_app / ff_mjpeg_decode_sof), the MPEG-4 decoder fail in ff_mpeg4_decode_picture_header, the RLE decoder fail on the first run pair and the PCM/ADPCM decoder emit garbage or fail the block-alignment check - so no IDCT, no colour conversion, no palette expansion and no resampler ever execute, and no frame is produced",
+      "generation_strategy": "Video, uncompressed (the reliable deep path): set fccType 'vids', biCompression 0 (BI_RGB), fccHandler 'DIB ' or all-zero, biSize 40, dwSampleSize 0, then choose free biWidth/biHeight/biBitCount, compute stride = ((biWidth * biBitCount + 31) / 32) * 4, fill stride * abs(biHeight) bytes with random pixels (or a gradient, which decodes identically but is easier to eyeball), write rows bottom-up for positive biHeight, set genericblock.datalen to that byte count and set biSizeImage to the same value. Video, MJPEG (the deepest path): set biCompression and fccHandler to 'MJPG', emit a real baseline JPEG per frame whose SOF0 dimensions equal biWidth and abs(biHeight) - the project's existing JPEG emission can be reused verbatim - and set datalen to the JPEG's length. Audio: set fccType 'auds', wFormatTag 1 (PCM), nChannels/wBitsPerSample free, nBlockAlign = nChannels * wBitsPerSample / 8, dwSampleSize = nBlockAlign, and emit '##wb' chunks whose payload is k * nBlockAlign random sample bytes. In every case the payload is computed FROM the free dimensions; never adjust a dimension to fit a precomputed payload.",
+      "derives_from": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biCompression",
+        "AVIStreamHeader.fccType",
+        "AVIStreamHeader.fccHandler",
+        "WAVEFORMATEX.wFormatTag",
+        "WAVEFORMATEX.nChannels",
+        "WAVEFORMATEX.wBitsPerSample",
+        "MainAVIHeader.dwWidth",
+        "MainAVIHeader.dwHeight",
+        "genericblock.id"
+      ],
+      "content_is_free": true,
+      "notes": "The derived lengths (genericblock.datalen, BITMAPINFOHEADER.biSizeImage, AVIINDEXENTRY.dwChunkLength, MainAVIHeader.dwSuggestedBufferSize) are all consequences of this payload, not constraints on it. AVI-specific freedoms worth exploiting: MJPEG frames in AVI commonly omit APP0 and the DHT tables because the decoder supplies the standard ones; frame order inside movi may interleave streams arbitrarily, which is what AVIF_ISINTERLEAVED advertises; a '##pc' palette-change chunk may be inserted mid-stream when AVISF_VIDEO_PALCHANGES is set. The number of samples emitted is bounded by output_budget on the movi LIST in the structure section, not by any field constraint."
+    },
+    "LISTHEADER.id": {
+      "tier": "A",
+      "tier_rationale": "'LIST' is the RIFF container marker that every parser tests first: the template only enters its chunk dispatch when the four bytes it read ahead are 'LIST' (line 286), and any other value falls into the else branch that returns -1 (lines 298-302), so nothing inside the file is parsed.",
+      "type": "fixed_value",
+      "description": "Chunk identifier of a RIFF list chunk; must be the fourcc 'LIST'.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 286,
+        "snippet": "if (Memcmp(nheader,\"LIST\",4) == 0)"
+      },
+      "confidence": "high",
+      "required_value": "LIST",
+      "required_value_hex": "4c495354",
+      "required_value_ascii": "LIST",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 284,
+        "values": [
+          "LIST",
+          "JUNK",
+          "idx1"
+        ],
+        "preferred": [
+          "LIST"
+        ]
+      },
+      "notes": "The template peeks four bytes with ReadBytes(nheader,FTell(), 4) at line 284 before choosing a struct, so the full compared set at that call site is LIST / JUNK / idx1 (lines 286, 290, 294). Any of the three is a legal AVI top-level chunk; 'LIST' is preferred because it is the one that carries hdrl, strl and movi and therefore all the depth."
+    },
+    "LISTHEADER.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template derives the nested-chunk budget from it (stop = datalen - 4 at line 205) and the movi loop only ends on pointer == stop (line 214), so a datalen that does not equal 4 + the exact sum of the nested chunk bytes makes the loop overrun the list and abort; for other list types it sizes the opaque blob directly (line 218).",
+      "type": "calculated_value",
+      "description": "Byte count of everything after datalen: the 4-byte type fourcc plus all nested chunk bytes including their pad bytes.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 205,
+        "snippet": "local int32 stop = datalen - 4;"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: 4 (the type fourcc) + sum over nested chunks of (8 + chunk.datalen + (chunk.datalen & 1)); for type 'movi' that sum must be hit exactly because the loop terminates on equality (line 214), for other types the whole remainder is consumed as one blob (line 218)",
+      "covers": "the type fourcc and every nested chunk inside this LIST",
+      "includes_self": false,
+      "depends_on": [
+        "LISTHEADER.type",
+        "genericblock.datalen",
+        "avihHEADER.datalen",
+        "strhHEADER.datalen",
+        "strfHEADER_BIH.datalen",
+        "strfHEADER_WAVE.datalen",
+        "strnHEADER.datalen"
+      ],
+      "notes": "Asymmetry that matters: for 'hdrl' the template reads only the avihHEADER (line 181) and ignores datalen, so the top-level loop re-dispatches each nested LIST 'strl' as if it were top-level; for 'movi' datalen is used as a hard terminator. A canonical file satisfies both, but the generator must compute datalen correctly in every case or the movi walk overruns."
+    },
+    "LISTHEADER.type": {
+      "tier": "B",
+      "tier_rationale": "The RIFF form type decides which nested structure follows and therefore which parser runs: 'hdrl', 'strl' and 'movi' have real handlers in this template (lines 179, 183, 202) and everything else falls into the opaque blob branch (line 218); all registered form types are legal and each opens different code.",
+      "type": "enumerated_values",
+      "description": "Fourcc form type of the list: what kind of container this LIST is.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 179,
+        "snippet": "if (!Memcmp(type,\"hdrl\",4))"
+      },
+      "confidence": "high",
+      "valid_values": [
+        "hdrl",
+        "strl",
+        "movi",
+        "rec ",
+        "INFO",
+        "odml",
+        "Tdat",
+        "IDIT",
+        "JUNK"
+      ],
+      "value_names": [
+        "hdrl = main header list (avih, then one strl per stream)",
+        "strl = stream list (strh, strf, strn)",
+        "movi = media data list",
+        "rec  = interleaved record group inside movi",
+        "INFO = RIFF metadata list (INAM, ICRD, ISFT, ...)",
+        "odml = OpenDML list holding the dmlh true-size chunk",
+        "Tdat = timecode/hidden-data list (Sony Vegas convention)",
+        "IDIT = digitization-time list",
+        "JUNK = padding list"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "the RIFF form-type space is open (any fourcc may name a LIST), so no closed list exists; the values given are every form type defined by the AVI RIFF File Reference, OpenDML 1.02 and the RIFF INFO conventions.",
+      "preferred_value": [
+        "hdrl",
+        "strl",
+        "movi"
+      ],
+      "notes": "Depth ranking: 'hdrl', 'strl' and 'movi' are the three types with real handlers here and the three that reach the media path; 'rec ' inside movi is the OpenDML interleaved-record form (this template swallows it as one opaque genericblock); 'INFO'/'odml'/'Tdat'/'IDIT'/'JUNK' are legal containers that exercise the opaque branch at line 218 and the metadata/true-size handling in real demuxers. Compare also line 183 ('else if (!Memcmp(type,\"strl\",4))') and line 202 ('else if (Memcmp(type,\"movi\",4) == 0)')."
+    },
+    "LISTHEADER.data": {
+      "tier": "C",
+      "tier_rationale": "Opaque body of a LIST whose type this template does not model; its bytes carry no gate here and its length is already Tier A through datalen, so the content stays free.",
+      "type": "unconstrained",
+      "description": "Raw bytes of a non-hdrl, non-strl, non-movi list body.",
+      "field_type": "char[]",
+      "source": "template",
+      "evidence": {
+        "line": 218,
+        "snippet": "char data[datalen-4];"
+      },
+      "confidence": "high",
+      "notes": "Only reached from the else branch at line 216; for 'INFO'/'odml'/'Tdat' the real content is a nested chunk sequence, which a generator may emit freely as long as datalen accounts for it."
+    },
+    "JUNKHEADER.id": {
+      "tier": "A",
+      "tier_rationale": "The template compares the four bytes it read ahead against 'JUNK' (line 290) and treats the chunk as padding; with any other id the file hits the else branch at line 298 and returns -1 (line 302), so parsing stops dead.",
+      "type": "fixed_value",
+      "description": "Chunk identifier of a padding chunk; must be the fourcc 'JUNK'.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 290,
+        "snippet": "else if (Memcmp(nheader, \"JUNK\",4) == 0)"
+      },
+      "confidence": "high",
+      "required_value": "JUNK",
+      "required_value_hex": "4a554e4b",
+      "required_value_ascii": "JUNK",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 284,
+        "values": [
+          "LIST",
+          "JUNK",
+          "idx1"
+        ],
+        "preferred": [
+          "JUNK"
+        ]
+      },
+      "notes": "RIFF also permits the fourcc 'PAD ' for padding, but this template does not accept it at the top level, so 'JUNK' is the only usable spelling here (template_imposed)."
+    },
+    "JUNKHEADER.datalen": {
+      "tier": "A",
+      "tier_rationale": "The top-level walk resumes at the four bytes after the padding; a datalen that does not match the emitted padding makes the next ReadBytes land mid-chunk, hit the else branch at line 298 and return -1 (line 302), ending the parse.",
+      "type": "calculated_value",
+      "description": "Byte count of the padding that follows.",
+      "field_type": "uint32",
+      "source": "template",
+      "evidence": {
+        "line": 228,
+        "snippet": "if ( datalen % 2 )"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: the number of padding bytes emitted, with one extra 0x00 pad byte following (uncounted) when datalen is odd, so the next chunk starts on an even offset",
+      "covers": "the padding bytes immediately following datalen",
+      "includes_self": false,
+      "depends_on": [
+        "JUNKHEADER.data"
+      ],
+      "notes": "JUNK is how a writer reserves space for an idx1 index it will backfill later, and how it re-aligns chunks after an odd-length payload; datalen is therefore a free magnitude bounded only by output_budget, but it must be exactly right or every following chunk desynchronises."
+    },
+    "JUNKHEADER.data": {
+      "tier": "C",
+      "tier_rationale": "Padding whose value is explicitly unchecked by every reader; the only constraint on it is its length, so the bytes are free.",
+      "type": "unconstrained",
+      "description": "Padding bytes; contents are meaningless and may be anything, including stale data.",
+      "field_type": "char[]",
+      "source": "template",
+      "evidence": {
+        "line": 229,
+        "snippet": "char data[datalen+1];"
+      },
+      "confidence": "high",
+      "notes": "Real writers fill JUNK with zeros or leave whatever was on disk; both are legal, which makes this a free content axis of arbitrary size."
+    },
+    "AVIINDEXENTRY.ckid": {
+      "tier": "B",
+      "tier_rationale": "The fourcc of the chunk this index entry refers to: FFmpeg's get_stream_idx() derives the owning stream from its first two ASCII characters and returns 100 (an invalid stream) for anything else, so a malformed ckid makes the entry unusable and the index-driven read and seek paths are never taken - yet every movi chunk fourcc is a legal value.",
+      "type": "pattern_constraint",
+      "description": "Fourcc of the indexed chunk, stored as a DWORD: normally a movi chunk id ('##dc'/'##db'/'##wb'/...) or 'LIST' for a record-group entry.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference, AVIINDEXENTRY: 'ckid - Contains a FourCC that specifies the type of data in the indexed chunk'. The value mirrors the fourcc of the chunk it describes."
+      },
+      "confidence": "high",
+      "template_line": 238,
+      "endianness": "little",
+      "pattern": "the little-endian DWORD encoding of a movi chunk fourcc: two ASCII decimal digits (the stream index) followed by two letters from dc|db|pc|tc|tx|wb, or the fourcc 'LIST' when the entry describes a record group (AVIIF_LIST set)",
+      "valid_values": [
+        1667510320,
+        1650733104,
+        1651978288,
+        2020880432,
+        1668296752,
+        1668558896,
+        1667510576,
+        1650733360,
+        1651978544,
+        1651978800,
+        1667512633,
+        1414744396
+      ],
+      "value_names": [
+        "'00dc' = stream 0 compressed video frame",
+        "'00db' = stream 0 uncompressed video frame",
+        "'00wb' = stream 0 audio block",
+        "'00tx' = stream 0 text sample",
+        "'00pc' = stream 0 palette change",
+        "'00tc' = stream 0 timecode",
+        "'01dc' = stream 1 compressed video frame",
+        "'01db' = stream 1 uncompressed video frame",
+        "'01wb' = stream 1 audio block",
+        "'02wb' = stream 2 audio block",
+        "'99dc' = stream 99 compressed video frame",
+        "'LIST' = record-group entry (AVIIF_LIST)"
+      ],
+      "completeness": "partial",
+      "completeness_reason": "ckid may be the fourcc of any chunk present in movi and the stream prefix ranges over 00-99; the codes and representative stream indices are listed rather than all 100 x 6 combinations.",
+      "preferred_value": [
+        1667510320,
+        1651978288
+      ],
+      "notes": "Because the field is a DWORD rather than char[4] the fourcc is stored little-endian: '00dc' is the integer 1667510320 and 'LIST' is 1414744396. The generator must match the ckid of every movi chunk it emitted, one entry per chunk, or the index will not resolve."
+    },
+    "AVIINDEXENTRY.dwFlags": {
+      "tier": "B",
+      "tier_rationale": "Per-entry index flags: AVIIF_KEYFRAME decides which frames a decoder may seek to, AVIIF_LIST switches the entry's meaning to a record group, and AVIIF_NO_TIME / AVIIF_NOTIME drop the timestamp - each is a separate branch and the defined flag set is small enough to enumerate exhaustively.",
+      "type": "bitmask_constraint",
+      "description": "AVIIF_* flags for one index entry.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference, AVIINDEXENTRY dwFlags: AVIIF_LIST 0x00000001, AVIIF_KEYFRAME 0x00000002, AVIIF_NO_TIME 0x00000004, AVIIF_ISFIRST 0x00000010, AVIIF_ISLAST 0x00000020, AVIIF_NOTIME 0x00000100."
+      },
+      "confidence": "high",
+      "template_line": 239,
+      "endianness": "little",
+      "valid_bits": 311,
+      "valid_bits_hex": "0x00000137",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        6,
+        16,
+        18,
+        32,
+        34,
+        48,
+        50,
+        256,
+        258
+      ],
+      "value_names": [
+        "(no flags = delta frame with a valid timestamp)",
+        "AVIIF_LIST 0x01",
+        "AVIIF_KEYFRAME 0x02",
+        "AVIIF_LIST|AVIIF_KEYFRAME 0x03",
+        "AVIIF_NO_TIME 0x04",
+        "AVIIF_NO_TIME|AVIIF_KEYFRAME 0x06",
+        "AVIIF_ISFIRST 0x10",
+        "AVIIF_ISFIRST|AVIIF_KEYFRAME 0x12",
+        "AVIIF_ISLAST 0x20",
+        "AVIIF_ISLAST|AVIIF_KEYFRAME 0x22",
+        "AVIIF_ISFIRST|AVIIF_ISLAST 0x30",
+        "AVIIF_ISFIRST|AVIIF_ISLAST|AVIIF_KEYFRAME 0x32",
+        "AVIIF_NOTIME 0x100",
+        "AVIIF_NOTIME|AVIIF_KEYFRAME 0x102"
+      ],
+      "completeness": "exhaustive",
+      "completeness_reason": "the six atomic flags above are the complete defined set; any OR-subset of valid_bits is legal and the list spells out the meaningful combinations including 0. No flag has been dropped.",
+      "preferred_value": [
+        2
+      ],
+      "notes": "0x02 (AVIIF_KEYFRAME) is what real files carry on every frame of an intra-only stream and on each I-frame otherwise; it is what makes the index usable for seeking, so it is the deepest choice. AVIIF_LIST must only be combined with ckid 'LIST'."
+    },
+    "AVIINDEXENTRY.dwChunkOffset": {
+      "tier": "A",
+      "tier_rationale": "A decoder that trusts the index (AVIF_HASINDEX set) seeks to this offset to fetch the next sample; an offset that does not land on a chunk header makes it read a bogus fourcc and length, so it either aborts with a failed index lookup or decodes misaligned garbage and the frame pipeline is never entered.",
+      "type": "calculated_value",
+      "description": "Offset of the indexed chunk's payload from the start of the 'movi' list.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference, AVIINDEXENTRY dwChunkOffset: 'Specifies the location of the data chunk in the file. The value should be specified as an offset, in bytes, from the start of the 'movi' list; however, in some AVI files it is given as an offset from the start of the file.' Demuxers try the movi-relative interpretation first and fall back to file-absolute."
+      },
+      "confidence": "medium",
+      "template_line": 240,
+      "endianness": "little",
+      "algorithm": "byte offset: position of the referenced chunk's first payload byte measured from the start of the 'movi' list data (i.e. from the byte after the LIST id and size fields and after the 'movi' fourcc); the file-absolute convention is also legal and is disambiguated by the demuxer at load time",
+      "covers": "no bytes of the index chunk itself; it points at a payload elsewhere in the file",
+      "includes_self": false,
+      "depends_on": [
+        "genericblock.id",
+        "genericblock.datalen",
+        "LISTHEADER.datalen",
+        "JUNKHEADER.datalen",
+        "MainAVIHeader.dwFlags"
+      ],
+      "notes": "Every emitted chunk's offset shifts when padding or extra streams are inserted, so this must be computed from the final byte layout, in the same pass that fixes LISTHEADER.datalen. It is a Tier A derived offset, never a free number."
+    },
+    "AVIINDEXENTRY.dwChunkLength": {
+      "tier": "A",
+      "tier_rationale": "Demuxers that use the index take the sample length from this field and cross-check it against the on-disk chunk size when AVIF_TRUSTCKSIZE is clear; a mismatch makes the packet truncated or over-long, so the decoder fails on the first sample instead of decoding a frame.",
+      "type": "calculated_value",
+      "description": "Byte length of the indexed chunk's payload, excluding the 8-byte chunk header and any pad byte.",
+      "field_type": "DWORD",
+      "source": "spec",
+      "evidence": {
+        "note": "AVI RIFF File Reference, AVIINDEXENTRY dwChunkLength: 'Specifies the length of the data chunk, in bytes.'"
+      },
+      "confidence": "medium",
+      "template_line": 241,
+      "endianness": "little",
+      "algorithm": "byte count: genericblock.datalen of the chunk this entry points at, i.e. the sample payload length without the id/size header and without the RIFF pad byte",
+      "covers": "no bytes of the index chunk itself; it declares the length of a payload elsewhere in the file",
+      "includes_self": false,
+      "depends_on": [
+        "genericblock.datalen",
+        "genericblock.data",
+        "genericblock.id"
+      ],
+      "notes": "Directly derived from the movi chunk it indexes, so it inherits whatever length the payload generation produced. Never shorten a frame to make an index entry fit."
+    },
+    "idx1HEADER.id": {
+      "tier": "A",
+      "tier_rationale": "The template compares the four bytes it read ahead against 'idx1' (line 294); any other value drops into the else branch at line 298 and returns -1 (line 302), and FFmpeg's avi_load_index likewise bails unless it sees the 'idx1' fourcc, so the index - and every seek path that depends on it - is lost.",
+      "type": "fixed_value",
+      "description": "Chunk identifier of the legacy AVI index; must be the fourcc 'idx1'.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 294,
+        "snippet": "else if (Memcmp(nheader, \"idx1\",4) == 0)"
+      },
+      "confidence": "high",
+      "required_value": "idx1",
+      "required_value_hex": "69647831",
+      "required_value_ascii": "idx1",
+      "lookahead": {
+        "function": "ReadBytes",
+        "call_site_line": 284,
+        "values": [
+          "LIST",
+          "JUNK",
+          "idx1"
+        ],
+        "preferred": [
+          "idx1"
+        ]
+      },
+      "notes": "OpenDML replaces idx1 with per-stream 'ix##' super-index chunks; those are not accepted at the top level by this template, so 'idx1' is the only index spelling usable here (see the structure rule that forbids other top-level ids)."
+    },
+    "idx1HEADER.datalen": {
+      "tier": "A",
+      "tier_rationale": "The template reads AVIINDEXENTRY data[datalen/AVIINDEXENTRYLEN] (line 250) with integer division, so any datalen that is not a multiple of 16 leaves 1-15 unread bytes; the top-level walk then resumes mid-record, hits the 'unknown chunk' branch and returns -1 (lines 298-302). FFmpeg iterates size/16 entries and rejects a truncated index.",
+      "type": "calculated_value",
+      "description": "Byte count of the index table that follows.",
+      "field_type": "uint32",
+      "source": "both",
+      "evidence": {
+        "line": 250,
+        "snippet": "AVIINDEXENTRY data[datalen/AVIINDEXENTRYLEN];"
+      },
+      "confidence": "high",
+      "endianness": "little",
+      "algorithm": "byte count: 16 * number_of_entries, where each AVIINDEXENTRY is exactly 4 DWORDs (ckid, dwFlags, dwChunkOffset, dwChunkLength) as fixed by the template's own constant at line 244",
+      "covers": "every 16-byte AVIINDEXENTRY record that follows datalen",
+      "includes_self": false,
+      "depends_on": [
+        "AVIINDEXENTRY.ckid",
+        "AVIINDEXENTRY.dwFlags",
+        "AVIINDEXENTRY.dwChunkOffset",
+        "AVIINDEXENTRY.dwChunkLength"
+      ],
+      "notes": "Line 244 'const DWORD AVIINDEXENTRYLEN = 16;' is the template's own statement of the record size. The number of entries is free (bounded by output_budget) but datalen must be exactly 16 times it - a non-multiple is the single easiest way to break this parse."
+    },
+    "ROOT.id": {
+      "tier": "A",
+      "tier_rationale": "The RIFF form signature: every parser tests the first four bytes and bails immediately if they are not 'RIFF', so nothing after byte 0 executes - and the template itself branches on id[3] == 'X' at line 257 to switch the whole file's byte order.",
+      "type": "fixed_value",
+      "description": "RIFF form identifier at file offset 0; 'RIFF' for little-endian, 'RIFX' for the big-endian variant.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 256,
+        "snippet": "char id[4]; // RIFF"
+      },
+      "confidence": "high",
+      "required_value": "RIFF",
+      "required_value_hex": "52494646",
+      "required_value_ascii": "RIFF",
+      "notes": "Close call against enumerated_values: 'RIFX' is the other legal signature (the template prints 'Motorola format' and calls BigEndian() at lines 259-260, and the header comment at line 10 documents the ID bytes '52 49 46 46 [+4] 41 56 49 20 //RIFF????AVI'). It is pinned to 'RIFF' here because RIFX flips the byte order of EVERY multi-byte field in the file and mainstream AVI demuxers accept only 'RIFF', so emitting RIFX would trade the whole media path for an endianness branch. The dependency entry for ROOT.id == 'RIFX' records what a generator must do if it ever emits it."
+    },
+    "ROOT.datalen": {
+      "tier": "A",
+      "tier_rationale": "FFmpeg records this as the file size and refuses to read chunks that would run past it, so a size that disagrees with the real byte count truncates the parse mid-file and the later chunks - typically movi and idx1, i.e. all the depth - are never reached.",
+      "type": "calculated_value",
+      "description": "Byte count of everything that follows: the 'AVI ' form type plus every top-level chunk.",
+      "field_type": "uint32",
+      "source": "spec",
+      "evidence": {
+        "note": "RIFF specification: the size field of a RIFF form holds the number of bytes that follow it, so for a whole file it is file_size - 8 (excluding the 'RIFF' id and the size field itself). OpenDML files larger than 1 GiB may store a capped value here and put the true size in a LIST 'odml' / 'dmlh' chunk instead."
+      },
+      "confidence": "high",
+      "template_line": 268,
+      "endianness": "little",
+      "algorithm": "byte count: total_file_size - 8 = 4 (the 'AVI ' form type) + sum over top-level chunks of (8 + chunk.datalen + (chunk.datalen & 1))",
+      "covers": "every byte of the file after the size field, to EOF",
+      "includes_self": false,
+      "depends_on": [
+        "ROOT.form",
+        "LISTHEADER.datalen",
+        "JUNKHEADER.datalen",
+        "idx1HEADER.datalen"
+      ],
+      "notes": "The template ignores this value - its top-level loop runs to FEof (line 282) - but every real demuxer uses it, so it must still be exact. Compute it last, after all chunk sizes are fixed."
+    },
+    "ROOT.form": {
+      "tier": "A",
+      "tier_rationale": "The form type is the second gate at the head of the file: the template warns 'Not a valid AVI file' and returns -1 when it is not 'AVI ' (lines 271-274), and FFmpeg's avi_read_header rejects the file outright, so nothing past byte 12 executes.",
+      "type": "fixed_value",
+      "description": "RIFF form type at file offset 8; must be 'AVI ' with the trailing space.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 271,
+        "snippet": "if (Strcmp(form, \"AVI \"))"
+      },
+      "confidence": "high",
+      "required_value": "AVI ",
+      "required_value_hex": "41564920",
+      "required_value_ascii": "AVI ",
+      "notes": "The trailing space is part of the fourcc and is the classic place for an off-by-one; line 10's comment spells the bytes out as '41 56 49 20'. The template's guard is Strcmp(form, \"AVI \") which is non-zero (true) for anything else, leading to Warning(\"Not a valid AVI file\") at line 273 and return -1 at line 274."
+    }
+  },
+  "dependencies": [
+    {
+      "when": "BITMAPINFOHEADER.biBitCount <= 8",
+      "then": "strfHEADER_BIH.datalen must include 4 * palette_entries bytes after the 40-byte BITMAPINFOHEADER, where palette_entries = biClrUsed when biClrUsed != 0 else 2^biBitCount, and strfHEADER_BIH.exData holds exactly those RGBQUADs",
+      "description": "A palettised DIB is undecodable without its colour table, and the demuxer sizes the palette from the declared depth - so the palette is derived from biBitCount/biClrUsed, never the other way round.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "BITMAPINFOHEADER.biBitCount > 8",
+      "then": "no palette is present: strfHEADER_BIH.datalen = 40 plus any BI_BITFIELDS masks or BITMAPV4/V5 extension, and biClrUsed is ignored",
+      "description": "16/24/32 bpp DIBs carry their colour information in the pixels themselves, so the strf chunk holds only the header.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "BITMAPINFOHEADER.biCompression == 3 (BI_BITFIELDS)",
+      "then": "biBitCount must be 16 or 32 and 12 bytes of three DWORD colour masks must follow the BITMAPINFOHEADER inside strfHEADER_BIH.exData",
+      "description": "BI_BITFIELDS replaces the palette slot with explicit red/green/blue masks; without them the decoder cannot interpret the pixel words and the raw path fails.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "BITMAPINFOHEADER.biCompression == 1 (BI_RLE8)",
+      "then": "biBitCount must be 8 and every video sample must be a sequence of valid RLE8 run pairs terminated by an end-of-bitmap escape",
+      "description": "The run-length decoder walks the sample byte-pair by byte-pair; a depth other than 8 or a truncated run makes it fail before producing a row.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "BITMAPINFOHEADER.biCompression == 2 (BI_RLE4)",
+      "then": "biBitCount must be 4 and every video sample must be valid RLE4 data",
+      "description": "Same rule as BI_RLE8 at half the depth; the RLE4 decoder additionally handles delta and multi-pixel runs.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "BITMAPINFOHEADER.biCompression is a codec fourcc rather than BI_RGB/BI_BITFIELDS",
+      "then": "AVIStreamHeader.fccHandler must name the same codec and every video sample in movi must be a complete encoded frame for it",
+      "description": "The demuxer picks the decoder from biCompression (falling back to fccHandler); if the two disagree, or the samples are not real frames of that codec, the decoder fails on the first sample.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "BITMAPINFOHEADER.biHeight is negative when read as a signed int32",
+      "then": "the DIB is top-down and video sample rows must be written top to bottom instead of the usual bottom-up order",
+      "description": "Row order is a property of the sign of biHeight; getting it wrong produces a vertically flipped frame rather than a parse failure, but it is a real decoder branch.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "AVIStreamHeader.fccType == \"vids\"",
+      "then": "the chunk after 'strh' must be a BITMAPINFOHEADER-based 'strf' (the template instantiates strfHEADER_BIH) and AVIStreamHeader.dwSampleSize must be 0",
+      "description": "Video frames are variable-size, so dwSampleSize 0 is required; a nonzero value makes the demuxer split each frame into fixed-size packets and the video decoder never receives a whole frame. Template evidence: line 188 selects strfHEADER_BIH.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": "AVIStreamHeader.fccType == \"auds\"",
+      "then": "the chunk after 'strh' must be a WAVEFORMATEX-based 'strf' (the template instantiates strfHEADER_WAVE) and AVIStreamHeader.dwSampleSize must be 0 or WAVEFORMATEX.nBlockAlign",
+      "description": "Audio samples are fixed-size blocks; dwSampleSize and nBlockAlign must agree or the demuxer's packet splitting disagrees with the codec's frame size. Template evidence: line 192 selects strfHEADER_WAVE.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": "AVIStreamHeader.fccType is \"txts\", \"mids\" or \"iavs\"",
+      "then": "the template falls through to the generic strfHEADER and reads the format block as an opaque byte array of datalen bytes",
+      "description": "Neither BITMAPINFOHEADER nor WAVEFORMATEX parsing applies; the chunk is framed but not interpreted, so only datalen and the pad byte matter. Template evidence: lines 196-199.",
+      "source": "template",
+      "confidence": "high",
+      "template_imposed": true
+    },
+    {
+      "when": "WAVEFORMATEX.wFormatTag == 1 (WAVE_FORMAT_PCM)",
+      "then": "cbSize must be 0 and wBitsPerSample must be one of 8, 16, 24, 32, with nBlockAlign = nChannels * wBitsPerSample / 8 and nAvgBytesPerSec = nSamplesPerSec * nBlockAlign",
+      "description": "PCM has no extension block; the whole format is determined by channel count and sample width, so every derived field must follow them.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "WAVEFORMATEX.wFormatTag == 3 (WAVE_FORMAT_IEEE_FLOAT)",
+      "then": "wBitsPerSample must be 32 or 64 and cbSize must be 0",
+      "description": "Only single and double precision float are defined; any other width leaves the decoder unable to size a sample.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "WAVEFORMATEX.wFormatTag == 0xFFFE (WAVE_FORMAT_EXTENSIBLE)",
+      "then": "cbSize must be at least 22 and strfHEADER_WAVE.exData must carry WORD wValidBitsPerSample, DWORD dwChannelMask and a 16-byte SubFormat GUID that names the real format tag",
+      "description": "Without the SubFormat GUID the demuxer cannot resolve codec_id at all and the audio stream is dropped before any sample is read.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "WAVEFORMATEX.wFormatTag == 17 (DVI/IMA ADPCM) or 2 (MS ADPCM)",
+      "then": "wBitsPerSample must be 4 and cbSize must cover the ADPCMWAVEFORMAT extension: WORD wNumCoef plus 4 bytes per coefficient pair",
+      "description": "The ADPCM decoders read their predictor coefficients from the extension block; a missing or short coefficient table makes the first block decode to garbage or fail outright.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": "LISTHEADER.type == \"hdrl\"",
+      "then": "the list body must begin with exactly one 'avih' chunk; the nested LIST 'strl' chunks that follow are re-dispatched by the template's top-level loop, so each of them must also start with the fourcc 'LIST'",
+      "description": "The template's hdrl branch reads only the avihHEADER (line 181) and then returns, leaving the top-level loop to pick up each nested strl as though it were a top-level chunk; this only works because nested lists begin with 'LIST' too.",
+      "source": "both",
+      "confidence": "high",
+      "template_imposed": true
+    },
+    {
+      "when": "LISTHEADER.type == \"strl\"",
+      "then": "the body must be, in this order, a strhHEADER (64 bytes), the strf chunk selected by fccType, and a strnHEADER",
+      "description": "The template reads strh (line 185), then one of strfHEADER_BIH / strfHEADER_WAVE / strfHEADER (lines 190, 194, 198), then strn unconditionally (line 200). The AVI spec makes 'strn' optional, so this ordering is stricter than the format.",
+      "source": "template",
+      "confidence": "high",
+      "template_imposed": true
+    },
+    {
+      "when": "LISTHEADER.type == \"movi\"",
+      "then": "the body is a flat sequence of genericblocks whose 8 + datalen + (datalen & 1) sizes sum to exactly LISTHEADER.datalen - 4",
+      "description": "The do-while loop terminates on pointer != stop becoming false (lines 209-214); overshooting or undershooting by even one byte makes the template read past the list and abort. Nested LIST 'rec ' groups are tolerated only because genericblock swallows them as one opaque block.",
+      "source": "template",
+      "confidence": "high",
+      "template_imposed": true
+    },
+    {
+      "when": "strfHEADER_WAVE.datalen is odd",
+      "then": "the parse desynchronises: this struct reads no RIFF pad byte, so the following 'strn' chunk id lands one byte off",
+      "description": "Unlike strfHEADER (line 117), strnHEADER (line 154), JUNKHEADER (line 228) and genericblock (line 165), the strfHEADER_WAVE definition at lines 143-146 has no 'if (datalen % 2)' branch. Keep the audio format chunk's datalen even (18, 20, 30, 40 ...).",
+      "source": "template",
+      "confidence": "high",
+      "template_imposed": true
+    },
+    {
+      "when": "ROOT.id == \"RIFX\"",
+      "then": "every multi-byte field in the whole file must be big-endian, and the template calls BigEndian() from that point on",
+      "description": "Line 257 tests id[3] == 'X' and line 260 switches the byte order for all subsequent reads (the else branch calls LittleEndian() at line 265). Mainstream demuxers accept only 'RIFF', which is why ROOT.id is pinned.",
+      "source": "both",
+      "confidence": "high",
+      "template_imposed": true
+    },
+    {
+      "when": "genericblock.id begins with the two ASCII digits NN",
+      "then": "a LIST 'strl' declaring stream NN must appear earlier in the file, and the sample must be well-formed for that stream's codec",
+      "description": "FFmpeg's get_stream_idx() maps the digit pair to a stream index and drops the chunk when no such stream exists, so the sample never reaches a decoder.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "MainAVIHeader.dwFlags has AVIF_HASINDEX (0x10) set",
+      "then": "an 'idx1' chunk must be present, conventionally as the last top-level chunk, holding 16 * n bytes for the n movi chunks it indexes",
+      "description": "Advertising an index that is absent makes index-driven readers fail their lookup and fall back to a sequential scan, or refuse the file; the flag and the chunk must agree.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": "MainAVIHeader.dwFlags has AVIF_ISINTERLEAVED (0x100) clear",
+      "then": "the demuxer switches to its non-interleaved chunk-reordering path and buffers chunks per stream instead of reading them in file order",
+      "description": "This is a genuinely different function body in the demuxer, so clearing the bit is a coverage choice, not an error - but the movi layout should then be grouped per stream to be coherent.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": "AVIStreamHeader.dwFlags has AVISF_VIDEO_PALCHANGES (0x02) set",
+      "then": "'##pc' palette-change chunks may appear in movi, each carrying 4 * palette_entries RGBQUADs",
+      "description": "The flag is what tells the reader to expect mid-stream palette updates and to run its palette-change handling branch.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": "AVIINDEXENTRY.dwFlags has AVIIF_LIST (0x01) set",
+      "then": "ckid must be the fourcc 'LIST' and dwChunkOffset / dwChunkLength must describe a LIST 'rec ' record group rather than a single sample",
+      "description": "A record-group index entry points at a container, not at a media chunk; mixing the two makes the index resolve to the wrong bytes.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": "any chunk in the file has an odd datalen",
+      "then": "exactly one 0x00 pad byte must follow its payload, and that pad byte is not counted in datalen but is counted by every offset and by LISTHEADER.datalen",
+      "description": "RIFF requires chunks to start on even offsets. The template models this in strfHEADER (line 117), strnHEADER (line 154), genericblock (line 165) and JUNKHEADER (line 228) by reading datalen+1 bytes, and its sizeof()-based advances depend on the pad being present.",
+      "source": "both",
+      "confidence": "high"
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "ROOT (RIFF form head)",
+      "detail": "The file must begin with the 12-byte RIFF head: 'RIFF', uint32 datalen, 'AVI '. The template instantiates ROOT first (line 280) and aborts with Warning(\"Not a valid AVI file\") plus return -1 if the form type is not 'AVI ' (lines 271-274). Byte order for everything after this head is selected by ROOT.id (LittleEndian at line 265, BigEndian at line 260).",
+      "source": "both",
+      "output_budget": "n/a - single fixed 12-byte head, never repeated"
+    },
+    {
+      "rule": "ordering",
+      "subject": "top-level chunk sequence after the RIFF head",
+      "detail": "A flat sequence of chunks walked by the loop at lines 282-303. Canonical AVI order is LIST 'hdrl' first, then LIST 'movi', then 'idx1' last; 'JUNK' padding and other LIST forms ('INFO', 'odml', 'Tdat') may appear anywhere. The template accepts only the three ids LIST, JUNK and idx1 at this level.",
+      "source": "both",
+      "output_budget": "running total of top-level chunk bytes (8 + datalen + pad each), capped at 64 KiB and checked before each OPTIONAL chunk is added; the mandatory LIST 'hdrl' and LIST 'movi' are always emitted within it. Rationale: the interesting structure of an AVI is its header lists plus its sample payloads, and 64 KiB keeps each generated file small enough to be decoded thousands of times per campaign while still leaving room for several strl lists, a 32 KiB movi, JUNK padding and a complete idx1 - with no field anywhere narrowed to achieve it."
+    },
+    {
+      "rule": "required",
+      "subject": "LIST 'hdrl'",
+      "detail": "Exactly one main header list must be present, and it must come before LIST 'movi' so that stream parameters are known before the samples. Its type fourcc must be 'hdrl' for the template to take the avih branch (line 179).",
+      "source": "both",
+      "output_budget": "n/a - one fixed list; its own budget is bounded by the strl budget below"
+    },
+    {
+      "rule": "required",
+      "subject": "avihHEADER inside LIST 'hdrl'",
+      "detail": "The first chunk inside LIST 'hdrl' must be 'avih' holding a 56-byte MainAVIHeader. The template reads it unconditionally and reads nothing else from the hdrl branch (line 181), then lets the top-level loop re-dispatch each nested LIST 'strl'.",
+      "source": "both",
+      "output_budget": "n/a - single fixed 64-byte chunk (id + datalen + 56), never repeated",
+      "template_imposed": true
+    },
+    {
+      "rule": "cardinality",
+      "subject": "LIST 'strl' per stream",
+      "detail": "One LIST 'strl' per stream, nested inside LIST 'hdrl' after the avih chunk, conventionally in stream-index order (00, 01, 02 ...). At least one stream is required for the file to carry media. The template parses each strl as strh + strf + strn (lines 185-200) and the top-level loop finds each nested strl because it too begins with 'LIST'.",
+      "source": "both",
+      "output_budget": "at most 8 strl lists and 4 KiB of strl bytes total, accumulated as each list is emitted; rationale: 4 KiB covers an 8 bpp stream's 1024-byte palette plus framing for several streams, so palette-heavy files fit without capping biWidth, biHeight, biBitCount or biClrUsed - those stay free and the palette size follows from them."
+    },
+    {
+      "rule": "requires",
+      "subject": "contents of one LIST 'strl'",
+      "detail": "In order: 'strh' with a 56-byte AVIStreamHeader, then the 'strf' chunk whose structure is selected exclusively by fccType (BITMAPINFOHEADER for 'vids', WAVEFORMATEX for 'auds', opaque otherwise), then 'strn' with the stream name. The template reads all three unconditionally, so 'strn' is mandatory here even though the AVI spec makes it optional.",
+      "source": "both",
+      "output_budget": "counted against the strl budget above; one strl list is 64 + (8 + strf datalen + pad) + (8 + strn datalen + pad) bytes",
+      "template_imposed": true
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "strfHEADER_BIH / strfHEADER_WAVE / strfHEADER",
+      "detail": "Exactly one of the three strf structures is instantiated per stream, chosen by AVIStreamHeader.fccType: 'vids' -> strfHEADER_BIH (line 190), 'auds' -> strfHEADER_WAVE (line 194), anything else -> generic strfHEADER (line 198). A stream cannot carry two format chunks and the choice is not free once fccType is fixed.",
+      "source": "both",
+      "output_budget": "n/a - single fixed choice per stream"
+    },
+    {
+      "rule": "required",
+      "subject": "LIST 'movi'",
+      "detail": "Exactly one media data list, after LIST 'hdrl'. Its type fourcc must be 'movi' for the template to take the sample-walk branch (line 202). Without it the file declares streams but carries no samples, so no decoder does any real work.",
+      "source": "both",
+      "output_budget": "see the movi data-chunk entry below; this list is the single structure that receives the file's payload budget (32 KiB of sample data)"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "genericblock data chunks inside LIST 'movi'",
+      "detail": "One or more media chunks, each 8 + datalen (+ 1 pad byte when odd). The template's do-while loop (lines 209-214) always reads at least one block, so an empty movi list is not representable here. Chunk ids are '##dc'/'##db'/'##wb'/... naming the owning stream; the order in which different streams' chunks interleave is entirely free, which is what AVIF_ISINTERLEAVED advertises.",
+      "source": "both",
+      "output_budget": "at most 32 KiB of movi data (LISTHEADER.datalen - 4), accumulated as 8 + datalen + pad per chunk and checked before each new sample is emitted; rationale: this is where the real payload lives so it takes half the file budget - 32 KiB holds dozens of small frames or a few larger ones, and the FRAME COUNT follows from the free dimensions (biWidth, biHeight, biBitCount) and the free per-frame size rather than being capped itself. Total file size is controlled here, never by narrowing a Tier C field."
+    },
+    {
+      "rule": "contiguous",
+      "subject": "movi sub-chunk tiling",
+      "detail": "The sub-chunks must tile LISTHEADER.datalen - 4 bytes exactly, back to back, with their pad bytes included and no gaps or slack: the loop terminates on pointer != stop becoming false (line 214) where stop = datalen - 4 (line 205) and pointer accumulates sizeof(gb) (line 212). A single byte of slack sends the template past the end of the list.",
+      "source": "both",
+      "output_budget": "shared with the movi data-chunk budget above (32 KiB)",
+      "template_imposed": true
+    },
+    {
+      "rule": "requires",
+      "subject": "RIFF pad byte after any odd-length chunk payload",
+      "detail": "Every chunk whose datalen is odd must be followed by exactly one 0x00 pad byte, which is NOT counted in datalen but IS counted by every enclosing length and offset. The template models this in strfHEADER (line 117), strnHEADER (line 154), genericblock (line 165) and JUNKHEADER (line 228) by reading datalen+1 bytes. The exception is strfHEADER_WAVE (lines 143-146), which has no parity branch, so its datalen must be even.",
+      "source": "both",
+      "output_budget": "n/a - at most one byte per odd-length chunk"
+    },
+    {
+      "rule": "forbidden",
+      "subject": "top-level chunk ids other than LIST, JUNK and idx1",
+      "detail": "The template's top-level dispatch compares the four bytes it read ahead against exactly 'LIST' (line 286), 'JUNK' (line 290) and 'idx1' (line 294); any other id reaches the else branch at line 298, prints 'unknown chunk' (line 301) and returns -1 (line 302), ending the parse. In particular OpenDML's top-level 'AVIX' extension forms, 'ix##'/'xx##' super-index chunks, 'vprp' and a bare 'dmlh' are unusable at this level - they must be wrapped in a LIST (e.g. LIST 'odml' holding 'dmlh') to survive.",
+      "source": "template",
+      "output_budget": "n/a - no bytes may be emitted for these ids",
+      "template_imposed": true
+    },
+    {
+      "rule": "last_element",
+      "subject": "idx1HEADER",
+      "detail": "The legacy index is optional but, when present, conventionally follows LIST 'movi' as the last top-level chunk. Its id must be 'idx1' (line 294) and its body is a whole number of 16-byte AVIINDEXENTRY records (line 250). Writers reserve space for it with a leading JUNK chunk and backfill it at the end.",
+      "source": "both",
+      "output_budget": "at most 8 KiB of index data (512 entries of 16 bytes); rationale: the index grows with the number of movi samples, which the movi budget already bounds, so this cap only prevents pathological backfill-style files with thousands of padding entries."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "JUNKHEADER padding chunks",
+      "detail": "Zero or more, anywhere at the top level (and legal inside movi). Content is unchecked; only datalen and the pad byte matter. JUNK is a free magnitude axis that shifts every subsequent offset, which makes it valuable for exercising offset arithmetic in the index and the demuxer.",
+      "source": "both",
+      "output_budget": "at most 8 KiB of padding total across all JUNK chunks, accumulated per chunk; rationale: enough to move idx1 and movi to interesting offsets and to exercise odd/even alignment, without letting padding dominate a 64 KiB file."
+    },
+    {
+      "rule": "requires",
+      "subject": "idx1 entry count and datalen",
+      "detail": "idx1HEADER.datalen must be exactly 16 * number_of_entries (AVIINDEXENTRYLEN, line 244), because the template indexes the body with integer division data[datalen/AVIINDEXENTRYLEN] (line 250) - a non-multiple leaves unread bytes that desynchronise the top-level walk. For a coherent file the entries cover every media chunk in movi, one per chunk, in file order.",
+      "source": "both",
+      "output_budget": "counted against the 8 KiB idx1 budget above",
+      "template_imposed": true
+    },
+    {
+      "rule": "ordering",
+      "subject": "LIST 'hdrl' versus LIST 'movi' versus 'idx1'",
+      "detail": "hdrl must precede movi (stream parameters are needed before samples are dispatched to a decoder), and idx1 must follow movi because its offsets refer to movi chunks. JUNK and metadata LISTs have no positional requirement.",
+      "source": "spec",
+      "output_budget": "n/a - ordering rule, no bytes of its own"
+    },
+    {
+      "rule": "cardinality",
+      "subject": "avihHEADER",
+      "detail": "Exactly one per file, as the first chunk of LIST 'hdrl'. A second 'avih' would be parsed by this template as a stray top-level chunk and rejected (lines 298-302).",
+      "source": "both",
+      "output_budget": "n/a - single fixed chunk"
+    },
+    {
+      "rule": "contiguous",
+      "subject": "chunks inside one LIST 'strl'",
+      "detail": "strh, strf and strn sit back to back with their pad bytes and must fill LISTHEADER.datalen - 4 exactly; the template reads them as three consecutive struct instances (lines 185-200) with no length checking of its own, so any slack appears as a bogus next-chunk id.",
+      "source": "both",
+      "output_budget": "counted against the 4 KiB strl budget above",
+      "template_imposed": true
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "BITMAPINFOHEADER.biWidth",
+      "why": "Frame width sets the DIB row stride, the codec's macroblock alignment, the scaler's inner loop counts and the size of every video sample; it is the single strongest size axis in AVI and pinning it would collapse all of them.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "BITMAPINFOHEADER.biSizeImage",
+        "genericblock.datalen",
+        "genericblock.data"
+      ]
+    },
+    {
+      "field": "BITMAPINFOHEADER.biHeight",
+      "why": "Frame height multiplies the stride into the sample size, and its sign additionally selects the top-down versus bottom-up row order in every raw-video decoder - two independent branches that a single pinned value would delete.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biBitCount",
+        "genericblock.data",
+        "MainAVIHeader.dwHeight"
+      ]
+    },
+    {
+      "field": "BITMAPINFOHEADER.biBitCount",
+      "why": "Pixel depth chooses between the palettised, 16-bit-mask, 24-bit and 32-bit unpacking paths and decides whether a palette must be present in strf; it is Tier B (enumerated) precisely so that all eight legal depths stay reachable rather than only 24.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biCompression",
+        "BITMAPINFOHEADER.biClrUsed",
+        "strfHEADER_BIH.datalen",
+        "genericblock.data"
+      ]
+    },
+    {
+      "field": "BITMAPINFOHEADER.biCompression",
+      "why": "This fourcc selects the video decoder itself - raw, MJPEG, MPEG-4, YUV planar/packed, RLE, H.263/AVC - so it is the axis that decides which decoder function bodies run at all; the full registered tag set must stay available.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "AVIStreamHeader.fccHandler",
+        "BITMAPINFOHEADER.biBitCount",
+        "genericblock.data",
+        "genericblock.id"
+      ]
+    },
+    {
+      "field": "BITMAPINFOHEADER.biClrUsed",
+      "why": "Palette entry count: it decides how many RGBQUADs the strf chunk must carry and how the decoder's palette-expansion loop runs, and 0 versus an explicit count is a distinct branch.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biBitCount",
+        "strfHEADER_BIH.datalen",
+        "strfHEADER_BIH.exData"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwWidth",
+      "why": "The file-level display width, which decoders reconcile against biWidth; a disagreement is itself a branch, so it must not be forced to equal biWidth.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MainAVIHeader.dwHeight",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwHeight",
+      "why": "The file-level display height; same reconciliation branch as dwWidth and the same reason to leave it free.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MainAVIHeader.dwWidth",
+        "BITMAPINFOHEADER.biHeight"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwFlags",
+      "why": "Six independent AVIF_* flags switch whole demuxer behaviours (index use, interleaved versus per-stream buffering, chunk-size trust, capture-file provenance); every OR-subset is legal and each is a different code path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "idx1HEADER.datalen",
+        "AVIINDEXENTRY.dwChunkOffset",
+        "LISTHEADER.type"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwTotalFrames",
+      "why": "Declared frame count versus the count actually present in movi: the mismatch case is a real reconciliation branch in demuxers, and capping it would tie file size to a constant.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "genericblock.id",
+        "AVIStreamHeader.dwLength",
+        "MainAVIHeader.dwLength"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwStreams",
+      "why": "Number of streams is the strongest structural axis in AVI (video only, audio only, video+audio, multi-audio, with text); it is declared freely here and realised by emitting that many LIST 'strl' chunks within the strl output_budget.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LISTHEADER.type",
+        "genericblock.id",
+        "AVIStreamHeader.fccType"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwMicroSecPerFrame",
+      "why": "Frame duration: drives timestamp generation, frame-rate reduction and the fallback path to dwRate/dwScale when it is zero. Free magnitudes exercise the duration arithmetic without any gate.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MainAVIHeader.dwScale",
+        "MainAVIHeader.dwRate",
+        "AVIStreamHeader.dwScale"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwScale",
+      "why": "Denominator of the file clock; only the ratio to dwRate matters, so any pair is legal and extreme pairs exercise the fraction-reduction and overflow guards.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MainAVIHeader.dwRate",
+        "MainAVIHeader.dwMicroSecPerFrame",
+        "MainAVIHeader.dwLength"
+      ]
+    },
+    {
+      "field": "MainAVIHeader.dwRate",
+      "why": "Numerator of the file clock; together with dwScale it fixes the nominal frame rate and therefore which timing branch runs.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MainAVIHeader.dwScale",
+        "AVIStreamHeader.dwRate"
+      ]
+    },
+    {
+      "field": "AVIStreamHeader.fccType",
+      "why": "Stream type selects the strf parser inside this template (lines 188, 192, 198) and the whole subsystem in a real demuxer; all five registered types must stay reachable.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "strfHEADER_BIH.datalen",
+        "strfHEADER_WAVE.datalen",
+        "AVIStreamHeader.dwSampleSize",
+        "genericblock.id"
+      ]
+    },
+    {
+      "field": "AVIStreamHeader.fccHandler",
+      "why": "Names the compressor/decompressor for the stream and is the fallback codec selector when biCompression is BI_RGB; an open fourcc registry means an open set of decoder entry points.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biCompression",
+        "AVIStreamHeader.fccType",
+        "genericblock.data"
+      ]
+    },
+    {
+      "field": "AVIStreamHeader.dwFlags",
+      "why": "AVISF_DISABLED and AVISF_VIDEO_PALCHANGES each switch a demuxer branch (skip stream, expect '##pc' palette updates); four combinations, all legal.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "genericblock.id",
+        "strfHEADER_BIH.exData"
+      ]
+    },
+    {
+      "field": "AVIStreamHeader.dwLength",
+      "why": "Per-stream sample count: a count field, so it is exactly the kind of value that must never be ranged; the real count comes from the movi chunks the generator emits within the movi budget.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "AVIStreamHeader.dwScale",
+        "genericblock.id",
+        "MainAVIHeader.dwTotalFrames"
+      ]
+    },
+    {
+      "field": "AVIStreamHeader.dwScale",
+      "why": "Per-stream time unit; for audio it is conventionally 1 with dwRate = nSamplesPerSec, for video a frame duration - two different timestamp paths worth reaching.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "AVIStreamHeader.dwRate",
+        "WAVEFORMATEX.nSamplesPerSec"
+      ]
+    },
+    {
+      "field": "AVIStreamHeader.dwRate",
+      "why": "Per-stream clock numerator; paired with dwScale it fixes sample timestamps and therefore the A/V sync branch.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "AVIStreamHeader.dwScale",
+        "MainAVIHeader.dwRate"
+      ]
+    },
+    {
+      "field": "WAVEFORMATEX.wFormatTag",
+      "why": "Audio codec selector: PCM, float, A-law/mu-law, the ADPCM family, GSM, MP3, WMA, EXTENSIBLE and the degenerate UNKNOWN/DEVELOPMENT values each open a different audio decoder or a different failure path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "WAVEFORMATEX.wBitsPerSample",
+        "WAVEFORMATEX.cbSize",
+        "strfHEADER_WAVE.exData",
+        "genericblock.data"
+      ]
+    },
+    {
+      "field": "WAVEFORMATEX.nChannels",
+      "why": "Channel count drives interleaving, the channel-map branches and the mixer/resampler path; mono, stereo, 5.1 and 7.1 are all separate code paths.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "WAVEFORMATEX.nBlockAlign",
+        "WAVEFORMATEX.wBitsPerSample",
+        "genericblock.data"
+      ]
+    },
+    {
+      "field": "WAVEFORMATEX.wBitsPerSample",
+      "why": "Sample width selects the PCM unpacking routine and the integer-versus-float path; all nine legal widths must stay reachable, including the awkward 0, 4, 12, 20 and 64.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "WAVEFORMATEX.wFormatTag",
+        "WAVEFORMATEX.nBlockAlign",
+        "WAVEFORMATEX.nChannels"
+      ]
+    },
+    {
+      "field": "WAVEFORMATEX.nSamplesPerSec",
+      "why": "Sample rate decides the resampler path, the audio frame duration and the ADPCM/MP3 block-size tables; free rates reach branches a fixed 44100 never would.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "WAVEFORMATEX.nBlockAlign",
+        "WAVEFORMATEX.nAvgBytesPerSec",
+        "AVIStreamHeader.dwScale"
+      ]
+    },
+    {
+      "field": "genericblock.id",
+      "why": "Chunk fourcc encodes both the stream index and the sample kind ('dc' compressed, 'db' uncompressed, 'wb' audio, 'pc' palette change, 'tc' timecode, 'tx' text); it is the axis that decides the interleave pattern across streams and which dispatch branch runs per chunk.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "AVIStreamHeader.fccType",
+        "genericblock.data",
+        "AVIINDEXENTRY.ckid",
+        "AVIINDEXENTRY.dwChunkOffset"
+      ]
+    },
+    {
+      "field": "genericblock.datalen",
+      "why": "Per-sample size: derived from the free dimensions and the codec, so it needs no range of its own, and the NUMBER of samples is bounded only by the movi output_budget. This is the field a size-conscious author would be tempted to pin to one frame - it must stay derived and free.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "genericblock.data",
+        "BITMAPINFOHEADER.biWidth",
+        "BITMAPINFOHEADER.biHeight",
+        "BITMAPINFOHEADER.biBitCount",
+        "LISTHEADER.datalen",
+        "AVIINDEXENTRY.dwChunkLength"
+      ]
+    },
+    {
+      "field": "genericblock.data",
+      "why": "The media sample payload: its contents are free within the codec's own well-formedness rules, and its size follows from biWidth/biHeight/biBitCount or from the codec. It is the payload_wellformedness entry, so nothing about it may be narrowed to make generation easier.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "BITMAPINFOHEADER.biCompression",
+        "AVIStreamHeader.fccHandler",
+        "WAVEFORMATEX.wFormatTag",
+        "genericblock.datalen",
+        "genericblock.id"
+      ]
+    },
+    {
+      "field": "LISTHEADER.type",
+      "why": "Form type selects the container meaning: hdrl, strl, movi and rec have real handlers, while INFO, odml, Tdat, IDIT and JUNK exercise the metadata and opaque-body paths - all legal, all different code.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "LISTHEADER.datalen",
+        "MainAVIHeader.dwStreams",
+        "avihHEADER.datalen"
+      ]
+    },
+    {
+      "field": "AVIINDEXENTRY.ckid",
+      "why": "Which chunk each index entry names: mirroring the movi fourccs keeps the index resolvable, while 'LIST' entries point at record groups - a different seek path. Free within the pattern.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "genericblock.id",
+        "AVIINDEXENTRY.dwFlags",
+        "AVIINDEXENTRY.dwChunkOffset"
+      ]
+    },
+    {
+      "field": "AVIINDEXENTRY.dwFlags",
+      "why": "Keyframe, list-group, first/last and no-time flags each select a branch in index loading and seeking; six atomic flags means 64 legal combinations and every one is worth emitting.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "AVIINDEXENTRY.ckid",
+        "MainAVIHeader.dwFlags",
+        "genericblock.data"
+      ]
+    },
+    {
+      "field": "JUNKHEADER.datalen",
+      "why": "Padding size is a free magnitude that shifts every following chunk offset, so it exercises offset arithmetic in the demuxer and the index and the odd/even alignment paths - bounded only by the JUNK output_budget, never by a field range.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "AVIINDEXENTRY.dwChunkOffset",
+        "LISTHEADER.datalen",
+        "ROOT.datalen"
+      ]
+    },
+    {
+      "field": "strnHEADER.data",
+      "why": "Free-form stream name text of arbitrary (odd or even) length: the characters are metadata and the length additionally exercises the RIFF pad-byte path.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "strnHEADER.datalen",
+        "LISTHEADER.datalen"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5051 @@
+{
+  "meta": {
+    "format": "midi",
+    "source_template": "templates_originals/midi-orig.bt",
+    "model": "qwen3.8-max",
+    "strategy": "tiered",
+    "spec_reference": "Standard MIDI File (SMF) Format 1, Specification Version 1.0, International MIDI Association / MIDI Manufacturers Association, 1996-02-28, plus the 'MIDI Files Update to Specification 1.0' (May 1996) that documents format 2 and the F7 escape event; MIDI 1.0 Detailed Specification 4.2 (1996) for the status/data-byte bit-7 rule, running status and System Exclusive framing; MMA Recommended Practice RP-008 'SMPTE Time Code in MIDI Files' for the SMPTE division form and the SMPTE Offset meta event; General MIDI 1 (1991) for controller and program-number semantics.",
+    "schema_extensions": [
+      {
+        "name": "evidence_extra",
+        "where": "individual entries of `constraints`",
+        "why": "Several rules in this template are evidenced by more than one line (for example the MThd ID bytes are stated in the header comment at line 11 while the field itself is declared at line 22, and the track loop bound is proved by lines 250-254). The required single `evidence` object cannot carry all of them, and dropping the extra lines would weaken the grounding."
+      },
+      {
+        "name": "key_naming_for_anonymous_structs",
+        "where": "the key strings of `constraints` (convention, not a new key)",
+        "why": "Every event payload in this template is an anonymous struct bound to an instance name (`struct { ... } note_off_event;`, `... } meta_event;`, `... } sysex_event;`, and the top-level `... } file;`). No typename exists in the .bt, so the instance name is used as the STRUCT_TYPENAME part of the key. All such names are spelled exactly as they appear in the template."
+      },
+      {
+        "name": "presence_condition",
+        "where": "individual entries of `constraints`",
+        "why": "Most fields in this format exist only under a condition (a data byte exists only for its message type, DeltaTime.t1 exists only when t0 has bit 7 set, meta payload fields exist only for their meta type). The schema has no place to say 'this field is emitted only when X', and a generator needs that co-located with the field rather than only in `dependencies`."
+      },
+      {
+        "name": "temptation",
+        "where": "Tier C entries of `constraints`",
+        "why": "Records explicitly what a size-conscious author would be tempted to do to this free field and why doing it is the documented GIF failure. It carries no numeric bound of any kind; it exists to protect the field from one."
+      },
+      {
+        "name": "spec_constant",
+        "where": "MidiHeader.m_seclen",
+        "why": "The field is a calculated length (readers skip by it) whose value the specification also fixes at 6 for every conforming header. Recording the constant separately keeps `type: calculated_value` semantics intact instead of collapsing the field to a fixed_value and losing the 'longer header with matching padding' branch."
+      },
+      {
+        "name": "illegal_values",
+        "where": "MidiMessage.m_status",
+        "why": "Lists the byte values that are deliberately absent from `valid_values` together with the format rule that excludes them, so the omission is provably a specification constraint and not a productivity filter (completeness checklist item 5)."
+      },
+      {
+        "name": "valid_bits_as_integer_mask",
+        "where": "all `bitmask_constraint` entries",
+        "why": "`valid_bits` is given as an integer mask of the bits that MAY be set; every bit outside the mask must be zero. Stated here because the schema names the key but not its representation."
+      },
+      {
+        "name": "scope",
+        "where": "`when` objects of `dependencies`",
+        "why": "Two MIDI rules are about the PREVIOUS event (running status reuse, and the cancellation of running status by a meta or sysex event). `scope: previous_message` marks that the condition is evaluated against the preceding MidiMessage rather than the current one."
+      },
+      {
+        "name": "reuse_previous",
+        "where": "`then` objects of `dependencies`",
+        "why": "Expresses the running-status rule: when true the field's byte is omitted entirely and the previous status is reused; when false a status byte is mandatory. `required`/`forbidden` alone cannot say 'omit the byte and inherit the value'."
+      },
+      {
+        "name": "also_covers",
+        "where": "individual entries of `diversity_axes`",
+        "why": "MIDI repeats the same freedom across sibling fields that share one semantic dimension: the seven data-byte payloads bounded by 0x7F, the eight text meta payloads, the five SMPTE-offset bytes, the four time-signature bytes, the four DeltaTime framing bytes and the two chunk magics. `field` names the primary entry and `also_covers` lists the remaining `constraints` keys that the same axis governs, so all 54 constraint keys are covered without duplicating 54 near-identical axis entries. Every key listed here also exists in `constraints`."
+      },
+      {
+        "name": "tier",
+        "where": "individual entries of `diversity_axes`",
+        "why": "Copies the tier recorded for the same field in `constraints`, so a rewrite pass can tell at a glance whether the axis is free by choice (Tier C), free within a legal set (Tier B) or free in value while its framing is pinned (Tier A). The tier is never used to narrow anything: a Tier A axis here means 'the value must be derived, the quantity it measures stays free'."
+      },
+      {
+        "name": "tier_note",
+        "where": "individual entries of `diversity_axes`",
+        "why": "`tier` alone cannot say what freedom remains inside a pinned tier, and for MIDI most axes are Tier A on framing only. The note states exactly which part is fixed and which part must stay free, and for Tier C fields records the 'no bound of any kind' statement that the required keys do not carry."
+      },
+      {
+        "name": "section / other_sections / position",
+        "where": "`when` and `then` objects of `dependencies`",
+        "why": "The schema allows `when` to test whole sections for presence and `then` to mark a section required or forbidden, but names no key for the section itself. `section` names the affected struct or event block, `other_sections: forbidden` records the mutual exclusivity of the nine event arms (a status byte selects exactly one payload block and forbids the other eight), and `position` says where inside its section the element must sit - used for the End-of-Track event, which must be the last event of its track."
+      }
+    ],
+    "structure_note": "A Standard MIDI File is a flat big-endian chunk sequence: one 14-byte MThd header chunk, then exactly header.m_ntracks MTrk track chunks, each of which is a 4-byte magic, a 4-byte big-endian byte count, and a contiguous run of delta-time + status + data-byte events that must exactly fill that count and must end with the FF 2F 00 End-of-Track meta event; the format contains no compressed or encrypted payload of any kind (so there is no zlib/LZW/Huffman analogue here), but two byte-level encodings are load-bearing and are recorded as Tier A payload_wellformedness: the 7-bit-per-byte variable-length quantity used for every delta time and every meta/sysex length, and the MIDI System Exclusive byte stream carried by F0 events. Nothing in the format is padded, aligned or wrapped: the whole file is the header chunk followed immediately by the track chunks, and the final byte of the final track must be the last byte of the file.",
+    "tier_counts": {
+      "A": 24,
+      "B": 2,
+      "C": 28
+    }
+  },
+  "constraints": {
+    "MidiHeader.m_magic": {
+      "tier": "A",
+      "tier_rationale": "A reader that does not find the four bytes 'MThd' at file offset 0 rejects the file at its front gate, before a single track byte is parsed.",
+      "type": "fixed_value",
+      "description": "Header chunk identifier; must be the four ASCII characters 'MThd' at offset 0.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 22,
+        "snippet": "char m_magic[4] <format = hex>;"
+      },
+      "evidence_extra": [
+        {
+          "line": 11,
+          "snippet": "//  ID Bytes: 4D 54 68 64 //MThd"
+        },
+        {
+          "line": 20,
+          "snippet": "struct MidiHeader"
+        },
+        {
+          "line": 259,
+          "snippet": "MidiHeader header;"
+        }
+      ],
+      "confidence": "high",
+      "required_value": "MThd",
+      "required_value_hex": "4D 54 68 64",
+      "required_value_ascii": "MThd",
+      "endianness": "n/a",
+      "notes": "The template's own repository header states the ID bytes verbatim at line 11, and the top-level struct instantiates MidiHeader as the first member (line 259). Emit at offset 0 with no preamble, no BOM and no RIFF wrapper."
+    },
+    "MidiHeader.m_seclen": {
+      "tier": "A",
+      "tier_rationale": "The reader skips this many bytes to reach the first MTrk chunk; a value that disagrees with the real header size drops the chunk walk in the middle of a magic number and the file is refused before any track is read.",
+      "type": "calculated_value",
+      "description": "Byte count of the header data that follows this field up to the first track chunk.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 23,
+        "snippet": "uint m_seclen;"
+      },
+      "evidence_extra": [
+        {
+          "line": 18,
+          "snippet": "BigEndian();"
+        }
+      ],
+      "confidence": "high",
+      "algorithm": "byte count",
+      "covers": "m_format (2 bytes) + m_ntracks (2 bytes) + m_tickdiv (2 bytes) = 6 bytes, plus any extra header padding the writer chooses to append before the first MTrk",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "MidiHeader.m_format",
+        "MidiHeader.m_ntracks",
+        "MidiHeader.m_tickdiv"
+      ],
+      "spec_constant": 6,
+      "notes": "SMF 1.0 fixes the standard header at exactly 6 bytes, so every conforming file carries 6 here; the entry stays a calculated_value because readers skip by this length, and a writer that appends extra header bytes must raise it to match. Big-endian because of the global BigEndian() at line 18."
+    },
+    "MidiHeader.m_format": {
+      "tier": "B",
+      "tier_rationale": "A value outside the enum makes a reader reject the file, but all three declared values parse, and each selects a genuinely different track-role interpretation, so the correct treatment is the full legal set rather than one pinned constant.",
+      "type": "enumerated_values",
+      "description": "File format: 0 = one track holding both tempo map and performance, 1 = several tracks played together with the first as the tempo/conduction track, 2 = several independent patterns.",
+      "field_type": "enum <short>",
+      "source": "both",
+      "evidence": {
+        "line": 29,
+        "snippet": "} m_format;"
+      },
+      "evidence_extra": [
+        {
+          "line": 24,
+          "snippet": "enum <short>"
+        },
+        {
+          "line": 26,
+          "snippet": "MIDI_SINGLE = 0,"
+        },
+        {
+          "line": 27,
+          "snippet": "MIDI_MULTIPLE = 1,"
+        },
+        {
+          "line": 28,
+          "snippet": "MIDI_PATTERN = 2"
+        }
+      ],
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2
+      ],
+      "value_names": [
+        "MIDI_SINGLE",
+        "MIDI_MULTIPLE",
+        "MIDI_PATTERN"
+      ],
+      "completeness": "exhaustive",
+      "endianness": "big",
+      "preferred_value": [
+        1,
+        0
+      ],
+      "notes": "Emit all three. MIDI_PATTERN (2) is the rare one and is the only format in which META_SEQUENCE_NUM carries pattern-selection meaning, so dropping it deletes that branch. preferred_value names 1 and 0 as the deepest-parsing values (multi-track conduction logic, then the single-track inline-tempo path) without removing 2 from the emitted set."
+    },
+    "MidiHeader.m_ntracks": {
+      "tier": "A",
+      "tier_rationale": "The reader walks exactly this many MTrk chunks: too many and it hits end-of-file and aborts, too few and the remaining track bytes are never parsed, so a value that disagrees with the file stops useful work.",
+      "type": "calculated_value",
+      "description": "Number of MTrk track chunks that follow the header.",
+      "field_type": "short",
+      "source": "both",
+      "evidence": {
+        "line": 30,
+        "snippet": "short m_ntracks;"
+      },
+      "evidence_extra": [
+        {
+          "line": 260,
+          "snippet": "MidiTrack tracks[header.m_ntracks] <optimize=false>;"
+        },
+        {
+          "line": 259,
+          "snippet": "MidiHeader header;"
+        }
+      ],
+      "confidence": "high",
+      "algorithm": "count of the MTrk chunks that follow the header",
+      "covers": "the element count of file.tracks, which line 260 declares as `MidiTrack tracks[header.m_ntracks] <optimize=false>`",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "file.tracks"
+      ],
+      "temptation": "Pinning this to 1 or 2 to keep files small. Do not: it is the repeat count of the only structure in the format that produces bytes, and total size is bounded by the output_budget on file.tracks in `structure`. Tier A here means AGREEMENT, not a constant - choose the track count freely, emit that many MTrk chunks, then write the count.",
+      "notes": "Declared `short` (signed) but a conforming file carries 1 or more. Format 0 requires exactly 1 (see dependencies). Generate the tracks first and write the count from what was actually emitted so agreement holds by construction."
+    },
+    "MidiHeader.m_tickdiv": {
+      "tier": "C",
+      "tier_rationale": "A reader handed an unexpected division still parses and plays the entire file - the value only scales timing - so pinning it buys no depth and costs the metric-versus-SMPTE branch, which is a distinct path in every reader that converts delta times to wall-clock time.",
+      "type": "unconstrained",
+      "description": "Time division: ticks per unit of musical time, in one of two encodings selected by bit 15.",
+      "field_type": "short",
+      "source": "both",
+      "evidence": {
+        "line": 31,
+        "snippet": "short m_tickdiv;"
+      },
+      "evidence_extra": [
+        {
+          "line": 18,
+          "snippet": "BigEndian();"
+        }
+      ],
+      "confidence": "high",
+      "endianness": "big",
+      "temptation": "Setting it to 96, 120 or 480 because those are the 'normal' ticks-per-quarter-note values. That deletes the whole SMPTE half of the field and makes every generated file time-identical.",
+      "notes": "Format rule, recorded as INFORMATION ONLY and explicitly not a narrowing: bit 15 = 0 gives a positive metric division (ticks per quarter note); bit 15 = 1 gives an SMPTE division where bits 14-8 hold frames per second as a two's-complement negative number (SMF names -24, -25, -29 drop-frame, -30) and bits 7-0 hold ticks per frame. Both forms are legal, both drive different reader code, and every value inside each form must stay free across the full 16-bit span."
+    },
+    "DeltaTime.t0": {
+      "tier": "C",
+      "tier_rationale": "Every byte value 0x00-0xFF is legal in the first position of a variable-length quantity - bit 7 merely selects whether a second byte follows - so any value still yields a quantity the reader decodes; capping it would collapse all delta times and lengths to the one-byte encoding.",
+      "type": "unconstrained",
+      "description": "First byte of a variable-length quantity: bits 6-0 are the most significant seven value bits and bit 7 is the continuation flag.",
+      "field_type": "char",
+      "source": "template",
+      "evidence": {
+        "line": 37,
+        "snippet": "char t0;"
+      },
+      "evidence_extra": [
+        {
+          "line": 36,
+          "snippet": "local uint total = 0;"
+        },
+        {
+          "line": 38,
+          "snippet": "total += t0 & 0x7f;"
+        },
+        {
+          "line": 39,
+          "snippet": "if (!(t0 & 0x80))"
+        },
+        {
+          "line": 40,
+          "snippet": "break;"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "always present; every MidiMessage delta time and every meta/sysex length begins with a DeltaTime",
+      "temptation": "Restricting it below 0x80 so every quantity is one byte and files stay short. That removes the multi-byte VLQ decode loop, which is a real branch in every reader.",
+      "notes": "The template's own decode is `total += t0 & 0x7f; if (!(t0 & 0x80)) break;` (lines 38-40): bit 7 set means 'read another byte'. Varying this byte freely is what produces 1-, 2-, 3- and 4-byte quantities across the corpus."
+    },
+    "DeltaTime.t1": {
+      "tier": "C",
+      "tier_rationale": "When present, any byte value is legal for the same reason as t0 - bit 7 selects a third byte - so constraining it would only remove quantity encodings without buying any decoder depth.",
+      "type": "unconstrained",
+      "description": "Second byte of a variable-length quantity: bits 6-0 are the next seven value bits, bit 7 is the continuation flag.",
+      "field_type": "char",
+      "source": "template",
+      "evidence": {
+        "line": 43,
+        "snippet": "char t1;"
+      },
+      "evidence_extra": [
+        {
+          "line": 42,
+          "snippet": "total <<= 7;"
+        },
+        {
+          "line": 44,
+          "snippet": "total += t1 & 0x7f;"
+        },
+        {
+          "line": 45,
+          "snippet": "if (!(t1 & 0x80))"
+        },
+        {
+          "line": 46,
+          "snippet": "break;"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when DeltaTime.t0 has bit 7 set",
+      "temptation": "Omitting multi-byte quantities to keep event headers at one byte each.",
+      "notes": "Non-minimal encodings (a leading 0x80 pad byte) are tolerated by most readers but rejected by strict ones; both behaviours are worth reaching, so leave the byte free. The shift-and-accumulate at lines 42-44 shows the value is assembled most-significant group first."
+    },
+    "DeltaTime.t2": {
+      "tier": "C",
+      "tier_rationale": "When present, any byte value is legal, bit 7 selecting the fourth and final byte; constraining it would delete the three- and four-byte quantity encodings for no depth.",
+      "type": "unconstrained",
+      "description": "Third byte of a variable-length quantity.",
+      "field_type": "char",
+      "source": "template",
+      "evidence": {
+        "line": 49,
+        "snippet": "char t2;"
+      },
+      "evidence_extra": [
+        {
+          "line": 48,
+          "snippet": "total <<= 7;"
+        },
+        {
+          "line": 50,
+          "snippet": "total += t2 & 0x7f;"
+        },
+        {
+          "line": 51,
+          "snippet": "if (!(t2 & 0x80))"
+        },
+        {
+          "line": 52,
+          "snippet": "break;"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when DeltaTime.t1 has bit 7 set",
+      "temptation": "Capping quantities at two bytes to bound event sizes.",
+      "notes": "See DeltaTime.t0 for the encoding. The quantity's decoded value is what feeds array bounds elsewhere in the template (for example `char m_text[m_length.total]` at line 159), so the value must stay free while the byte-level framing rule in DeltaTime.t3 keeps it decodable."
+    },
+    "DeltaTime.t3": {
+      "tier": "A",
+      "tier_rationale": "If bit 7 of the fourth byte is set the reader consumes a fifth byte as part of the quantity - for a delta time that fifth byte is the status byte - so the event type is lost, every later event in the track is offset, the track no longer sums to MidiTrack.m_seclen, and the reader refuses the file; SMF also caps a quantity at four bytes / 0x0FFFFFFF.",
+      "type": "bitmask_constraint",
+      "description": "Fourth and final byte of a variable-length quantity; its bit 7 must be clear so the quantity terminates here.",
+      "field_type": "char",
+      "source": "template",
+      "evidence": {
+        "line": 55,
+        "snippet": "char t3;"
+      },
+      "evidence_extra": [
+        {
+          "line": 54,
+          "snippet": "total <<= 7;"
+        },
+        {
+          "line": 56,
+          "snippet": "total += t3 & 0x7f;"
+        },
+        {
+          "line": 57,
+          "snippet": "if (!(t3 & 0x80))"
+        },
+        {
+          "line": 58,
+          "snippet": "break;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when DeltaTime.t2 has bit 7 set",
+      "notes": "The template hard-stops after four bytes: it accumulates t3 and then falls out of the struct with no further continuation test, mirroring the format's 0x0FFFFFFF ceiling. Bits 6-0 remain completely free, so the four-byte encoding still spans the full upper range of quantity values."
+    },
+    "MidiMessage.m_dtime": {
+      "tier": "A",
+      "tier_rationale": "This is the encoded quantity that opens every event; if its framing is wrong the reader cannot find the status byte, the whole track desynchronises against MidiTrack.m_seclen, and the file is refused before any later event is executed.",
+      "type": "payload_wellformedness",
+      "description": "Delta time: the number of ticks between the previous event in this track and this one, encoded as a MIDI variable-length quantity.",
+      "field_type": "DeltaTime",
+      "source": "both",
+      "evidence": {
+        "line": 65,
+        "snippet": "DeltaTime m_dtime;"
+      },
+      "evidence_extra": [
+        {
+          "line": 34,
+          "snippet": "struct DeltaTime"
+        },
+        {
+          "line": 36,
+          "snippet": "local uint total = 0;"
+        },
+        {
+          "line": 39,
+          "snippet": "if (!(t0 & 0x80))"
+        },
+        {
+          "line": 57,
+          "snippet": "if (!(t3 & 0x80))"
+        }
+      ],
+      "confidence": "high",
+      "codec": "MIDI variable-length quantity (VLQ) - SMF 1.0 'Variable-Length Values': 7 value bits per byte, most significant group first, bit 7 of every byte except the last set to 1",
+      "must_produce": "1 to 4 bytes encoding a value in 0x00000000..0x0FFFFFFF. Every byte except the last carries bit 7 = 1 (continuation); the last byte carries bit 7 = 0. Encode in the minimum number of bytes - no leading 0x80 pad bytes - which is what the SMF arbitrary-length rule requires and what mainstream readers assume.",
+      "decoder_gate": "With random bytes the continuation flags never terminate inside four bytes, so the reader swallows the following status byte as a value byte: the event type is lost, every subsequent event in the track is byte-offset, the summed event sizes no longer equal MidiTrack.m_seclen, and readers abort with a track-length / unexpected-status / EOF error having executed almost none of the event dispatch code. Readers that count bytes reject the quantity outright as 'variable length quantity too long' once it exceeds 0x0FFFFFFF.",
+      "generation_strategy": "Choose the delta-time value v freely anywhere in 0..0x0FFFFFFF (v = 0 is legal and common), then emit base-128 big-endian: if v < 0x80 write the single byte v; otherwise split v into 7-bit groups most significant first, OR 0x80 into every group except the last, and write them in that order. Worked examples: v=0 -> 00; v=0x7F -> 7F; v=0x80 -> 81 00; v=0x2000 -> C0 00; v=0x3FFF -> FF 7F; v=0x1FFFFF -> FF FF 7F; v=0x0FFFFFFF -> FF FF FF 7F. Deliberately vary v so the corpus contains one-, two-, three- and four-byte quantities - that variation is the diversity, and it costs nothing because the framing rule above keeps every encoding decodable.",
+      "derives_from": [],
+      "content_is_free": true,
+      "notes": "content_is_free means the DECODED VALUE is unconstrained (any tick count 0..0x0FFFFFFF, including 0); only the byte framing is pinned. The same DeltaTime struct is reused as a length field at lines 152 and 240, and in that role its derives_from set is NOT empty - see meta_event.m_length and sysex_event.m_length, where the encoded value must equal the payload byte count."
+    },
+    "MidiMessage.m_status": {
+      "tier": "A",
+      "tier_rationale": "This byte is the block marker for the whole event: the reader dispatches on its high nibble and on bit 7, and a value outside the legal status set makes it either refuse the file or mis-frame every following byte in the track.",
+      "type": "enumerated_values",
+      "description": "Event status byte selecting the message type and MIDI channel, or absent entirely when running status applies.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 66,
+        "snippet": "char m_status;"
+      },
+      "evidence_extra": [
+        {
+          "line": 67,
+          "snippet": "if (m_status & 0x80)"
+        },
+        {
+          "line": 68,
+          "snippet": "lastStatus = m_status;"
+        },
+        {
+          "line": 70,
+          "snippet": "FSeek(FTell()-1);"
+        },
+        {
+          "line": 72,
+          "snippet": "local char m_channel = lastStatus & 0xf;"
+        },
+        {
+          "line": 73,
+          "snippet": "if ((lastStatus & 0xf0) == 0x80)"
+        },
+        {
+          "line": 127,
+          "snippet": "else if (lastStatus == -1)"
+        },
+        {
+          "line": 236,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xF0)"
+        }
+      ],
+      "confidence": "high",
+      "valid_values": [
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        149,
+        150,
+        151,
+        152,
+        153,
+        154,
+        155,
+        156,
+        157,
+        158,
+        159,
+        160,
+        161,
+        162,
+        163,
+        164,
+        165,
+        166,
+        167,
+        168,
+        169,
+        170,
+        171,
+        172,
+        173,
+        174,
+        175,
+        176,
+        177,
+        178,
+        179,
+        180,
+        181,
+        182,
+        183,
+        184,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        198,
+        199,
+        200,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        207,
+        208,
+        209,
+        210,
+        211,
+        212,
+        213,
+        214,
+        215,
+        216,
+        217,
+        218,
+        219,
+        220,
+        221,
+        222,
+        223,
+        224,
+        225,
+        226,
+        227,
+        228,
+        229,
+        230,
+        231,
+        232,
+        233,
+        234,
+        235,
+        236,
+        237,
+        238,
+        239,
+        240,
+        247,
+        255
+      ],
+      "value_names": [
+        "NOTE_OFF ch0",
+        "NOTE_OFF ch1",
+        "NOTE_OFF ch2",
+        "NOTE_OFF ch3",
+        "NOTE_OFF ch4",
+        "NOTE_OFF ch5",
+        "NOTE_OFF ch6",
+        "NOTE_OFF ch7",
+        "NOTE_OFF ch8",
+        "NOTE_OFF ch9",
+        "NOTE_OFF ch10",
+        "NOTE_OFF ch11",
+        "NOTE_OFF ch12",
+        "NOTE_OFF ch13",
+        "NOTE_OFF ch14",
+        "NOTE_OFF ch15",
+        "NOTE_ON ch0",
+        "NOTE_ON ch1",
+        "NOTE_ON ch2",
+        "NOTE_ON ch3",
+        "NOTE_ON ch4",
+        "NOTE_ON ch5",
+        "NOTE_ON ch6",
+        "NOTE_ON ch7",
+        "NOTE_ON ch8",
+        "NOTE_ON ch9",
+        "NOTE_ON ch10",
+        "NOTE_ON ch11",
+        "NOTE_ON ch12",
+        "NOTE_ON ch13",
+        "NOTE_ON ch14",
+        "NOTE_ON ch15",
+        "POLY_KEY_PRESSURE ch0",
+        "POLY_KEY_PRESSURE ch1",
+        "POLY_KEY_PRESSURE ch2",
+        "POLY_KEY_PRESSURE ch3",
+        "POLY_KEY_PRESSURE ch4",
+        "POLY_KEY_PRESSURE ch5",
+        "POLY_KEY_PRESSURE ch6",
+        "POLY_KEY_PRESSURE ch7",
+        "POLY_KEY_PRESSURE ch8",
+        "POLY_KEY_PRESSURE ch9",
+        "POLY_KEY_PRESSURE ch10",
+        "POLY_KEY_PRESSURE ch11",
+        "POLY_KEY_PRESSURE ch12",
+        "POLY_KEY_PRESSURE ch13",
+        "POLY_KEY_PRESSURE ch14",
+        "POLY_KEY_PRESSURE ch15",
+        "CONTROL_CHANGE ch0",
+        "CONTROL_CHANGE ch1",
+        "CONTROL_CHANGE ch2",
+        "CONTROL_CHANGE ch3",
+        "CONTROL_CHANGE ch4",
+        "CONTROL_CHANGE ch5",
+        "CONTROL_CHANGE ch6",
+        "CONTROL_CHANGE ch7",
+        "CONTROL_CHANGE ch8",
+        "CONTROL_CHANGE ch9",
+        "CONTROL_CHANGE ch10",
+        "CONTROL_CHANGE ch11",
+        "CONTROL_CHANGE ch12",
+        "CONTROL_CHANGE ch13",
+        "CONTROL_CHANGE ch14",
+        "CONTROL_CHANGE ch15",
+        "PROGRAM_CHANGE ch0",
+        "PROGRAM_CHANGE ch1",
+        "PROGRAM_CHANGE ch2",
+        "PROGRAM_CHANGE ch3",
+        "PROGRAM_CHANGE ch4",
+        "PROGRAM_CHANGE ch5",
+        "PROGRAM_CHANGE ch6",
+        "PROGRAM_CHANGE ch7",
+        "PROGRAM_CHANGE ch8",
+        "PROGRAM_CHANGE ch9",
+        "PROGRAM_CHANGE ch10",
+        "PROGRAM_CHANGE ch11",
+        "PROGRAM_CHANGE ch12",
+        "PROGRAM_CHANGE ch13",
+        "PROGRAM_CHANGE ch14",
+        "PROGRAM_CHANGE ch15",
+        "CHANNEL_PRESSURE ch0",
+        "CHANNEL_PRESSURE ch1",
+        "CHANNEL_PRESSURE ch2",
+        "CHANNEL_PRESSURE ch3",
+        "CHANNEL_PRESSURE ch4",
+        "CHANNEL_PRESSURE ch5",
+        "CHANNEL_PRESSURE ch6",
+        "CHANNEL_PRESSURE ch7",
+        "CHANNEL_PRESSURE ch8",
+        "CHANNEL_PRESSURE ch9",
+        "CHANNEL_PRESSURE ch10",
+        "CHANNEL_PRESSURE ch11",
+        "CHANNEL_PRESSURE ch12",
+        "CHANNEL_PRESSURE ch13",
+        "CHANNEL_PRESSURE ch14",
+        "CHANNEL_PRESSURE ch15",
+        "PITCH_BEND ch0",
+        "PITCH_BEND ch1",
+        "PITCH_BEND ch2",
+        "PITCH_BEND ch3",
+        "PITCH_BEND ch4",
+        "PITCH_BEND ch5",
+        "PITCH_BEND ch6",
+        "PITCH_BEND ch7",
+        "PITCH_BEND ch8",
+        "PITCH_BEND ch9",
+        "PITCH_BEND ch10",
+        "PITCH_BEND ch11",
+        "PITCH_BEND ch12",
+        "PITCH_BEND ch13",
+        "PITCH_BEND ch14",
+        "PITCH_BEND ch15",
+        "SYSEX_START",
+        "SYSEX_ESCAPE_OR_EOX",
+        "META_EVENT"
+      ],
+      "completeness": "exhaustive",
+      "illegal_values": [
+        241,
+        242,
+        243,
+        244,
+        245,
+        246,
+        248,
+        249,
+        250,
+        251,
+        252,
+        253,
+        254
+      ],
+      "preferred_value": [
+        144,
+        128,
+        176,
+        192,
+        224,
+        255,
+        240
+      ],
+      "presence_condition": "OPTIONAL byte: present only when bit 7 of the byte at this position is set; otherwise there is no status byte at all and the previous status in this track is reused (running status)",
+      "notes": "Declared `char`, which 010 Editor treats as signed, so the template's meta-event test at line 127 reads `lastStatus == -1` - that is 0xFF. illegal_values documents why 0xF1-0xF6 (system common) and 0xF8-0xFE (real time) are absent from valid_values: SMF 1.0 forbids them as track statuses, and the legal way to carry those bytes - which is also the way to reach a reader's system-common handling code - is inside an F7 escape event payload (sysex_event.m_message). Their exclusion is a format rule, not a productivity filter. The low nibble of 0x80-0xEF is the MIDI channel 0-15 and is free; the template derives it at line 72 as `local char m_channel = lastStatus & 0xf`. Lines 67-70 are the running-status mechanism: bit 7 set stores the status, bit 7 clear rewinds one byte so the byte is re-read as data of the previous message type."
+    },
+    "note_off_event.m_note": {
+      "tier": "A",
+      "tier_rationale": "SMF requires every data byte to be 0x00-0x7F; a byte with bit 7 set where data is expected is taken as a new status by readers that resynchronise on status, which desyncs the track against MidiTrack.m_seclen and gets the file refused.",
+      "type": "bitmask_constraint",
+      "description": "Key number being released.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 77,
+        "snippet": "char m_note;"
+      },
+      "evidence_extra": [
+        {
+          "line": 73,
+          "snippet": "if ((lastStatus & 0xf0) == 0x80)"
+        },
+        {
+          "line": 67,
+          "snippet": "if (m_status & 0x80)"
+        },
+        {
+          "line": 79,
+          "snippet": "} note_off_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0x80-0x8F (note off)",
+      "notes": "All 128 values are legal and all are worth emitting: readers and synths map key numbers to keys, and on the percussion channel (conventionally 9) to drum voices, so the full span drives different lookups. Note-off is also reachable as a note-on with velocity 0, which is a separate reader path."
+    },
+    "note_off_event.m_velocity": {
+      "tier": "A",
+      "tier_rationale": "Same data-byte rule: bit 7 set here breaks the positional two-byte framing of the event and desyncs the track, so a conforming reader refuses or misparses the file.",
+      "type": "bitmask_constraint",
+      "description": "Release velocity (note-off velocity) of the key being released.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 78,
+        "snippet": "char m_velocity;"
+      },
+      "evidence_extra": [
+        {
+          "line": 73,
+          "snippet": "if ((lastStatus & 0xf0) == 0x80)"
+        },
+        {
+          "line": 79,
+          "snippet": "} note_off_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0x80-0x8F (note off)",
+      "notes": "0 and 127 are both legal and must both be emitted; some writers emit 0 here, and readers that normalise events branch on it."
+    },
+    "note_on_event.m_note": {
+      "tier": "A",
+      "tier_rationale": "Data byte: a value with bit 7 set is read as a status by resynchronising readers, corrupting the event stream and the track length check.",
+      "type": "bitmask_constraint",
+      "description": "Key number being struck.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 85,
+        "snippet": "char m_note;"
+      },
+      "evidence_extra": [
+        {
+          "line": 81,
+          "snippet": "else if ((lastStatus & 0xf0) == 0x90)"
+        },
+        {
+          "line": 87,
+          "snippet": "} note_on_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0x90-0x9F (note on)",
+      "notes": "Note-on is the highest-traffic event in real files, so the note span is one of the cheapest sources of diversity in the format; leave all 128 values in play."
+    },
+    "note_on_event.m_velocity": {
+      "tier": "A",
+      "tier_rationale": "Data byte: bit 7 set breaks event framing and the track byte count.",
+      "type": "bitmask_constraint",
+      "description": "Attack velocity of the note; a value of 0 is defined by MIDI 1.0 to mean note-off.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 86,
+        "snippet": "char m_velocity;"
+      },
+      "evidence_extra": [
+        {
+          "line": 81,
+          "snippet": "else if ((lastStatus & 0xf0) == 0x90)"
+        },
+        {
+          "line": 87,
+          "snippet": "} note_on_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0x90-0x9F (note on)",
+      "notes": "Do not exclude 0: a note-on with velocity 0 is the standard alternative encoding of note-off and takes readers down a distinct normalisation branch. Do not exclude 127 either."
+    },
+    "note_pressure_event.m_note": {
+      "tier": "A",
+      "tier_rationale": "Data byte: bit 7 set desynchronises the track against MidiTrack.m_seclen, so the reader refuses the file.",
+      "type": "bitmask_constraint",
+      "description": "Key number whose polyphonic pressure (aftertouch) is changing.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 93,
+        "snippet": "char m_note;"
+      },
+      "evidence_extra": [
+        {
+          "line": 89,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xA0)"
+        },
+        {
+          "line": 95,
+          "snippet": "} note_pressure_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0xA0-0xAF (polyphonic key pressure)",
+      "notes": "This message type is rare in real files but fully legal, and it is a separate case in the template's dispatch chain (line 89), so emitting it reaches a branch that a note-only corpus never touches."
+    },
+    "note_pressure_event.m_pressure": {
+      "tier": "A",
+      "tier_rationale": "Data byte: bit 7 set breaks the two-byte positional framing of the event and the track length check.",
+      "type": "bitmask_constraint",
+      "description": "Pressure amount for the key, 0-127.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 94,
+        "snippet": "char m_pressure;"
+      },
+      "evidence_extra": [
+        {
+          "line": 89,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xA0)"
+        },
+        {
+          "line": 95,
+          "snippet": "} note_pressure_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0xA0-0xAF (polyphonic key pressure)",
+      "notes": "Full 0-127 span free."
+    },
+    "controller_event.m_controller": {
+      "tier": "A",
+      "tier_rationale": "Data byte: a value with bit 7 set is interpreted as a status byte by resynchronising readers, desyncing the remainder of the track and failing the m_seclen check.",
+      "type": "bitmask_constraint",
+      "description": "Controller number being changed; all 128 numbers 0x00-0x7F are legal in a file, of which General MIDI assigns meaning to a subset.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 101,
+        "snippet": "char m_controller;"
+      },
+      "evidence_extra": [
+        {
+          "line": 97,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xB0)"
+        },
+        {
+          "line": 103,
+          "snippet": "} controller_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "preferred_value": [
+        0,
+        1,
+        6,
+        7,
+        10,
+        11,
+        32,
+        64,
+        65,
+        71,
+        98,
+        99,
+        100,
+        101,
+        120,
+        121,
+        123
+      ],
+      "presence_condition": "present only when the running status is 0xB0-0xBF (control change)",
+      "notes": "The legal byte set is the full 0-127 and it must stay that way: unassigned controller numbers are legal and readers that validate or special-case them have their own branches. preferred_value names the numbers most likely to hit dedicated handling (0/32 bank select, 1 modulation, 6/38 data entry, 7 volume, 10 pan, 11 expression, 64 sustain, 65 portamento, 71 resonance, 98/99 NRPN, 100/101 RPN, 120 all sound off, 121 reset all controllers, 123 all notes off) without removing any other value from the emitted set."
+    },
+    "controller_event.m_value": {
+      "tier": "A",
+      "tier_rationale": "Data byte: bit 7 set breaks event framing and the track byte count.",
+      "type": "bitmask_constraint",
+      "description": "Value assigned to the controller, 0-127.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 102,
+        "snippet": "char m_value;"
+      },
+      "evidence_extra": [
+        {
+          "line": 97,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xB0)"
+        },
+        {
+          "line": 103,
+          "snippet": "} controller_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0xB0-0xBF (control change)",
+      "notes": "Free across 0-127. For switch-type controllers readers often test zero versus non-zero, so make sure both ends of the span appear in the corpus."
+    },
+    "program_event.m_program": {
+      "tier": "A",
+      "tier_rationale": "Data byte of a one-byte event: bit 7 set makes a resynchronising reader treat it as a status, shifting every following event and breaking the track length check.",
+      "type": "bitmask_constraint",
+      "description": "Program (patch) number being selected, 0-127.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 109,
+        "snippet": "char m_program;"
+      },
+      "evidence_extra": [
+        {
+          "line": 105,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xC0)"
+        },
+        {
+          "line": 110,
+          "snippet": "} program_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0xC0-0xCF (program change); this event carries exactly ONE data byte",
+      "notes": "General MIDI maps 0-127 to sixteen instrument families and, on the percussion channel, to drum kits, so the span drives real lookup branches. Note the single-byte payload: the template reads only m_program here (line 109), unlike the two-byte events above."
+    },
+    "channel_pressure_event.m_pressure": {
+      "tier": "A",
+      "tier_rationale": "Data byte of a one-byte event: bit 7 set is read as a status and desyncs the track.",
+      "type": "bitmask_constraint",
+      "description": "Channel-wide pressure (mono aftertouch) amount, 0-127.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 116,
+        "snippet": "char m_pressure;"
+      },
+      "evidence_extra": [
+        {
+          "line": 112,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xD0)"
+        },
+        {
+          "line": 117,
+          "snippet": "} channel_pressure_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0xD0-0xDF (channel pressure); this event carries exactly ONE data byte",
+      "notes": "Distinct from note_pressure_event: no key number, one data byte only. Free across 0-127."
+    },
+    "pitch_bend_event.m_lsb": {
+      "tier": "A",
+      "tier_rationale": "Data byte: bit 7 set breaks the two-byte framing of the bend event and desyncs the track against MidiTrack.m_seclen.",
+      "type": "bitmask_constraint",
+      "description": "Least significant 7 bits of the 14-bit pitch bend value; transmitted and stored first.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 123,
+        "snippet": "char m_lsb;"
+      },
+      "evidence_extra": [
+        {
+          "line": 119,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xE0)"
+        },
+        {
+          "line": 125,
+          "snippet": "} pitch_bend_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "endianness": "n/a",
+      "presence_condition": "present only when the running status is 0xE0-0xEF (pitch bend)",
+      "notes": "The 14-bit bend is (m_msb << 7) | m_lsb with centre at 0x2000, i.e. m_msb = 0x40 and m_lsb = 0x00. Both bytes stay free across 0-127 so the corpus spans the full bend range including the exact centre value that readers special-case. The low byte comes first in the file, which is why the template declares it first (line 123)."
+    },
+    "pitch_bend_event.m_msb": {
+      "tier": "A",
+      "tier_rationale": "Data byte: bit 7 set is read as a status, corrupting the rest of the track and the length check.",
+      "type": "bitmask_constraint",
+      "description": "Most significant 7 bits of the 14-bit pitch bend value; stored second.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 124,
+        "snippet": "char m_msb;"
+      },
+      "evidence_extra": [
+        {
+          "line": 119,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xE0)"
+        },
+        {
+          "line": 125,
+          "snippet": "} pitch_bend_event;"
+        }
+      ],
+      "confidence": "high",
+      "valid_bits": 127,
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "presence_condition": "present only when the running status is 0xE0-0xEF (pitch bend)",
+      "notes": "See pitch_bend_event.m_lsb for the 14-bit assembly and the centre value. Free across 0-127."
+    },
+    "meta_event.m_type": {
+      "tier": "B",
+      "tier_rationale": "An unrecognised type does not make a reader refuse the file - SMF requires unknown meta events to be skipped by length, and the template does exactly that at lines 230-232 - so this is the full legal set, not a pinned value.",
+      "type": "enumerated_values",
+      "description": "Meta-event type byte selecting which of the fixed-layout or text payloads follows the length field.",
+      "field_type": "enum <char>",
+      "source": "both",
+      "evidence": {
+        "line": 151,
+        "snippet": "} m_type;"
+      },
+      "evidence_extra": [
+        {
+          "line": 127,
+          "snippet": "else if (lastStatus == -1)"
+        },
+        {
+          "line": 131,
+          "snippet": "enum <char>"
+        },
+        {
+          "line": 133,
+          "snippet": "META_SEQUENCE_NUM = 0,"
+        },
+        {
+          "line": 145,
+          "snippet": "META_END_OF_TRACK = 0x2f,"
+        },
+        {
+          "line": 146,
+          "snippet": "META_TEMPO = 0x51,"
+        },
+        {
+          "line": 150,
+          "snippet": "META_SEQUENCER_EVENT = 0x7f"
+        },
+        {
+          "line": 153,
+          "snippet": "if (m_type == META_SEQUENCE_NUM)"
+        },
+        {
+          "line": 230,
+          "snippet": "else"
+        },
+        {
+          "line": 232,
+          "snippet": "char m_data[m_length.total];"
+        }
+      ],
+      "confidence": "high",
+      "valid_values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127
+      ],
+      "value_names": [
+        "META_SEQUENCE_NUM",
+        "META_TEXT",
+        "META_COPYRIGHT",
+        "META_SEQUENCE_NAME",
+        "META_INSTRUMENT_NAME",
+        "META_LYRIC",
+        "META_MARKER",
+        "META_CUE_POINT",
+        "META_PROGRAM_NAME",
+        "META_DEVICE_NAME",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "META_MIDI_CHANNEL_PREFIX",
+        "META_MIDI_PORT",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "META_END_OF_TRACK",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "META_TEMPO",
+        null,
+        null,
+        "META_SMPTE_OFFSET",
+        null,
+        null,
+        null,
+        "META_TIME_SIGNATURE",
+        "META_KEY_SIGNATURE",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "META_SEQUENCER_EVENT"
+      ],
+      "completeness": "exhaustive",
+      "preferred_value": [
+        47,
+        81,
+        3,
+        88,
+        1,
+        6,
+        127,
+        0
+      ],
+      "presence_condition": "present only when the running status is 0xFF (meta event)",
+      "notes": "The .bt enum names 18 values, but the byte-level legal set is every data byte 0x00-0x7F: the template's own final `else` arm (line 230) reads `char m_data[m_length.total]` for any unrecognised type, which is precisely the SMF rule that a reader must skip unknown meta events by length. Emitting only the 18 named values would delete the unknown-meta branch from every generated file, so valid_values is the full 0-127 span with null in value_names wherever the enum defines no name. preferred_value names the deepest branches - End of Track (0x2F, mandatory last event), Tempo (0x51, 3-byte big-endian payload), Sequence/Track Name (0x03), Time Signature (0x58), Text (0x01), Marker (0x06), Sequencer Specific (0x7F) and Sequence Number (0x00) - without removing any other value from the emitted set. Types 0x0A-0x1F, 0x22-0x2E, 0x30-0x50, 0x52-0x57, 0x5A-0x7E are unassigned and reserved for future standardisation; a file may still carry them and a conforming reader skips them."
+    },
+    "meta_event.m_length": {
+      "tier": "A",
+      "tier_rationale": "The template uses this quantity as the array bound for the payload (`char m_text[m_length.total]`, line 159 and siblings); a value that disagrees with the number of payload bytes actually present shifts every following event, so the track no longer sums to MidiTrack.m_seclen and the reader refuses the file.",
+      "type": "calculated_value",
+      "description": "VLQ-encoded byte count of the meta-event payload that immediately follows this field.",
+      "field_type": "DeltaTime",
+      "source": "both",
+      "evidence": {
+        "line": 152,
+        "snippet": "DeltaTime m_length;"
+      },
+      "evidence_extra": [
+        {
+          "line": 159,
+          "snippet": "char m_text[m_length.total];"
+        },
+        {
+          "line": 163,
+          "snippet": "char m_copyright[m_length.total];"
+        },
+        {
+          "line": 201,
+          "snippet": "else if (m_type == META_END_OF_TRACK)"
+        },
+        {
+          "line": 204,
+          "snippet": "else if (m_type == META_TEMPO)"
+        },
+        {
+          "line": 232,
+          "snippet": "char m_data[m_length.total];"
+        }
+      ],
+      "confidence": "high",
+      "algorithm": "byte count, encoded as a MIDI variable-length quantity (see MidiMessage.m_dtime for the encoding rules)",
+      "covers": "the m_length.total bytes immediately following this field, which are one of: nothing (META_END_OF_TRACK), m_channelPrefix (1), m_port (1), m_flatsSharps + m_majorMinor (2), m_seqNum (2), m_usecPerQuarterNote (3), the four time-signature bytes (4), the five SMPTE-offset bytes (5), or the variable-length m_text / m_copyright / m_name / m_lyric / m_marker / m_cuePoint / m_programName / m_deviceName / m_data run",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "meta_event.m_type",
+        "meta_event.m_seqNum",
+        "meta_event.m_text",
+        "meta_event.m_copyright",
+        "meta_event.m_name",
+        "meta_event.m_lyric",
+        "meta_event.m_marker",
+        "meta_event.m_cuePoint",
+        "meta_event.m_programName",
+        "meta_event.m_deviceName",
+        "meta_event.m_data"
+      ],
+      "temptation": "Pinning it to a few small constants so the payloads can be precomputed. That is exactly the GIF failure: choose the payload freely, then write its byte count here. Per-type fixed lengths (see dependencies) are a format rule, not a size control.",
+      "notes": "Derive this value FROM the payload: build the meta-event bytes first, count them, then emit the VLQ. Eight meta types have lengths fixed by the specification and are recorded in `dependencies` (0x00 -> 0 or 2, 0x20 -> 1, 0x21 -> 1, 0x2F -> 0, 0x51 -> 3, 0x54 -> 5, 0x58 -> 4, 0x59 -> 2); every other type has a free length. Zero is a legal length for any type whose payload is empty, and End of Track requires it."
+    },
+    "meta_event.m_seqNum": {
+      "tier": "C",
+      "tier_rationale": "A reader presented with any sequence number still parses the file - it is used only for pattern matching in format 2 and for identification elsewhere - so pinning it would cost diversity for no depth.",
+      "type": "unconstrained",
+      "description": "Sequence number carried by a META_SEQUENCE_NUM (type 0x00) event.",
+      "field_type": "short",
+      "source": "template",
+      "evidence": {
+        "line": 155,
+        "snippet": "short m_seqNum;"
+      },
+      "evidence_extra": [
+        {
+          "line": 153,
+          "snippet": "if (m_type == META_SEQUENCE_NUM)"
+        }
+      ],
+      "confidence": "high",
+      "endianness": "big",
+      "presence_condition": "present only when meta_event.m_type == META_SEQUENCE_NUM (0x00) and meta_event.m_length encodes 2",
+      "temptation": "Fixing it to 0 or 1 because real files usually do. These are two free big-endian bytes; leave them free.",
+      "notes": "The template reads two bytes unconditionally for this type (line 155), while SMF also permits a length of 0 meaning 'no number', in which case no bytes follow - see the dependency entry. When the length is 0 this field must not be emitted at all, otherwise MidiTrack.m_seclen desyncs."
+    },
+    "meta_event.m_text": {
+      "tier": "C",
+      "tier_rationale": "The bytes are arbitrary text that no reader interprets structurally; the only real rule is that their count equals meta_event.m_length, which is enforced on that field, so constraining the content or the size here would only reduce diversity.",
+      "type": "unconstrained",
+      "description": "META_TEXT (type 0x01) payload: an uninterpreted run of text bytes of exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 159,
+        "snippet": "char m_text[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 157,
+          "snippet": "else if (m_type == META_TEXT)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_TEXT (0x01); byte count fixed by meta_event.m_length",
+      "temptation": "Capping the text length to keep files small. Size is already bounded by the output_budget on the meta/sysex payload rule in `structure`; the content and length of an individual text event must stay free, and long text events are a legitimate allocation-stress path in readers.",
+      "notes": "Any byte value 0x00-0xFF is legal inside a text meta event - the payload is length-delimited, not NUL-terminated, so embedded NULs and high-bit bytes do not desync the parse. SMF mandates no character set; ASCII, Latin-1 and UTF-8 files all exist and readers differ in how they decode them, which is itself a coverage source."
+    },
+    "meta_event.m_copyright": {
+      "tier": "C",
+      "tier_rationale": "Uninterpreted length-delimited text; a wrong value still yields a file the reader processes, so constraining it would only cost diversity.",
+      "type": "unconstrained",
+      "description": "META_COPYRIGHT (type 0x02) payload of exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 163,
+        "snippet": "char m_copyright[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 161,
+          "snippet": "else if (m_type == META_COPYRIGHT)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_COPYRIGHT (0x02)",
+      "temptation": "Truncating copyright strings; see meta_event.m_text.",
+      "notes": "Conventionally the first event of the first track, but the position is not enforced by the format. Content and length free."
+    },
+    "meta_event.m_name": {
+      "tier": "C",
+      "tier_rationale": "Uninterpreted length-delimited text used for the sequence name or the instrument name; readers store it without validating it, so any content and any length still parse.",
+      "type": "unconstrained",
+      "description": "META_SEQUENCE_NAME (type 0x03) or META_INSTRUMENT_NAME (type 0x04) payload of exactly meta_event.m_length.total bytes; both branches declare the same field name.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 167,
+        "snippet": "char m_name[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 165,
+          "snippet": "else if (m_type == META_SEQUENCE_NAME)"
+        },
+        {
+          "line": 169,
+          "snippet": "else if (m_type == META_INSTRUMENT_NAME)"
+        },
+        {
+          "line": 171,
+          "snippet": "char m_name[m_length.total];"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type is META_SEQUENCE_NAME (0x03) or META_INSTRUMENT_NAME (0x04)",
+      "temptation": "Restricting names to short ASCII; see meta_event.m_text.",
+      "notes": "In a format 0 or format 1 file a sequence name in the first track is the track title; in later tracks, and in format 2, the same type names the instrument. Two distinct template branches (lines 165-171) share this field name, so one entry covers both. Content and length free."
+    },
+    "meta_event.m_lyric": {
+      "tier": "C",
+      "tier_rationale": "Uninterpreted length-delimited text; no reader validates lyric content, so constraining it would only cost diversity.",
+      "type": "unconstrained",
+      "description": "META_LYRIC (type 0x05) payload of exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 175,
+        "snippet": "char m_lyric[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 173,
+          "snippet": "else if (m_type == META_LYRIC)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_LYRIC (0x05)",
+      "temptation": "Bounding lyric length; see meta_event.m_text.",
+      "notes": "Content and length free."
+    },
+    "meta_event.m_marker": {
+      "tier": "C",
+      "tier_rationale": "Uninterpreted length-delimited text; a wrong value still yields a processable file.",
+      "type": "unconstrained",
+      "description": "META_MARKER (type 0x06) payload of exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 179,
+        "snippet": "char m_marker[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 177,
+          "snippet": "else if (m_type == META_MARKER)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_MARKER (0x06)",
+      "temptation": "Bounding marker length; see meta_event.m_text.",
+      "notes": "Content and length free."
+    },
+    "meta_event.m_cuePoint": {
+      "tier": "C",
+      "tier_rationale": "Uninterpreted length-delimited text; a wrong value still yields a processable file.",
+      "type": "unconstrained",
+      "description": "META_CUE_POINT (type 0x07) payload of exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 183,
+        "snippet": "char m_cuePoint[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 181,
+          "snippet": "else if (m_type == META_CUE_POINT)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_CUE_POINT (0x07)",
+      "temptation": "Bounding cue-point length; see meta_event.m_text.",
+      "notes": "Content and length free."
+    },
+    "meta_event.m_programName": {
+      "tier": "C",
+      "tier_rationale": "Uninterpreted length-delimited text; readers store it without validation.",
+      "type": "unconstrained",
+      "description": "META_PROGRAM_NAME (type 0x08) payload of exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 187,
+        "snippet": "char m_programName[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 141,
+          "snippet": "META_PROGRAM_NAME = 8,"
+        },
+        {
+          "line": 185,
+          "snippet": "else if (m_type == META_PROGRAM_NAME)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_PROGRAM_NAME (0x08)",
+      "temptation": "Bounding the length; see meta_event.m_text.",
+      "notes": "Content and length free."
+    },
+    "meta_event.m_deviceName": {
+      "tier": "C",
+      "tier_rationale": "Uninterpreted length-delimited text; no reader validates device names.",
+      "type": "unconstrained",
+      "description": "META_DEVICE_NAME (type 0x09) payload of exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "template",
+      "evidence": {
+        "line": 191,
+        "snippet": "char m_deviceName[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 142,
+          "snippet": "META_DEVICE_NAME = 9,"
+        },
+        {
+          "line": 189,
+          "snippet": "else if (m_type == META_DEVICE_NAME)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_DEVICE_NAME (0x09)",
+      "temptation": "Bounding the length; see meta_event.m_text.",
+      "notes": "Content and length free."
+    },
+    "meta_event.m_channelPrefix": {
+      "tier": "C",
+      "tier_rationale": "No conforming reader refuses a file over this byte - it only sets the channel that later sysex and meta events are attributed to, and most readers mask it - so leaving it free costs nothing and can reach validation branches.",
+      "type": "unconstrained",
+      "description": "META_MIDI_CHANNEL_PREFIX (type 0x20) payload: one byte giving the MIDI channel for the sysex and meta events that follow it.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 195,
+        "snippet": "char m_channelPrefix;"
+      },
+      "evidence_extra": [
+        {
+          "line": 143,
+          "snippet": "META_MIDI_CHANNEL_PREFIX = 0x20,"
+        },
+        {
+          "line": 193,
+          "snippet": "else if (m_type == META_MIDI_CHANNEL_PREFIX)"
+        }
+      ],
+      "confidence": "medium",
+      "presence_condition": "present only when meta_event.m_type == META_MIDI_CHANNEL_PREFIX (0x20), whose m_length must encode 1",
+      "temptation": "Restricting it to 0-15 because that is what the specification says a channel is. Readers that mask with 0x0F behave identically for any byte, and readers that range-check have an extra branch - so the free span is strictly better for coverage.",
+      "notes": "Format rule recorded as INFORMATION ONLY, not a narrowing: SMF defines the value as a MIDI channel 0-15 and readers commonly apply `value & 0x0F`. The full byte span stays free."
+    },
+    "meta_event.m_port": {
+      "tier": "C",
+      "tier_rationale": "A deprecated one-byte port specifier that readers ignore or merely record; any value still yields a processable file, so constraining it would only cost diversity.",
+      "type": "unconstrained",
+      "description": "META_MIDI_PORT (type 0x21) payload: one byte giving the MIDI port for the events that follow.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 199,
+        "snippet": "char m_port;"
+      },
+      "evidence_extra": [
+        {
+          "line": 144,
+          "snippet": "META_MIDI_PORT = 0x21,"
+        },
+        {
+          "line": 197,
+          "snippet": "else if (m_type == META_MIDI_PORT)"
+        }
+      ],
+      "confidence": "medium",
+      "presence_condition": "present only when meta_event.m_type == META_MIDI_PORT (0x21), whose m_length must encode 1",
+      "temptation": "Pinning it to 0 because the field is obsolete. Obsolete is not checked; leave it free.",
+      "notes": "Superseded by META_MIDI_CHANNEL_PREFIX plus multi-port practice, but still legal and still parsed. The full byte span stays free."
+    },
+    "meta_event.m_usecPerQuarterNote": {
+      "tier": "C",
+      "tier_rationale": "A reader handed any tempo still parses and plays the whole file - the value only converts ticks to time - so pinning it to a musical tempo would cost diversity, including the degenerate zero value that reaches readers' divide-by-zero guards.",
+      "type": "unconstrained",
+      "description": "META_TEMPO (type 0x51) payload: microseconds per quarter note, a 24-bit big-endian integer.",
+      "field_type": "uint : 24",
+      "source": "both",
+      "evidence": {
+        "line": 206,
+        "snippet": "uint m_usecPerQuarterNote : 24;"
+      },
+      "evidence_extra": [
+        {
+          "line": 146,
+          "snippet": "META_TEMPO = 0x51,"
+        },
+        {
+          "line": 204,
+          "snippet": "else if (m_type == META_TEMPO)"
+        },
+        {
+          "line": 207,
+          "snippet": "// local uint m_bpm = 60000000 / m_usecPerQuarterNote;"
+        },
+        {
+          "line": 208,
+          "snippet": "FSeek(FTell() - 1);"
+        }
+      ],
+      "confidence": "high",
+      "endianness": "big",
+      "presence_condition": "present only when meta_event.m_type == META_TEMPO (0x51), whose m_length must encode 3",
+      "temptation": "Restricting it to 'musical' values such as 500000 (120 BPM) or to a plausible BPM window. The 24-bit span is free: 0, 1, very large values and everything between are all legal encodings and each drives the tempo-conversion arithmetic differently.",
+      "notes": "The template computes BPM from it in a commented-out line (207: `local uint m_bpm = 60000000 / m_usecPerQuarterNote;`) which shows the value is a divisor - a tempo of 0 exercises the guard a careful reader puts around that division. Template quirk worth knowing: the field is declared as a 24-bit bitfield of a `uint`, so 010 Editor advances four bytes and line 208 rewinds one (`FSeek(FTell() - 1)`); the on-disk payload is exactly three big-endian bytes. Ignored by conforming readers when MidiHeader.m_tickdiv is in SMPTE form."
+    },
+    "meta_event.m_hours": {
+      "tier": "C",
+      "tier_rationale": "No reader refuses a file over an out-of-range SMPTE hour; it only affects the wall-clock start offset, so the byte stays free.",
+      "type": "unconstrained",
+      "description": "META_SMPTE_OFFSET (type 0x54) byte 1: SMPTE hour, whose upper bits also carry the frame-rate code.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 212,
+        "snippet": "char m_hours;"
+      },
+      "evidence_extra": [
+        {
+          "line": 147,
+          "snippet": "META_SMPTE_OFFSET = 0x54,"
+        },
+        {
+          "line": 210,
+          "snippet": "else if (m_type == META_SMPTE_OFFSET)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_SMPTE_OFFSET (0x54), whose m_length must encode 5",
+      "temptation": "Restricting it to 0-23 with a valid frame-rate code so the timecode looks well-formed. The full byte span is free and readers that validate the frame-rate code have a branch worth reaching.",
+      "notes": "Format rule recorded as INFORMATION ONLY, not a narrowing: per RP-008 bits 6-5 encode the frame rate (00 = 24 fps, 01 = 25, 10 = 29.97 drop-frame, 11 = 30), bit 7 is reserved and bits 4-0 are the hour 0-23. Leave all eight bits free."
+    },
+    "meta_event.m_mins": {
+      "tier": "C",
+      "tier_rationale": "Unvalidated timecode component; any value still yields a processable file.",
+      "type": "unconstrained",
+      "description": "META_SMPTE_OFFSET byte 2: SMPTE minutes.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 213,
+        "snippet": "char m_mins;"
+      },
+      "evidence_extra": [
+        {
+          "line": 210,
+          "snippet": "else if (m_type == META_SMPTE_OFFSET)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_SMPTE_OFFSET (0x54)",
+      "temptation": "Restricting it to 0-59. The specification's range is a convention that file readers do not gate on.",
+      "notes": "Full byte span free."
+    },
+    "meta_event.m_secs": {
+      "tier": "C",
+      "tier_rationale": "Unvalidated timecode component; any value still yields a processable file.",
+      "type": "unconstrained",
+      "description": "META_SMPTE_OFFSET byte 3: SMPTE seconds.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 214,
+        "snippet": "char m_secs;"
+      },
+      "evidence_extra": [
+        {
+          "line": 210,
+          "snippet": "else if (m_type == META_SMPTE_OFFSET)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_SMPTE_OFFSET (0x54)",
+      "temptation": "Restricting it to 0-59; see meta_event.m_mins.",
+      "notes": "Full byte span free."
+    },
+    "meta_event.m_fps": {
+      "tier": "C",
+      "tier_rationale": "Unvalidated timecode component; readers that need a frame rate take it from the code in m_hours or from MidiHeader.m_tickdiv, not by gating on this byte.",
+      "type": "unconstrained",
+      "description": "META_SMPTE_OFFSET byte 4: SMPTE frames per second field.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 215,
+        "snippet": "char m_fps;"
+      },
+      "evidence_extra": [
+        {
+          "line": 210,
+          "snippet": "else if (m_type == META_SMPTE_OFFSET)"
+        }
+      ],
+      "confidence": "medium",
+      "presence_condition": "present only when meta_event.m_type == META_SMPTE_OFFSET (0x54)",
+      "temptation": "Restricting it to 0-29 or to the four legal frame rates; the frame-rate code already lives in m_hours bits 6-5.",
+      "notes": "Full byte span free."
+    },
+    "meta_event.m_fracFrames": {
+      "tier": "C",
+      "tier_rationale": "Unvalidated fractional-frame count; any value still yields a processable file.",
+      "type": "unconstrained",
+      "description": "META_SMPTE_OFFSET byte 5: fractional frames, in 1/100 of a frame units.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 216,
+        "snippet": "char m_fracFrames;"
+      },
+      "evidence_extra": [
+        {
+          "line": 210,
+          "snippet": "else if (m_type == META_SMPTE_OFFSET)"
+        }
+      ],
+      "confidence": "medium",
+      "presence_condition": "present only when meta_event.m_type == META_SMPTE_OFFSET (0x54)",
+      "temptation": "Restricting it to 0-99 because the unit is hundredths of a frame; readers do not gate on it.",
+      "notes": "Full byte span free."
+    },
+    "meta_event.m_numerator": {
+      "tier": "C",
+      "tier_rationale": "No reader refuses a file over an unusual metre; the byte only scales bar lengths, so leaving it free costs nothing and reaches bar-line arithmetic with many different inputs.",
+      "type": "unconstrained",
+      "description": "META_TIME_SIGNATURE (type 0x58) byte 1: numerator of the metre as written.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 220,
+        "snippet": "char m_numerator;"
+      },
+      "evidence_extra": [
+        {
+          "line": 148,
+          "snippet": "META_TIME_SIGNATURE = 0x58,"
+        },
+        {
+          "line": 218,
+          "snippet": "else if (m_type == META_TIME_SIGNATURE)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_TIME_SIGNATURE (0x58), whose m_length must encode 4",
+      "temptation": "Restricting it to 2, 3, 4 or 6 because those are the metres real files use. The full byte span is free and drives different multiplication paths.",
+      "notes": "Full byte span free."
+    },
+    "meta_event.m_denominator": {
+      "tier": "C",
+      "tier_rationale": "The byte is a shift exponent that readers apply to compute the note-value denominator; an out-of-range exponent still parses, so pinning it to the four common values would delete the shift-path diversity for no depth.",
+      "type": "unconstrained",
+      "description": "META_TIME_SIGNATURE byte 2: the denominator expressed as a power of two (0 -> 1, 1 -> 2, 2 -> 4, 3 -> 8).",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 221,
+        "snippet": "char m_denominator;"
+      },
+      "evidence_extra": [
+        {
+          "line": 218,
+          "snippet": "else if (m_type == META_TIME_SIGNATURE)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_TIME_SIGNATURE (0x58)",
+      "temptation": "Restricting it to 0-3 because those are the only exponents that name real note values. It is used as a shift count, and a shift count with unusual inputs is precisely the kind of value that exposes different arithmetic - leave the byte free.",
+      "notes": "Format rule recorded as INFORMATION ONLY, not a narrowing: the stored value is log2 of the denominator, so 2 means a quarter-note denominator. Do not convert that into a 0-3 bound."
+    },
+    "meta_event.m_clocksPerClick": {
+      "tier": "C",
+      "tier_rationale": "Metronome click interval; readers record it without validating it, so any value still yields a processable file.",
+      "type": "unconstrained",
+      "description": "META_TIME_SIGNATURE byte 3: number of MIDI clocks per metronome click.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 222,
+        "snippet": "char m_clocksPerClick;"
+      },
+      "evidence_extra": [
+        {
+          "line": 218,
+          "snippet": "else if (m_type == META_TIME_SIGNATURE)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_TIME_SIGNATURE (0x58)",
+      "temptation": "Fixing it to 24, the conventional value. It is a free byte.",
+      "notes": "Full byte span free, including 0."
+    },
+    "meta_event.m_32ndPer4th": {
+      "tier": "C",
+      "tier_rationale": "Count of 32nd notes per MIDI quarter note; readers use it as a multiplier without validating it, so any value still parses.",
+      "type": "unconstrained",
+      "description": "META_TIME_SIGNATURE byte 4: number of 32nd notes notated per MIDI quarter note.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 223,
+        "snippet": "char m_32ndPer4th;"
+      },
+      "evidence_extra": [
+        {
+          "line": 218,
+          "snippet": "else if (m_type == META_TIME_SIGNATURE)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_TIME_SIGNATURE (0x58)",
+      "temptation": "Fixing it to 8, the conventional value for a quarter-note-based grid. It is a free byte and it feeds a multiplication, so a wide span is valuable.",
+      "notes": "Full byte span free, including 0."
+    },
+    "meta_event.m_flatsSharps": {
+      "tier": "C",
+      "tier_rationale": "A signed key-signature offset that readers use to select a key name; out-of-range values still parse, so leaving the byte free costs nothing and reaches both the flat and sharp sides of any lookup.",
+      "type": "unconstrained",
+      "description": "META_KEY_SIGNATURE (type 0x59) byte 1: number of flats (negative) or sharps (positive).",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 227,
+        "snippet": "char m_flatsSharps;"
+      },
+      "evidence_extra": [
+        {
+          "line": 149,
+          "snippet": "META_KEY_SIGNATURE = 0x59,"
+        },
+        {
+          "line": 225,
+          "snippet": "else if (m_type == META_KEY_SIGNATURE)"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present only when meta_event.m_type == META_KEY_SIGNATURE (0x59), whose m_length must encode 2",
+      "temptation": "Restricting it to -7..+7. That is the specification's convention, not a gate; the signed byte span stays free.",
+      "notes": "Format rule recorded as INFORMATION ONLY, not a narrowing: -7 = 7 flats (C flat major / A flat minor) through +7 = 7 sharps (C sharp major / A sharp minor), 0 = C major / A minor. The field is declared `char`, which is signed in 010 Editor, so negative values are the two's-complement bytes 0xF9-0xFF."
+    },
+    "meta_event.m_majorMinor": {
+      "tier": "C",
+      "tier_rationale": "No reader refuses a file over an unusual value here - it selects major versus minor labelling - and leaving the byte free reaches any validation or default branch a reader has, so Tier C per the tie-break rule for a flag nobody gates on.",
+      "type": "unconstrained",
+      "description": "META_KEY_SIGNATURE byte 2: key quality, 0 = major, 1 = minor.",
+      "field_type": "char",
+      "source": "both",
+      "evidence": {
+        "line": 228,
+        "snippet": "char m_majorMinor;"
+      },
+      "evidence_extra": [
+        {
+          "line": 225,
+          "snippet": "else if (m_type == META_KEY_SIGNATURE)"
+        }
+      ],
+      "confidence": "medium",
+      "presence_condition": "present only when meta_event.m_type == META_KEY_SIGNATURE (0x59)",
+      "temptation": "Reducing it to the two documented values. Close call against Tier B (it is a two-value flag in the specification); recorded Tier C because no reader gates on it and because a free byte can reach the 'unexpected quality value' path that a two-value set cannot.",
+      "notes": "Format rule recorded as INFORMATION ONLY, not a narrowing: SMF documents 0 = major and 1 = minor."
+    },
+    "meta_event.m_data": {
+      "tier": "C",
+      "tier_rationale": "This is the fallback payload for every meta type the template does not name, including all sequencer-specific and unassigned types; its bytes are skipped by length and never interpreted, so any content and any length still parse.",
+      "type": "unconstrained",
+      "description": "Payload of an unrecognised or sequencer-specific meta event, exactly meta_event.m_length.total bytes.",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "evidence": {
+        "line": 232,
+        "snippet": "char m_data[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 150,
+          "snippet": "META_SEQUENCER_EVENT = 0x7f"
+        },
+        {
+          "line": 230,
+          "snippet": "else"
+        }
+      ],
+      "confidence": "high",
+      "presence_condition": "present whenever meta_event.m_type is not one of the named types with a fixed layout - including META_SEQUENCER_EVENT (0x7F) and every unassigned type",
+      "temptation": "Skipping these types entirely because they are 'undefined'. They are the reason the fallback branch exists in every reader, and reaching it requires emitting them; the payload size is bounded only by the output_budget in `structure`.",
+      "notes": "Any byte 0x00-0xFF is legal because the run is length-delimited. For META_SEQUENCER_EVENT (0x7F) the payload conventionally starts with a manufacturer ID, but readers do not require it. Content and length free."
+    },
+    "sysex_event.m_length": {
+      "tier": "A",
+      "tier_rationale": "The template uses this quantity as the array bound for the sysex payload (`char m_message[m_length.total]`, line 241); if it disagrees with the number of payload bytes actually present, the rest of the track is read at the wrong offset, the events no longer sum to MidiTrack.m_seclen, and the reader refuses the file.",
+      "type": "calculated_value",
+      "description": "VLQ-encoded byte count of the System Exclusive payload that immediately follows this field.",
+      "field_type": "DeltaTime",
+      "source": "both",
+      "evidence": {
+        "line": 240,
+        "snippet": "DeltaTime m_length;"
+      },
+      "evidence_extra": [
+        {
+          "line": 236,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xF0)"
+        },
+        {
+          "line": 241,
+          "snippet": "char m_message[m_length.total];"
+        },
+        {
+          "line": 242,
+          "snippet": "} sysex_event;"
+        }
+      ],
+      "confidence": "high",
+      "algorithm": "byte count, encoded as a MIDI variable-length quantity (see MidiMessage.m_dtime for the encoding rules)",
+      "covers": "the m_length.total bytes of sysex_event.m_message that follow, and nothing else - it excludes both the status byte (0xF0 or 0xF7) and the length field's own bytes",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "sysex_event.m_message"
+      ],
+      "temptation": "Pinning it to a handful of small constants so a fixed set of precomputed sysex blobs can be reused. That is the GIF failure exactly: build the sysex payload freely, count its bytes, then write the count here.",
+      "notes": "Derive this value FROM the payload. Whether the terminating 0xF7 is counted inside the length is the long-standing SMF ambiguity: the dominant convention counts it in, and readers are expected to accept both, so either is legal as long as the count matches the bytes emitted. Zero is a legal length and produces an empty sysex payload."
+    },
+    "sysex_event.m_message": {
+      "tier": "A",
+      "tier_rationale": "This is an encoded stream masquerading as a plain byte array in the .bt: a byte with bit 7 set inside an 0xF0 payload is read as a status by readers that resynchronise on status, which truncates the sysex, desyncs the remainder of the track against MidiTrack.m_seclen, and makes the reader refuse the file before reaching any later event.",
+      "type": "payload_wellformedness",
+      "description": "System Exclusive payload: a manufacturer ID, any number of data bytes, and the terminating End-of-Exclusive byte, all counted by sysex_event.m_length.",
+      "field_type": "char[m_length.total]",
+      "source": "both",
+      "evidence": {
+        "line": 241,
+        "snippet": "char m_message[m_length.total];"
+      },
+      "evidence_extra": [
+        {
+          "line": 236,
+          "snippet": "else if ((lastStatus & 0xf0) == 0xF0)"
+        },
+        {
+          "line": 240,
+          "snippet": "DeltaTime m_length;"
+        },
+        {
+          "line": 242,
+          "snippet": "} sysex_event;"
+        }
+      ],
+      "confidence": "high",
+      "codec": "MIDI 1.0 System Exclusive byte stream (MIDI 1.0 Detailed Specification 4.2, System Exclusive; SMF 1.0 'System Exclusive Events' and the F7 escape event)",
+      "must_produce": "For a 0xF0 event: one manufacturer ID byte 0x01-0x7D, or 0x00 followed by two more bytes carrying a 14-bit extended ID; then any number of data bytes each with bit 7 clear (0x00-0x7F); then the terminating 0xF7, which the dominant convention counts inside m_length. For a 0xF7 escape event: no leading ID and no required terminator - the payload is raw bytes and MAY contain values with bit 7 set, which is exactly how system-common (0xF1-0xF6) and real-time (0xF8-0xFE) messages are carried legally inside a MIDI file.",
+      "decoder_gate": "Random bytes in an 0xF0 payload put a value with bit 7 set where a data byte belongs. Readers that walk a track by scanning for status bytes treat it as a new event, so the sysex is truncated and every following event is byte-shifted; the summed event sizes then fail to equal MidiTrack.m_seclen and the reader aborts with a track-length or unexpected-status error, having executed none of the later event dispatch. Readers that honour the declared length survive, but they then hand a malformed manufacturer ID to their sysex dispatcher.",
+      "generation_strategy": "Choose the status freely between 0xF0 and 0xF7. For 0xF0: emit a manufacturer ID (any of 0x01-0x7D, or 0x00 plus two bytes for the extended form), fill the middle with freely generated bytes each masked to 0x00-0x7F, append 0xF7, then set sysex_event.m_length to the VLQ encoding of the total byte count. For 0xF7: emit any bytes at all, including values with bit 7 set, then set m_length to their count. Derive the length from the payload, never the payload from a precomputed length. Vary the ID so the corpus covers single-byte IDs, the extended 0x00 form, and the universal IDs 0x7E (non-real-time) and 0x7F (real-time), which readers dispatch specially.",
+      "derives_from": [
+        "sysex_event.m_length"
+      ],
+      "content_is_free": true,
+      "presence_condition": "present only when the running status is 0xF0 (sysex) or 0xF7 (escape / end of exclusive)",
+      "notes": "content_is_free is true in the sense that matters: every value 0x00-0x7F is legal in every middle position, the manufacturer ID and the payload semantics are uninterpreted by a file reader, and only two things are structural - the bit-7-clear rule for 0xF0 payloads and the length agreement. The template routes both 0xF0 and 0xF7 into this one branch because `(lastStatus & 0xf0) == 0xF0` (line 236) and because the meta branch at line 127 already consumed 0xFF; note that `char` is signed in 010 Editor, so 0xF0-0xFF are negative there and 0xFF is tested as -1."
+    },
+    "MidiTrack.m_magic": {
+      "tier": "A",
+      "tier_rationale": "The reader locates each track by chunk magic; anything other than 'MTrk' at the start of a track chunk makes it refuse the file at that point, so no event in that track is ever parsed.",
+      "type": "fixed_value",
+      "description": "Track chunk identifier; must be the four ASCII characters 'MTrk'.",
+      "field_type": "char[4]",
+      "source": "both",
+      "evidence": {
+        "line": 248,
+        "snippet": "char m_magic[4] <format = hex>;"
+      },
+      "evidence_extra": [
+        {
+          "line": 246,
+          "snippet": "struct MidiTrack"
+        },
+        {
+          "line": 260,
+          "snippet": "MidiTrack tracks[header.m_ntracks] <optimize=false>;"
+        }
+      ],
+      "confidence": "high",
+      "required_value": "MTrk",
+      "required_value_hex": "4D 54 72 6B",
+      "required_value_ascii": "MTrk",
+      "endianness": "n/a",
+      "notes": "The .bt never compares this field against a literal - it just reads four bytes into a field named m_magic and mirrors the MidiHeader declaration at line 22 - so the literal comes from SMF 1.0, which defines exactly two chunk types, MThd and MTrk. Emit once per track, immediately before that track's m_seclen."
+    },
+    "MidiTrack.m_seclen": {
+      "tier": "A",
+      "tier_rationale": "This is the loop bound of the track parse: the template copies it into `remaining` and subtracts each message's size until it reaches zero (lines 250-254). A value smaller than the real event run truncates the track, a larger one runs the parse into the next chunk's magic, and either way the reader refuses the file.",
+      "type": "calculated_value",
+      "description": "Byte count of the track's event data, excluding the 4-byte m_magic and the 4-byte m_seclen itself.",
+      "field_type": "uint",
+      "source": "both",
+      "evidence": {
+        "line": 249,
+        "snippet": "uint m_seclen;"
+      },
+      "evidence_extra": [
+        {
+          "line": 250,
+          "snippet": "local uint remaining = m_seclen;"
+        },
+        {
+          "line": 251,
+          "snippet": "while (remaining) {"
+        },
+        {
+          "line": 252,
+          "snippet": "MidiMessage message;"
+        },
+        {
+          "line": 253,
+          "snippet": "remaining -= sizeof(message);"
+        }
+      ],
+      "confidence": "high",
+      "algorithm": "byte count",
+      "covers": "every byte of every MidiMessage in this track, from the first delta-time byte of the first event through the last byte of the End-of-Track meta event; excludes m_magic, excludes m_seclen, and excludes the next chunk's header",
+      "includes_self": false,
+      "endianness": "big",
+      "depends_on": [
+        "MidiMessage.m_dtime",
+        "MidiMessage.m_status",
+        "meta_event.m_type",
+        "meta_event.m_length",
+        "sysex_event.m_length"
+      ],
+      "temptation": "Choosing a track length first and then padding or truncating events to fit it. Do the reverse: emit the events, sum their exact sizes - delta-time bytes, status byte if present, data bytes, meta and sysex lengths and payloads - and write that sum here.",
+      "notes": "The template proves the semantics: `local uint remaining = m_seclen;` then `while (remaining) { MidiMessage message; remaining -= sizeof(message); }`. Because the loop exits only at exactly zero, the events must fill the chunk precisely, with no padding and no overflow; `remaining` is a local and is never written to the file. Big-endian because of line 18."
+    },
+    "file.tracks": {
+      "tier": "A",
+      "tier_rationale": "The reader walks the file as a chunk sequence and expects exactly header.m_ntracks MTrk chunks; a count that disagrees with the bytes present ends in an EOF error or in unparsed trailing chunks, so the file is refused or truncated before useful work is done.",
+      "type": "calculated_value",
+      "description": "The array of track chunks that fills the file after the header.",
+      "field_type": "MidiTrack[header.m_ntracks]",
+      "source": "template",
+      "evidence": {
+        "line": 260,
+        "snippet": "MidiTrack tracks[header.m_ntracks] <optimize=false>;"
+      },
+      "evidence_extra": [
+        {
+          "line": 257,
+          "snippet": "struct"
+        },
+        {
+          "line": 259,
+          "snippet": "MidiHeader header;"
+        },
+        {
+          "line": 261,
+          "snippet": "} file;"
+        },
+        {
+          "line": 30,
+          "snippet": "short m_ntracks;"
+        }
+      ],
+      "confidence": "high",
+      "algorithm": "array element count taken from MidiHeader.m_ntracks",
+      "covers": "all bytes from file offset 14 (immediately after the header chunk) to the end of the file",
+      "includes_self": false,
+      "endianness": "n/a",
+      "depends_on": [
+        "MidiHeader.m_ntracks"
+      ],
+      "temptation": "Emitting a single track always, or a fixed small number, to keep generation cheap. This array is the whole body of the file: the number of tracks and the number of events per track are the two repeat knobs that produce byte volume, and both are bounded by the output_budget entries in `structure`, never by a cap on m_ntracks.",
+      "notes": "`<optimize=false>` on line 260 tells 010 Editor not to collapse identical array elements, which is a hint that tracks are expected to differ from one another. Generate the tracks first, then write the count into MidiHeader.m_ntracks so the two agree by construction."
+    }
+  },
+  "dependencies": [
+    {
+      "when": {
+        "field": "MidiHeader.m_format",
+        "equals": 0
+      },
+      "then": {
+        "field": "MidiHeader.m_ntracks",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          1
+        ]
+      },
+      "description": "Format 0 files contain exactly one track, which holds both the tempo map and all performance data.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_format",
+        "in": [
+          1,
+          2
+        ]
+      },
+      "then": {
+        "field": "MidiHeader.m_ntracks",
+        "tier": "A",
+        "type": "calculated_value",
+        "min": 1
+      },
+      "description": "Formats 1 and 2 contain one or more tracks; the count is otherwise free and must equal the number of MTrk chunks emitted.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_format",
+        "equals": 2
+      },
+      "then": {
+        "field": "meta_event.m_seqNum",
+        "tier": "C",
+        "type": "unconstrained"
+      },
+      "description": "In MIDI_PATTERN files each track is an independent pattern and META_SEQUENCE_NUM (0x00) carries the pattern number used to select and match tracks; the value itself stays free.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_format",
+        "equals": 1
+      },
+      "then": {
+        "field": "meta_event.m_type",
+        "tier": "B",
+        "type": "enumerated_values",
+        "preferred_value": [
+          81
+        ],
+        "note": "convention, not a validity rule: violating it still produces a legal file"
+      },
+      "description": "In MIDI_MULTIPLE files the first track is the conduction (tempo) track, so META_TEMPO, META_TIME_SIGNATURE and META_KEY_SIGNATURE conventionally appear there before any note events; later tracks are performance-only.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "min": 128,
+        "max": 143
+      },
+      "then": {
+        "section": "note_off_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0x80-0x8F selects note off: exactly two data bytes follow (key number, release velocity), matching the template's dispatch at line 73.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "min": 144,
+        "max": 159
+      },
+      "then": {
+        "section": "note_on_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0x90-0x9F selects note on: exactly two data bytes follow (key number, velocity), matching the dispatch at line 81. A velocity of 0 is semantically a note off.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "min": 160,
+        "max": 175
+      },
+      "then": {
+        "section": "note_pressure_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0xA0-0xAF selects polyphonic key pressure: exactly two data bytes follow (key number, pressure), matching the dispatch at line 89.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "min": 176,
+        "max": 191
+      },
+      "then": {
+        "section": "controller_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0xB0-0xBF selects control change: exactly two data bytes follow (controller number, value), matching the dispatch at line 97.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "min": 192,
+        "max": 207
+      },
+      "then": {
+        "section": "program_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0xC0-0xCF selects program change: exactly ONE data byte follows (program number), matching the dispatch at line 105. Emitting two bytes here desyncs the track.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "min": 208,
+        "max": 223
+      },
+      "then": {
+        "section": "channel_pressure_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0xD0-0xDF selects channel pressure: exactly ONE data byte follows (pressure), matching the dispatch at line 112.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "min": 224,
+        "max": 239
+      },
+      "then": {
+        "section": "pitch_bend_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0xE0-0xEF selects pitch bend: exactly two data bytes follow, least significant byte first then most significant, matching the dispatch at line 119 and the declaration order at lines 123-124.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "equals": 255
+      },
+      "then": {
+        "section": "meta_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0xFF selects a meta event: a type byte, a VLQ length and the type-dependent payload follow, matching the template's `lastStatus == -1` test at line 127 (char is signed in 010 Editor, so 0xFF reads as -1).",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          240,
+          247
+        ]
+      },
+      "then": {
+        "section": "sysex_event",
+        "required": true,
+        "other_sections": "forbidden"
+      },
+      "description": "Status 0xF0 (sysex start) or 0xF7 (escape / end of exclusive) selects a sysex event: a VLQ length and exactly that many payload bytes follow, matching the dispatch at line 236 where `(lastStatus & 0xf0) == 0xF0` catches both values.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "absent": true
+      },
+      "then": {
+        "field": "MidiMessage.m_status",
+        "required": false,
+        "reuse_previous": true
+      },
+      "description": "Running status: when the byte at this position has bit 7 clear there is no status byte at all - that byte is the first data byte of a repeat of the previous channel message. The template models it by rewinding one byte (lines 67-70: `if (m_status & 0x80) lastStatus = m_status; else FSeek(FTell()-1);`). Legal only for channel voice and mode messages 0x80-0xEF and only after a status byte has been seen earlier in the same track.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiMessage.m_status",
+        "in": [
+          240,
+          247,
+          255
+        ],
+        "scope": "previous_message"
+      },
+      "then": {
+        "field": "MidiMessage.m_status",
+        "required": true,
+        "reuse_previous": false
+      },
+      "description": "A meta event or a sysex/escape event cancels any running status in effect, so the message that follows it must carry its own status byte.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "section": "MidiTrack",
+        "present": true,
+        "scope": "first_message_of_track"
+      },
+      "then": {
+        "field": "MidiMessage.m_status",
+        "required": true,
+        "reuse_previous": false
+      },
+      "description": "Running status does not carry across track boundaries: the first event of every MTrk chunk must begin with its own status byte because no prior status exists in that track. Note that the template declares `local char lastStatus = 0;` at line 61 OUTSIDE MidiTrack, so its running status does leak between tracks - a template quirk, not a format rule.",
+      "source": "spec",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 0
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          0,
+          2
+        ]
+      },
+      "description": "META_SEQUENCE_NUM carries a two-byte sequence number, or a length of 0 meaning no number at all; when the length is 0, meta_event.m_seqNum must not be emitted.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 32
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          1
+        ]
+      },
+      "description": "META_MIDI_CHANNEL_PREFIX is exactly one byte, so its length must encode 1.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 33
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          1
+        ]
+      },
+      "description": "META_MIDI_PORT is exactly one byte, so its length must encode 1.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 47
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          0
+        ]
+      },
+      "description": "META_END_OF_TRACK has no payload, so its length must encode 0 and the event is the three bytes FF 2F 00.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 81
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          3
+        ]
+      },
+      "description": "META_TEMPO carries a three-byte big-endian microseconds-per-quarter-note value, so its length must encode 3.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 84
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          5
+        ]
+      },
+      "description": "META_SMPTE_OFFSET carries five bytes (hour, minute, second, frame, fractional frame), so its length must encode 5.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 88
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          4
+        ]
+      },
+      "description": "META_TIME_SIGNATURE carries four bytes (numerator, denominator exponent, clocks per click, 32nd notes per quarter), so its length must encode 4.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 89
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "valid_values": [
+          2
+        ]
+      },
+      "description": "META_KEY_SIGNATURE carries two bytes (flats/sharps, major/minor), so its length must encode 2.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "in": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          127
+        ]
+      },
+      "then": {
+        "field": "meta_event.m_length",
+        "tier": "A",
+        "type": "calculated_value",
+        "min": 0,
+        "note": "free: derive the count from the payload the generator chose to emit"
+      },
+      "description": "The text meta types and META_SEQUENCER_EVENT carry a variable-length payload, so the length is free apart from having to equal the number of payload bytes actually present. This is where payload volume - and therefore most of the file's byte diversity - comes from, and it must not be capped by narrowing this field.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "in": [
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126
+        ]
+      },
+      "then": {
+        "section": "meta_event.m_data",
+        "required": true
+      },
+      "description": "Any unassigned or reserved meta type still requires a VLQ length and exactly that many payload bytes, which a conforming reader skips; the template's final `else` at line 230 does the same. Omitting the payload desyncs the track.",
+      "source": "both",
+      "confidence": "high"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_tickdiv",
+        "min": -32768,
+        "max": -1
+      },
+      "then": {
+        "field": "meta_event.m_usecPerQuarterNote",
+        "tier": "C",
+        "type": "unconstrained",
+        "note": "ignored by conforming readers in this case; timing comes from the SMPTE division and META_SMPTE_OFFSET"
+      },
+      "description": "When bit 15 of the time division is set the file is SMPTE-timed, so META_TEMPO no longer drives the clock: frames per second come from m_tickdiv bits 14-8 and ticks per frame from bits 7-0, with META_SMPTE_OFFSET supplying the start timecode.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "MidiHeader.m_tickdiv",
+        "min": 0,
+        "max": 32767
+      },
+      "then": {
+        "field": "meta_event.m_usecPerQuarterNote",
+        "tier": "C",
+        "type": "unconstrained",
+        "note": "meaningful in this case: ticks per quarter note times microseconds per quarter note gives real time"
+      },
+      "description": "When bit 15 of the time division is clear the file is metric-timed and META_TEMPO is what converts delta-time ticks into wall-clock time.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "field": "meta_event.m_type",
+        "equals": 32,
+        "scope": "previous_message"
+      },
+      "then": {
+        "field": "sysex_event.m_message",
+        "tier": "A",
+        "type": "payload_wellformedness",
+        "note": "channel attribution only; no change to the payload's byte-level rules"
+      },
+      "description": "A META_MIDI_CHANNEL_PREFIX sets the MIDI channel attributed to the sysex and meta events that follow it, until the next prefix event or the end of the track.",
+      "source": "spec",
+      "confidence": "medium"
+    },
+    {
+      "when": {
+        "section": "MidiTrack",
+        "present": true
+      },
+      "then": {
+        "section": "meta_event with m_type = META_END_OF_TRACK (0x2F)",
+        "required": true,
+        "position": "last event of the track"
+      },
+      "description": "Every track must end with an End-of-Track meta event, which occupies at least four bytes (a delta-time quantity, then FF 2F 00); a track whose events do not include it is malformed and a conforming reader treats the track as truncated.",
+      "source": "spec",
+      "confidence": "high"
+    }
+  ],
+  "structure": [
+    {
+      "rule": "first_element",
+      "subject": "MidiHeader",
+      "detail": "The file must begin at offset 0 with exactly one MThd chunk: m_magic 'MThd', m_seclen (byte count, 6 for a standard header), m_format, m_ntracks, m_tickdiv - 14 bytes in total for a standard header.",
+      "description": "Every Standard MIDI File opens with a single fixed header chunk that carries the format, the track count and the time division.",
+      "source": "both",
+      "output_budget": "n/a - emitted exactly once as the fixed head element; 14 bytes for a standard header, more only if extra header bytes are added and MidiHeader.m_seclen is raised to match.",
+      "generation_note": "Emit as a fixed head element before anything else: four magic bytes, four big-endian length bytes, then the three two-byte big-endian header fields."
+    },
+    {
+      "rule": "ordering",
+      "subject": "MidiHeader before every MidiTrack",
+      "detail": "The header chunk precedes all track chunks and no track chunk may appear before it; tracks are never interleaved with each other or with a second header.",
+      "description": "The chunk sequence is strictly one MThd followed by N MTrk chunks.",
+      "source": "both",
+      "output_budget": "n/a - ordering rule, produces no bytes of its own.",
+      "generation_note": "Write the header, then walk the track array in order; never revisit the header."
+    },
+    {
+      "rule": "ordering",
+      "subject": "byte order of every multi-byte field",
+      "detail": "The template sets BigEndian() globally at line 18, so m_seclen, m_format, m_ntracks, m_tickdiv, MidiTrack.m_seclen, meta_event.m_seqNum and meta_event.m_usecPerQuarterNote are all most-significant-byte-first, and variable-length quantities are most-significant-group-first.",
+      "description": "MIDI files are big-endian throughout, unlike most other formats in this corpus.",
+      "source": "template",
+      "output_budget": "n/a - byte-order rule.",
+      "generation_note": "Write every multi-byte integer MSB first; write VLQ 7-bit groups MSB group first."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "file.tracks (MidiTrack chunks)",
+      "detail": "Exactly MidiHeader.m_ntracks MTrk chunks must follow the header - no more, no fewer - and m_ntracks is written from the number of tracks actually emitted.",
+      "description": "The header's track count and the number of track chunks present must agree.",
+      "source": "both",
+      "output_budget": "Total bytes written after the 14-byte header, across all MTrk chunks including their 8-byte headers: draw a per-file budget freely between 256 bytes and 64 KiB, keep a running total of bytes emitted, and stop adding further tracks when the next track would exceed it. Rationale: MIDI readers branch per event type, not per byte, so a few hundred events reach every dispatch arm several times, while the ceiling keeps allocation-heavy readers inside their limits and the corpus small. The per-file budget value itself varies, so file size stays a diversity axis. Never achieve this by capping MidiHeader.m_ntracks, MidiTrack.m_seclen, meta_event.m_length or any delta time.",
+      "generation_note": "Emit the header first in the file but last in time, or reserve its 14 bytes up front and back-patch m_ntracks: choose a track count, generate that many tracks under the running byte budget, then write the count into the header so the two agree by construction."
+    },
+    {
+      "rule": "contiguous",
+      "subject": "MidiTrack message run",
+      "detail": "Within one track the events are contiguous and their sizes sum to exactly MidiTrack.m_seclen: the template's loop `while (remaining) { MidiMessage message; remaining -= sizeof(message); }` (lines 251-253) exits only at zero, so there is no padding, no gap and no overrun.",
+      "description": "A track's events must fill its declared byte count exactly.",
+      "source": "both",
+      "output_budget": "Per track: the value the generator computed for MidiTrack.m_seclen after building the event list, itself bounded by the file-level track budget above. Rationale: expressing the per-track size as a computed sum rather than a chosen cap is what keeps individual event fields free.",
+      "generation_note": "Build the track's event list first as a byte buffer, set m_seclen to that buffer's length, then write magic + length + buffer."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "MidiMessage events within one MidiTrack",
+      "detail": "One or more events repeat inside each track; the repeat count is free and is bounded only by the track's byte budget. Each event is a delta-time quantity, an optional status byte, and the payload its status selects.",
+      "description": "Events repeat until the track's declared byte count is exhausted.",
+      "source": "both",
+      "output_budget": "Counted as bytes, not events: the running total of event bytes in the current track must land exactly on MidiTrack.m_seclen, and the sum over all tracks must respect the file-level budget. Rationale: a byte-denominated budget lets the event count vary from a handful of long events to hundreds of short ones, which is itself a diversity axis.",
+      "generation_note": "Emit events in a loop, adding each event's exact byte size to a running total; reserve at least four bytes for the mandatory End-of-Track event before starting, and stop when only that reservation is left."
+    },
+    {
+      "rule": "required",
+      "subject": "MidiMessage.m_dtime (delta time before every event)",
+      "detail": "Every event in every track begins with a variable-length delta time, including the very first event of a track and the final End-of-Track event. A delta time of 0 is legal and common.",
+      "description": "There is no event form without a leading delta time.",
+      "source": "both",
+      "output_budget": "1 to 4 bytes per quantity, which is a format limit (maximum value 0x0FFFFFFF), not a size control; no additional budget applies.",
+      "generation_note": "Generate a free tick value per event and encode it as a minimal VLQ; make sure the corpus contains one-, two-, three- and four-byte quantities."
+    },
+    {
+      "rule": "last_element",
+      "subject": "meta_event with m_type = META_END_OF_TRACK (0x2F)",
+      "detail": "The last event of every track must be an End-of-Track meta event: a delta-time quantity followed by FF 2F 00 (status 0xFF, type 0x2F, length VLQ 0, no payload).",
+      "condition": "Applies once per MidiTrack, including single-track format 0 files.",
+      "description": "Each track is explicitly terminated.",
+      "source": "both",
+      "output_budget": "n/a - emitted exactly once per track; 4 bytes minimum with a zero delta time.",
+      "generation_note": "Emit as the fixed tail element of every track buffer before computing that track's m_seclen."
+    },
+    {
+      "rule": "mutually_exclusive",
+      "subject": "event payload sections",
+      "detail": "Exactly one of note_off_event, note_on_event, note_pressure_event, controller_event, program_event, channel_pressure_event, pitch_bend_event, meta_event and sysex_event is present per MidiMessage, selected by the high nibble of the running status; the template's if/else-if chain at lines 73-243 covers all nine and no more.",
+      "description": "The nine payload forms are alternatives, never combinations.",
+      "source": "both",
+      "output_budget": "n/a - selection rule; the bytes belong to the chosen section and count against the track budget.",
+      "generation_note": "Pick the status first, then emit only that status's payload, with its exact data-byte count (2, 2, 2, 2, 1, 1, 2, variable, variable)."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "track status bytes 0xF1-0xF6 and 0xF8-0xFE",
+      "detail": "System common messages (MTC quarter frame, song position, song select, tune request) and all real-time messages must not appear as track event statuses; SMF carries them, if at all, inside an F7 escape event payload. The template would route them into the sysex branch (line 236) and then misread their data bytes as a VLQ length, so emitting them corrupts the track.",
+      "description": "Only 0x80-0xEF, 0xF0, 0xF7 and 0xFF are legal track statuses.",
+      "source": "both",
+      "output_budget": "n/a - exclusion rule.",
+      "generation_note": "To reach a reader's system-common or real-time handling code, emit an F7 escape event whose payload contains those bytes; that is the legal carrier and it also exercises the escape branch."
+    },
+    {
+      "rule": "requires",
+      "subject": "running status",
+      "detail": "A MidiMessage may omit its status byte only when a status byte with bit 7 set has already appeared earlier in the same track, the previous status is a channel message 0x80-0xEF, and no meta or sysex event has intervened. Running status is per-track and is cancelled by any 0xFF, 0xF0 or 0xF7 event.",
+      "description": "Status-byte omission is a real encoding option with its own reader code path, not a licence to drop bytes anywhere.",
+      "source": "both",
+      "output_budget": "n/a - saves one byte per reused message; the saving counts against the track budget automatically.",
+      "generation_note": "Track the last emitted channel status per track; with some probability omit the status byte on the next message of the same type, and always re-emit a status after a meta or sysex event and at the start of each track."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "meta_event and sysex_event payloads",
+      "detail": "The payload byte count of every meta event and every sysex event is free (except for the eight fixed-length meta types listed in dependencies) and is mirrored exactly by its VLQ length field.",
+      "description": "Variable-length payloads are the main source of byte volume inside a track.",
+      "source": "both",
+      "output_budget": "At most 4 KiB for any single meta or sysex payload, and at most 16 KiB total across all meta-text and sysex payloads in the file, tracked as a running total; the rest of the track budget goes to ordinary channel events. Rationale: text and sysex blobs add bytes without adding reader branches beyond the per-type dispatch already reached by a few events, while very large blobs push allocation-heavy readers into failure paths that produce no coverage. This is a budget on the repeating structure, not a cap on any field's value.",
+      "generation_note": "Generate the payload bytes freely, then write their count as the VLQ length; check the running payload total against the budget before starting another large text or sysex event."
+    },
+    {
+      "rule": "cardinality",
+      "subject": "DeltaTime bytes",
+      "detail": "One to four bytes per quantity, terminating as soon as a byte with bit 7 clear is written; the decoded value must not exceed 0x0FFFFFFF.",
+      "description": "The quantity length is bounded by the format itself.",
+      "source": "both",
+      "output_budget": "4 bytes maximum per quantity - a format limit, not a size control; the number of quantities is bounded only by the enclosing track budget.",
+      "generation_note": "Encode minimally: choose the value, then emit only as many bytes as the value needs."
+    },
+    {
+      "rule": "required",
+      "subject": "MidiTrack chunk header",
+      "detail": "Every track chunk begins with the four bytes 'MTrk' followed by a four-byte big-endian byte count covering the events that follow.",
+      "description": "Tracks are located by magic and sized by their own length field.",
+      "source": "both",
+      "output_budget": "n/a - fixed 8-byte header per track; its cost is already inside the file-level track budget.",
+      "generation_note": "Emit magic, then the event buffer length, then the event buffer."
+    },
+    {
+      "rule": "ordering",
+      "subject": "chunk walk",
+      "detail": "A reader finds track N+1 by adding track N's m_seclen to the offset just past track N's length field, so any length error breaks every subsequent chunk's magic check; the walk ends after MidiHeader.m_ntracks chunks.",
+      "description": "The file is a linked chain of length-delimited chunks with no index or directory.",
+      "source": "spec",
+      "output_budget": "n/a - traversal rule.",
+      "generation_note": "Compute each chunk's length from the bytes actually emitted; never estimate it."
+    },
+    {
+      "rule": "forbidden",
+      "subject": "chunk types other than MThd and MTrk",
+      "detail": "SMF defines exactly two chunk types, and this template parses nothing else; a bare MIDI file carries no wrapper, no index and no trailing directory. (Files seen with a RIFF 'MID ' wrapper are RMID, a different container outside the scope of this template.)",
+      "description": "No other structural element may appear at chunk level.",
+      "source": "spec",
+      "output_budget": "n/a - exclusion rule.",
+      "generation_note": "Emit header then tracks and stop; do not append an index, a directory or a second header."
+    }
+  ],
+  "diversity_axes": [
+    {
+      "field": "MidiHeader.m_magic",
+      "tier": "A",
+      "tier_note": "Listed so the rewrite step knows these are NOT diversity sources: both chunk identifiers have exactly one legal value each, and no variation may be introduced in them.",
+      "why": "The two chunk magics are the decoder's front gate and its per-track gate; a wrong value in either stops the parse before any event is read.",
+      "decoder_paths": "None. A reader compares the four bytes at offset 0 against 'MThd' and each subsequent chunk against 'MTrk' and refuses the file on mismatch, so no later code runs at all.",
+      "must_remain_unconstrained": false,
+      "interacts_with": [
+        "MidiHeader.m_seclen",
+        "MidiTrack.m_seclen"
+      ],
+      "also_covers": [
+        "MidiTrack.m_magic"
+      ],
+      "notes": "Emit 'MThd' once at offset 0 and 'MTrk' once per track, immediately before that track's length field. No wrapper, no BOM, no RIFF 'MID ' container."
+    },
+    {
+      "field": "MidiHeader.m_seclen",
+      "tier": "A",
+      "tier_note": "The VALUE must be exact - it is derived from the header bytes actually emitted - but it is not a size control: the standard header is 6 bytes and every conforming file writes 6.",
+      "why": "Readers skip this many bytes to reach the first MTrk chunk; a disagreement drops the chunk walk into the middle of a magic number and the file is refused before any track is parsed.",
+      "decoder_paths": "The chunk-skip arithmetic that locates the first track. A 6-byte header takes the common path; a longer header with matching padding takes the skip-and-continue path in readers that tolerate extra header bytes, which is a distinct branch worth reaching occasionally.",
+      "must_remain_unconstrained": false,
+      "interacts_with": [
+        "MidiHeader.m_format",
+        "MidiHeader.m_ntracks",
+        "MidiHeader.m_tickdiv"
+      ],
+      "notes": "Write 6 by default. If a file deliberately carries extra header bytes, raise this field to match and keep the three header fields at their standard offsets."
+    },
+    {
+      "field": "MidiHeader.m_format",
+      "tier": "B",
+      "tier_note": "Emit all three legal values across the corpus. Do not drop MIDI_PATTERN (2) because it is rare: it is the only format in which META_SEQUENCE_NUM carries pattern-selection meaning, and dropping it deletes that branch.",
+      "why": "The format value decides how a reader interprets the relationship between tracks, so it selects a different top-level playback and track-role path before any event is parsed.",
+      "decoder_paths": "Format 0 takes the single-track path where tempo and performance share one track; format 1 takes the multi-track simultaneous path with the first track as the conduction track; format 2 takes the independent-pattern path where each track is selected and matched by its META_SEQUENCE_NUM. A corpus of only format 1 never enters the other two.",
+      "must_remain_unconstrained": false,
+      "interacts_with": [
+        "MidiHeader.m_ntracks",
+        "meta_event.m_seqNum"
+      ],
+      "notes": "Keep the track count consistent: exactly 1 for format 0, one or more for formats 1 and 2."
+    },
+    {
+      "field": "MidiHeader.m_ntracks",
+      "tier": "A",
+      "tier_note": "Tier A on the VALUE - it must equal the number of MTrk chunks actually written - but the number of tracks generated is a free choice. Never pin it to 1 or to a small constant to make length bookkeeping easier; generate the tracks, then write their count.",
+      "why": "This is the repeat count of the file's only repeating top-level structure, so it is the primary place a size-conscious author would be tempted to cap the file.",
+      "decoder_paths": "The track iteration loop, per-track state allocation and reset, and the chunk-magic check that runs once per track. One short track exercises the loop body once; many tracks exercise the loop, the length arithmetic and the state reset repeatedly, and format-0 readers additionally assert the single-track case.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "file.tracks",
+        "MidiTrack.m_seclen",
+        "MidiHeader.m_format"
+      ],
+      "notes": "Total file size is bounded by the output_budget on file.tracks in `structure`, not by this field. Derive the count from the tracks emitted so the header and the chunk walk always agree."
+    },
+    {
+      "field": "MidiHeader.m_tickdiv",
+      "tier": "C",
+      "tier_note": "Completely free: no value set, no minimum, no maximum. It is a `short`, so the full signed span is legal, and the negative half is what selects SMPTE timing.",
+      "why": "Bit 15 chooses between two entirely different timing models and the remaining bits are either ticks per quarter note or a frames-per-second / ticks-per-frame split, so this one field decides which timing code a reader runs.",
+      "decoder_paths": "The timing-model branch taken before any delta time is converted to real time: positive values go to the metric path (ticks per quarter note multiplied by META_TEMPO), negative values go to the SMPTE path (bit split into a signed frames-per-second field and a ticks-per-frame field, with META_SMPTE_OFFSET supplying the start timecode). A corpus of only positive values never enters the SMPTE branch at all.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "meta_event.m_usecPerQuarterNote",
+        "meta_event.m_hours"
+      ],
+      "notes": "Cover both halves of the span: small and large positive divisions including the conventional ones, and negative divisions encoding each of the four frames-per-second values with a spread of ticks-per-frame values including 0 and 1."
+    },
+    {
+      "field": "MidiMessage.m_dtime",
+      "tier": "A",
+      "tier_note": "Tier A on the FRAMING only (a minimal VLQ of 1-4 bytes, value at most 0x0FFFFFFF). The decoded value is completely free: never pin delta times to small constants to keep files short. Vary them over the whole span so one-, two-, three- and four-byte encodings all appear.",
+      "why": "Every event in every track begins with one of these quantities, so its value drives the tick accumulator and its byte width drives how many times the decode loop iterates.",
+      "decoder_paths": "The VLQ decode loop: its iteration count, the continuation-bit test and the shift-accumulate; then the per-track tick accumulator and any conversion to absolute time. A one-byte quantity never re-enters the loop body, so a corpus of only small delta times leaves the multi-byte accumulation path unexecuted.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MidiTrack.m_seclen"
+      ],
+      "also_covers": [
+        "DeltaTime.t0",
+        "DeltaTime.t1",
+        "DeltaTime.t2",
+        "DeltaTime.t3"
+      ],
+      "notes": "The four DeltaTime bytes are the framing of this quantity: t0-t2 are free bytes whose bit 7 selects whether another byte follows, and t3 must have bit 7 clear so the quantity terminates inside four bytes. Include zero delta times - simultaneous events are the most common real-world case and take the accumulator's identity path."
+    },
+    {
+      "field": "MidiMessage.m_status",
+      "tier": "A",
+      "tier_note": "Recorded Tier A because the byte is the event block marker, but within the legal set EVERY value must be emitted: 0x80-0xEF with a free low nibble, plus 0xF0, 0xF7 and 0xFF. The excluded values 0xF1-0xF6 and 0xF8-0xFE are absent because SMF forbids them as track statuses, not because they are unproductive. The byte may also be omitted entirely under running status.",
+      "why": "This single byte selects which of nine payload forms follows, so it is the widest branch selector in the format.",
+      "decoder_paths": "The event dispatcher's high-nibble switch: note off, note on, polyphonic key pressure, control change, program change, channel pressure, pitch bend, meta event and sysex/escape - two of which take one data byte and six of which take two. It also selects the running-status path when the byte is absent, which is a separate rewind-and-inherit route through the same dispatcher.",
+      "must_remain_unconstrained": false,
+      "interacts_with": [
+        "note_on_event.m_note",
+        "meta_event.m_type",
+        "sysex_event.m_length"
+      ],
+      "notes": "Vary the channel nibble independently over 0-15 so per-channel state arrays are indexed at both ends. To reach a reader's system-common or real-time handling, carry those bytes inside an F7 escape payload rather than emitting them as statuses."
+    },
+    {
+      "field": "note_on_event.m_note",
+      "tier": "A",
+      "tier_note": "The bitmask records the data-byte rule (bit 7 must be clear, or the reader re-frames it as a status byte and desynchronises the track). Inside that rule all 128 values are legal and must stay free - this is not a narrowing to a musical subset.",
+      "why": "The key number indexes per-note state and drives range handling, so it moves the reader through different note-management paths.",
+      "decoder_paths": "Per-key state lookup and allocation, note-on/note-off pairing tables, and any clamping or transposition applied at the range boundaries. Key 0 and key 127 reach the ends of those tables; middle values only reach the interior.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "note_on_event.m_velocity"
+      ],
+      "also_covers": [
+        "note_off_event.m_note",
+        "note_pressure_event.m_note"
+      ],
+      "notes": "Sweep the full 0-127 span with deliberate weight on both boundaries, and pair note-on with a matching note-off on the same key so the reader's note-lifecycle code is entered and exited."
+    },
+    {
+      "field": "note_on_event.m_velocity",
+      "tier": "A",
+      "tier_note": "The bitmask records the data-byte rule (bit 7 clear); all 128 values stay free. Velocity 0 in a note-on is NOT an error to be avoided - it is the encoding readers must treat as a note off, which is a distinct branch.",
+      "why": "Velocity is interpreted, scaled and compared rather than merely stored, and its zero value changes the meaning of the enclosing message.",
+      "decoder_paths": "The note-on handler's zero-velocity test, which routes the message to note-off processing; amplitude scaling and any velocity-to-volume curve; and the release-velocity handling of note off. A corpus without velocity 0 never takes the reroute branch.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "note_on_event.m_note"
+      ],
+      "also_covers": [
+        "note_off_event.m_velocity"
+      ],
+      "notes": "Span 0-127 with weight on 0, 1 and 127, and emit both note-on-with-zero-velocity and note-off-with-nonzero-release-velocity so both interpretations are reached."
+    },
+    {
+      "field": "note_pressure_event.m_pressure",
+      "tier": "A",
+      "tier_note": "Bitmask is the data-byte rule only; the full 0-127 span stays free for both the polyphonic and the channel-wide pressure value.",
+      "why": "Pressure values feed per-key and per-channel controller state, and the two message forms reach different handlers despite sharing a value range.",
+      "decoder_paths": "The polyphonic key-pressure handler indexes per-note state by key number, while the channel-pressure handler writes a single per-channel value; each is a separate dispatcher arm with its own state store. A corpus that omits either leaves one arm unexecuted.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "note_pressure_event.m_note"
+      ],
+      "also_covers": [
+        "channel_pressure_event.m_pressure"
+      ],
+      "notes": "Emit both pressure message types, and for the polyphonic form vary the key number across the span so the per-note lookup is exercised at its boundaries."
+    },
+    {
+      "field": "controller_event.m_controller",
+      "tier": "A",
+      "tier_note": "Bitmask is the data-byte rule only; every controller number 0-127 stays free. Do not restrict the set to the controllers that real files use - the high numbers are separate branches.",
+      "why": "The controller number selects which handler runs, and several numbers switch the reader into a completely different mode rather than setting a value.",
+      "decoder_paths": "Continuous controllers index a per-channel value array; controllers 98-101 (NRPN and RPN data entry) switch the reader into a two-byte parameter-number mode with its own state machine; controllers 120-127 are mode messages (all sound off, reset all controllers, local control, all notes off, omni off/on, mono/poly) that reset state rather than store a value. Emitting only 1, 7, 10 and 64 reaches none of that.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "controller_event.m_value"
+      ],
+      "also_covers": [
+        "controller_event.m_value"
+      ],
+      "notes": "Sweep 0-127 with deliberate weight on the RPN/NRPN group and the mode-message group, and vary the value byte across its full span too, including 0 and 127."
+    },
+    {
+      "field": "program_event.m_program",
+      "tier": "A",
+      "tier_note": "Bitmask is the data-byte rule only; all 128 program numbers stay free. This message carries ONE data byte, not two, so its size must not be normalised to match the other channel messages.",
+      "why": "The program number selects an instrument patch, which readers use to index patch tables and to decide drum-versus-melodic handling on channel 9.",
+      "decoder_paths": "Patch lookup and validation against the loaded sound set, the channel-9 percussion special case, and any bank-select interaction with controllers 0 and 32. Program 0 and 127 reach the ends of the patch table.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "controller_event.m_value"
+      ],
+      "notes": "Span 0-127 with weight on both boundaries, and combine with bank-select controller changes so the reader's bank-plus-program resolution path is reached."
+    },
+    {
+      "field": "pitch_bend_event.m_lsb",
+      "tier": "A",
+      "tier_note": "Bitmask is the data-byte rule only; both bytes stay free over 0-127. The pair forms a 14-bit signed value, and the least-significant byte comes FIRST - reversing the order is a framing error, not a diversity choice.",
+      "why": "The combined 14-bit bend value is sign-extended, scaled by the per-channel bend range and compared against the centre position, so its extremes and its centre take different paths.",
+      "decoder_paths": "The bend handler's two-byte reassembly (LSB then MSB), the sign test at the top of the 14-bit range, the centre-value fast path, and the range-scaling multiply. Emitting only centre values leaves the sign and scaling paths unexecuted; emitting only extremes leaves the centre fast path unexecuted.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "pitch_bend_event.m_msb"
+      ],
+      "also_covers": [
+        "pitch_bend_event.m_msb"
+      ],
+      "notes": "Cover the pair at 0x00 0x00 (minimum), 0x00 0x40 (centre), 0x7F 0x7F (maximum) and freely in between, always writing the low byte first."
+    },
+    {
+      "field": "meta_event.m_type",
+      "tier": "B",
+      "tier_note": "Emit the whole legal byte span 0x00-0x7F, not just the 18 values the template names. Unassigned and reserved types are legal: SMF requires readers to skip an unknown meta event by length, and that skip path is a real branch that named types never reach.",
+      "why": "The meta type byte drives a second-level dispatch inside the meta arm, and each arm has its own payload layout.",
+      "decoder_paths": "Thirteen named arms with distinct layouts - sequence number (two forms, length 0 and length 2), eight text arms, channel prefix, port, end of track (empty), tempo (3-byte big-endian), SMPTE offset (5 bytes), time signature (4 bytes), key signature (2 bytes) - plus the length-delimited skip arm for every unrecognised type. Only emitting tempo and end of track reaches three of those.",
+      "must_remain_unconstrained": false,
+      "interacts_with": [
+        "meta_event.m_length",
+        "meta_event.m_data"
+      ],
+      "notes": "Include the reserved gaps 0x0A-0x1F, 0x22-0x2E, 0x30-0x46, 0x48-0x50, 0x52-0x57 and 0x5A-0x7E with a VLQ length and that many payload bytes, and emit META_SEQUENCE_NUM (0x00) in both its length-0 and length-2 forms."
+    },
+    {
+      "field": "meta_event.m_length",
+      "tier": "A",
+      "tier_note": "Tier A on the VALUE - it must equal the number of payload bytes emitted - but the payload SIZE is a free choice for the eight variable-length meta types. Never pin the length to a few small constants so that precomputed payloads can be reused; build the payload, count it, then write the count.",
+      "why": "This quantity is the array bound for the payload, and text and sequencer-specific meta events are where most of a file's byte volume can legitimately come from.",
+      "decoder_paths": "The payload read of the selected meta arm, the allocation sized by this count, and the skip-by-length path for unknown types. A zero length takes the empty-payload branch, which readers handle separately from a non-empty one; a multi-byte length additionally exercises the VLQ decode a second time inside the same event.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "meta_event.m_text",
+        "meta_event.m_data",
+        "MidiTrack.m_seclen"
+      ],
+      "notes": "Eight types have lengths fixed by the specification and are recorded in `dependencies` (0x00 -> 0 or 2, 0x20 -> 1, 0x21 -> 1, 0x2F -> 0, 0x51 -> 3, 0x54 -> 5, 0x58 -> 4, 0x59 -> 2). Every other type has a free length, bounded only by the output_budget in `structure`."
+    },
+    {
+      "field": "meta_event.m_seqNum",
+      "tier": "C",
+      "tier_note": "Completely free: the full 16-bit big-endian span, including 0. No value set, no minimum, no maximum.",
+      "why": "The sequence number is used for pattern selection and matching in format 2 files, so its value decides which track a reader pairs with which pattern.",
+      "decoder_paths": "The pattern-selection and track-matching logic of format 2 playback, plus the two-byte big-endian read itself. In formats 0 and 1 readers record it without acting on it, so the value still parses.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MidiHeader.m_format",
+        "meta_event.m_length"
+      ],
+      "notes": "Emit the event both with length 2 and a value, and with length 0 and no payload at all - those are two distinct arms of the same type byte. In format 2 files give each track a different number so the matching logic has something to distinguish."
+    },
+    {
+      "field": "meta_event.m_text",
+      "tier": "C",
+      "tier_note": "Completely free in both length and byte content. These are the only meta payloads interpreted as characters rather than numbers, and a length of zero is legal - do not require non-empty text and do not restrict the alphabet.",
+      "why": "Text payload length and content drive string handling, encoding conversion and line splitting in readers, and the eight text types are dispatched separately rather than sharing one handler.",
+      "decoder_paths": "Per-type text handling (some readers treat lyrics and markers specially, splitting on newlines or synchronising them to events), the allocation and copy sized by meta_event.m_length, the empty-payload branch when the length is 0, and any character-encoding conversion applied to bytes with bit 7 set. A corpus of only short ASCII strings reaches the allocation fast path and nothing else.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "meta_event.m_length",
+        "meta_event.m_type"
+      ],
+      "also_covers": [
+        "meta_event.m_copyright",
+        "meta_event.m_name",
+        "meta_event.m_lyric",
+        "meta_event.m_marker",
+        "meta_event.m_cuePoint",
+        "meta_event.m_programName",
+        "meta_event.m_deviceName"
+      ],
+      "notes": "Cover every one of the eight text types, since readers often dispatch per type. Vary the length across 0, 1, a few bytes and a few hundred, and vary the content across printable ASCII, high-bit bytes 0x80-0xFF, embedded NUL, CR and LF and other control characters, and multi-byte UTF-8 sequences. Total payload bytes are bounded by the output_budget in `structure`, never by narrowing this field."
+    },
+    {
+      "field": "meta_event.m_channelPrefix",
+      "tier": "C",
+      "tier_note": "Completely free: the full byte span for both fields. Values above 15 are outside the documented channel range but no reader refuses a file over them, so they stay legal for generation purposes.",
+      "why": "The channel prefix re-attributes the channel of the sysex and meta events that follow it, and the port selects an output device, so both change which state a reader writes to without changing any length or framing.",
+      "decoder_paths": "The channel-attribution state that readers apply to subsequent sysex and meta events until the next prefix or the end of the track, and the port/device selection path. Emitting neither leaves the default-channel path as the only one ever taken.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "sysex_event.m_message",
+        "MidiMessage.m_status"
+      ],
+      "also_covers": [
+        "meta_event.m_port"
+      ],
+      "notes": "Each is exactly one byte, so meta_event.m_length must encode 1. Place a prefix before some sysex events so the attribution logic has something to act on, and vary the port value across its span including 0."
+    },
+    {
+      "field": "meta_event.m_usecPerQuarterNote",
+      "tier": "C",
+      "tier_note": "Completely free: the full 24-bit span, including 0. Do not restrict it to conventional tempos - a zero or tiny value reaches a division path that a mid-range value never does.",
+      "why": "This is the divisor that converts ticks into real time, so its value drives tempo arithmetic and any tempo-change tracking across the file.",
+      "decoder_paths": "The tempo-to-tick division (with its zero-divisor guard in readers that have one), the tempo-map update when the value changes mid-track, and the SMPTE-mode path where this field is ignored entirely in favour of the division. Conventional values only reach the interior of the division.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MidiHeader.m_tickdiv",
+        "meta_event.m_length"
+      ],
+      "notes": "Three bytes, big-endian, declared as a 24-bit bitfield; meta_event.m_length must encode 3. Emit several tempo changes within a track so the tempo-map update path runs more than once, and include small values, 0, and values near 0xFFFFFF."
+    },
+    {
+      "field": "meta_event.m_hours",
+      "tier": "C",
+      "tier_note": "Completely free: the full byte span of all five SMPTE-offset fields, including values outside the documented hour/minute/second/frame ranges. No reader refuses a file over an impossible timecode, so none of these bytes may be narrowed.",
+      "why": "The five bytes are split, validated and recombined into a start timecode, so their values move the reader through the SMPTE conversion arithmetic.",
+      "decoder_paths": "The SMPTE start-time assembly (hours with its top two bits reserved for the drop-frame and colour-frame flags, minutes, seconds, frames, and fractional frames in hundredths), the frames-per-second conversion, and the drop-frame compensation path that only runs when the flag bits are set. This whole area is dead code unless the file also uses a negative MidiHeader.m_tickdiv.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MidiHeader.m_tickdiv",
+        "meta_event.m_length"
+      ],
+      "also_covers": [
+        "meta_event.m_mins",
+        "meta_event.m_secs",
+        "meta_event.m_fps",
+        "meta_event.m_fracFrames"
+      ],
+      "notes": "Exactly five bytes, so meta_event.m_length must encode 5. Pair these events with an SMPTE-mode division so the reader's timecode path is actually taken, and set the reserved top bits of the hour byte sometimes to reach the drop-frame and colour-frame handling."
+    },
+    {
+      "field": "meta_event.m_numerator",
+      "tier": "C",
+      "tier_note": "Completely free: the full byte span of all four time-signature bytes, including 0. The denominator byte is a shift exponent and the 32nd-note byte is a multiplier, so unusual values reach arithmetic that conventional ones do not - which is a reason to leave them free, not to bound them.",
+      "why": "These four bytes drive bar-length and metronome arithmetic, and the denominator is applied as a power-of-two shift.",
+      "decoder_paths": "The bar-line and beat-length computation (numerator times the shifted denominator), the metronome click interval, the 32nd-note grid multiplier, and any validation or default substitution a reader applies to an out-of-range exponent. Conventional 4/4 values only ever take the interior of that arithmetic.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "meta_event.m_length",
+        "meta_event.m_usecPerQuarterNote"
+      ],
+      "also_covers": [
+        "meta_event.m_denominator",
+        "meta_event.m_clocksPerClick",
+        "meta_event.m_32ndPer4th"
+      ],
+      "notes": "Exactly four bytes, so meta_event.m_length must encode 4. Note that the stored denominator is log2 of the real denominator (2 means a quarter note), which is a format rule to encode correctly - not a reason to bound the byte to 0-3."
+    },
+    {
+      "field": "meta_event.m_flatsSharps",
+      "tier": "C",
+      "tier_note": "Completely free: the full SIGNED byte span of both key-signature bytes. The -7..+7 span and the two major/minor values are the specification's convention, not a gate, and recording them as a bound would be exactly the GIF mistake.",
+      "why": "The pair selects a key name, so it drives any key lookup or transposition table a reader has, and it is one of the few signed fields in the format.",
+      "decoder_paths": "The key-name lookup indexed by the signed offset, taking both the flat and the sharp side of the table, and the major/minor selection including any default or error branch for an unexpected quality value. Note the field is declared `char`, which is signed in 010 Editor, so negative offsets are the two's-complement bytes 0xF9-0xFF.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "meta_event.m_length",
+        "meta_event.m_majorMinor"
+      ],
+      "also_covers": [
+        "meta_event.m_majorMinor"
+      ],
+      "notes": "Exactly two bytes, so meta_event.m_length must encode 2. Emit offsets on both sides of zero and both quality values, and let some files carry offsets outside -7..+7 to reach a reader's out-of-range handling."
+    },
+    {
+      "field": "meta_event.m_data",
+      "tier": "C",
+      "tier_note": "Completely free in both length and content: this is the fallback payload for every meta type the template does not name, including META_SEQUENCER_EVENT (0x7F) and all unassigned types.",
+      "why": "Reaching this array at all requires emitting meta types that a naive generator would skip as 'undefined', and the skip-unknown path is one of the few branches that only unusual files can enter.",
+      "decoder_paths": "The unknown-meta skip-by-length path, the allocation and copy for a payload of arbitrary size, and for type 0x7F the vendor-specific dispatch that reads a manufacturer ID from the first bytes. Named meta types never reach any of it.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "meta_event.m_type",
+        "meta_event.m_length"
+      ],
+      "notes": "Any byte 0x00-0xFF is legal because the run is length-delimited. For type 0x7F the payload conventionally starts with a manufacturer ID, but readers do not require it, so both forms are worth emitting. Total bytes are bounded by the output_budget in `structure`."
+    },
+    {
+      "field": "sysex_event.m_length",
+      "tier": "A",
+      "tier_note": "Tier A on the VALUE - it must equal the number of sysex payload bytes emitted - but the payload size is a free choice. Never pin it to a few small constants so a fixed set of precomputed sysex blobs can be reused; build the payload, count its bytes, then write the count. This field is named in sysex_event.m_message's derives_from, so it must not be narrowed to suit any payload.",
+      "why": "It is the array bound of the sysex payload and the only thing that tells a reader where the exclusive message ends.",
+      "decoder_paths": "The sysex payload read and the allocation sized by this count, the VLQ decode inside the event, and the zero-length case where the payload is empty. A disagreement with the bytes present shifts every later event and breaks the track length check.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "sysex_event.m_message",
+        "MidiTrack.m_seclen"
+      ],
+      "notes": "A length of 0 is legal and produces an empty sysex payload. Whether the terminating 0xF7 is counted inside the length is the long-standing SMF ambiguity; the dominant convention counts it in and readers are expected to accept both."
+    },
+    {
+      "field": "sysex_event.m_message",
+      "tier": "A",
+      "tier_note": "Tier A on the FRAMING (status 0xF0 or 0xF7, then a VLQ length, then exactly that many payload bytes; nothing inside the payload may be re-interpreted as a status byte). The CONTENT is completely free: any byte 0x00-0xFF at any length, including 0.",
+      "why": "Exclusive messages are the format's only escape hatch to vendor-defined data, and both status forms take this payload path with different framing rules.",
+      "decoder_paths": "The sysex payload read bounded by sysex_event.m_length, the manufacturer-ID dispatch for recognised IDs, the 0xF7 escape form where the payload is arbitrary bytes that must not be re-framed as events, and the length-0 case. A corpus that omits sysex entirely, or emits only 0xF0 with a fixed small payload, reaches almost none of this.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "sysex_event.m_length",
+        "meta_event.m_channelPrefix"
+      ],
+      "notes": "Emit both the 0xF0 form (conventionally ending in 0xF7 inside the payload) and the 0xF7 escape form (payload arbitrary, no 0xF7 required). The escape form is the correct way to carry the forbidden statuses 0xF1-0xF6 and 0xF8-0xFE, which lets a reader's system-common and real-time handling be reached without breaking the track framing."
+    },
+    {
+      "field": "MidiTrack.m_seclen",
+      "tier": "A",
+      "tier_note": "Tier A on the VALUE - it must equal the byte count of the event run that follows, delta times, statuses and payloads all included - but the length of that run is a free choice per track. Never cap tracks at a fixed byte count so one precomputed event blob can be reused; emit the events, count the bytes, then write the count.",
+      "why": "It is the sole delimiter of the event run: it tells the reader where the track ends, where the next MTrk begins, and whether the file's total length is trustworthy.",
+      "decoder_paths": "The track-boundary arithmetic, the end-of-run condition of the event loop, the chunk walk to the next MTrk magic, and the reader's whole-file length check. An empty or very short track takes the loop's immediate-exit path; a long track drives the loop, the running-status state and the tick accumulator many times over. A value that disagrees with the emitted bytes desynchronises every later event.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "file.tracks",
+        "MidiMessage.m_dtime",
+        "MidiTrack.m_magic"
+      ],
+      "notes": "Vary track lengths widely across the corpus - from a track holding only an end-of-track event to tracks of many kilobytes - and make the per-track lengths unequal so the chunk walk cannot succeed by accident."
+    },
+    {
+      "field": "file.tracks",
+      "tier": "A",
+      "tier_note": "Tier A on the COUNT relationship: it must equal MidiHeader.m_ntracks exactly, and every track must be fully written. The number of tracks and their event content are free choices bounded only by the output_budget below, so they may not be narrowed to keep files small.",
+      "why": "This is the file's only repeating top-level structure, and its repetition count is what makes the chunk walk and the whole-file length check meaningful.",
+      "decoder_paths": "The chunk iteration loop with its per-iteration magic check and length read, per-track state allocation and reset, the running-status reset that happens at each track boundary, and the final whole-file length assertion. Zero tracks exits the loop immediately; many tracks of unequal length drive the loop, the state reset and the arithmetic repeatedly.",
+      "must_remain_unconstrained": true,
+      "interacts_with": [
+        "MidiHeader.m_ntracks",
+        "MidiTrack.m_seclen",
+        "MidiTrack.m_magic"
+      ],
+      "notes": "output_budget: whole file 256 B - 64 KiB; at least one track, and at least one track per corpus file carrying more than 512 event bytes; a single meta or sysex payload at most 4 KiB; total text and sysex payload at most 16 KiB. Zero tracks is legal in the format but produces a file that exercises no event code at all, so it is worth at most one outlier file per corpus."
+    }
+  ]
+}
