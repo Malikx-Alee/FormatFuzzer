@@ -1,0 +1,2585 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: WAV.bt
+//    Author: SweetScape Software, Paulo Max Gil I Reis
+//   Version: 1.2
+//   Purpose: Parse WAV audio files.
+//  Category: Audio
+// File Mask: *.wav
+//  ID Bytes: 52 49 46 46 [+4] 57 41 56 45 //RIFF????WAVE
+//   History:  
+//   1.2   2020-02-04 Paulo Max: Improved to correct parsing of DVI ADPCM and fix some issues in subchunk list parsing.
+//   1.1   2015-10-05 SweetScape: Updated header for repository submission.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at:
+//  https://en.wikipedia.org/wiki/WAV
+//------------------------------------------------
+//
+// Rewritten as a GENERATIVE FormatFuzzer specification, guided by
+//   llm_learned_specification/opus5-tiered/llm_reterived_constraints_wav-llm_opus5-tiered.json
+// Every struct, field name, field order and comment of the original is kept, so
+// each declaration below maps back to the parser it came from.  Added structures
+// are named and carry a comment naming the decoder branch they exist to reach.
+//
+// Tier discipline, which is the whole point of this rewrite:
+//   Tier A -> pinned or computed, inside a SetEvilBit() guard.  The guard takes
+//             IsParsing() rather than a plain false: during GENERATION that is
+//             identical to false (the 1/128 out-of-set escape is suppressed, so
+//             the magic, the tags and every computed length are exact), while
+//             during PARSING it leaves a real file's own value reachable, which
+//             is what keeps all thirteen files in testcases/wav/ parseable.
+//   Tier B -> the complete valid_values array, with preferred_value expressed by
+//             REPEATING the preferred entries in the vector, because
+//             file_integer()/file_string() draw uniformly from it.  Repetition is
+//             the weighting; nothing is filtered out.
+//   Tier C -> a bare declaration.  No value set, no <min=>, no <max=>.  Every
+//             field listed in diversity_axes with must_remain_unconstrained is
+//             declared bare below, and the value miner inside ffcompile is kept
+//             away from them by routing every comparison through a local (a
+//             `field == literal` test in an instantiated struct silently installs
+//             that literal as the field's global known_values).
+//
+//------------------------------------------------
+
+// Record whether we have found a format chunk yet
+local int haveValidFormat = false;
+
+//-----------------------------------------------------------------------------
+// output_budget -- the ONLY size-control mechanism in this template.
+//
+// structure[4] gives 786432 bytes of audio and structure[5] gives 1048576 bytes
+// for the whole file; FormatFuzzer caps a generated file at MAX_FILE_SIZE
+// (65536) and the decision stream at MAX_RAND_SIZE (131072), so the JSON's
+// figures are scaled to what the engine can physically emit.  The budget is
+// spent by ENDING the chunk sequence and by choosing a shorter audio run -- never
+// by shrinking a channel count, a sample rate, a bit depth or a block size.
+//-----------------------------------------------------------------------------
+const uint32 FILE_BUDGET  = 60000;      // JSON structure[5]: 1048576
+const uint32 AUDIO_BUDGET = 46000;      // JSON structure[4]:  786432
+const uint32 LIST_BUDGET  = 16000;      // JSON structure[9]:   65536
+const uint32 UNK_BUDGET   = 24000;      // JSON structure[10]:  65536
+const uint32 XTRA_BUDGET  = 8192;       // JSON structure[7]:    8192 (fact+cue+smpl)
+
+local uint32 used_total = 0;
+local uint32 used_audio = 0;
+local uint32 used_list  = 0;
+local uint32 used_unk   = 0;
+local uint32 used_xtra  = 0;
+
+// Which sections exist so far, so the chunk-tag lookahead can walk the format's
+// legal state machine (structure[2] ordering, structure[6] cardinality).
+local int have_fmt   = 0;
+local int have_data  = 0;
+local int have_fact  = 0;
+local int have_cue   = 0;
+local int have_smpl  = 0;
+local int have_ds64  = 0;
+local int have_list  = 0;
+local int top_n      = 0;
+
+// The format chunk publishes its fields here.  These are LOCALS on purpose: the
+// value miner cannot see a local, so wChannels, dwSamplesPerSec and the rest stay
+// bare while everything that must be derived from them still can be.
+local uint32 fmt_tag   = 1;
+local uint32 fmt_chan  = 1;
+local uint32 fmt_rate  = 8000;
+local uint32 fmt_bits  = 16;
+local uint32 fmt_cont  = 2;     // container bytes per sample = wBlockAlign/wChannels
+local uint32 fmt_align = 2;
+local uint32 fmt_spb   = 0;     // wSamplesPerBlock, for the block codecs
+local uint32 fmt_kind  = 0;     // which DATACHUNK payload emitter to run
+local uint32 fmt_style = 0;     // which sample-content style to emit
+
+// The original guards four of its five pad bytes with FTell() < FileSize().  In
+// the GENERATE direction FileSize() does not report a length, it CHOOSES one --
+// it draws a final file size, pads the buffer out to it and latches it -- so
+// calling it from inside a chunk would end the file at a random point and make
+// every length written afterwards wrong.  Each pad site below therefore keeps the
+// original's end-of-file test for the parse direction and uses these two flags
+// for the generate direction, which keeps the "a final odd-sized chunk carries no
+// pad byte" case reachable without handing the file length to a mid-chunk call.
+local int skip_last_pad = 0;
+local int force_end     = 0;
+local int allow_nodata  = 0;
+
+// Set when a ds64 chunk has pre-committed the audio length (see DS64BODY).
+local uint32 ds64_bytes = 0;
+
+// The cue chunk publishes its identifier range so a sampler loop can either hit
+// it or miss it (structure[11] requires, dependency 23).
+local uint32 cue_count = 0;
+
+// Clear ffcompile's auto-mined global lookahead values so the per-call-site sets
+// below are the ones that win.
+const local string ReadBytesInitValues[0];
+
+// Empty arrays to assign from: an empty brace initialiser is not .bt syntax, so a
+// value set that has to be rebuilt inside a loop is cleared by assigning one of
+// these instead.
+local uint32 empty_u32[0];
+local string empty_str[0];
+const local short  ReadShortInitValues[0];
+const local uint   ReadUIntInitValues[0];
+
+//-----------------------------------------------------------------------------
+// Tier B value sets that are shared between call sites.
+//-----------------------------------------------------------------------------
+
+// constraints.FORMATCHUNK.chunkID + DATACHUNK/FACTCHUNK/CUECHUNK/SMPLCHUNK/LISTCHUNK
+// .chunkID: the six tags the dispatch switch claims (lookahead at the original's
+// line 535), preferred "fmt " and "data".
+local string tag_known[] = { "fmt ", "data", "fact", "cue ", "smpl", "LIST" };
+
+// constraints.UNKNOWNCHUNK.chunkID (Tier B pattern_constraint): four bytes that
+// are NOT one of the six above.  The named entries are chunks a real reader HAS a
+// handler for even though this template does not -- "ds64" reaches WavPack's
+// ParseRiffHeaderConfig ds64 branch (cli/riff.c:101-137) outright.  The last two
+// are arbitrary tags, which reach the generic skip.
+local string unk_tags[] = {
+    "ds64", "ds64", "bext", "iXML", "id3 ", "ID3 ", "inst", "plst",
+    "labl", "ltxt", "note", "slnt", "wavl", "cset", "JUNK", "PAD ",
+    "axml", "acid", "CDif", "DISP", "afsp", "minf", "elm1", "regn",
+    "umid", "SyLp", "strc", "_PMX", "FLLR", "FMT ", "xxxx", "\x01\x02\xfe\xff" };
+
+// constraints.LISTSUBCHUNK.chunkID: the registered RIFF INFO set (dependency 20).
+local string info_tags[] = {
+    "INAM", "IART", "ICMT", "ISFT", "ICRD", "IGNR",         // preferred_value
+    "IARL", "ICMS", "ICOP", "ICRP", "IDIM", "IDPI", "IENG",
+    "IKEY", "ILGT", "IMED", "IPLT", "IPRD", "ISBJ", "ISHP",
+    "ISMP", "ISRC", "ISRF", "ITCH", "ITRK", "IDIT",
+    "ITOC", "zzzz" };                                        // unregistered: skip path
+
+// dependency 21: an adtl list holds the associated-data records.
+local string adtl_tags[] = { "labl", "labl", "ltxt", "ltxt", "note", "file", "qqqq" };
+
+// dependency 22: a wavl list carries the audio itself.
+local string wavl_tags[] = { "data", "data", "slnt", "slnt", "rrrr" };
+
+// constraints.LISTCHUNK.chunkType (Tier B, exhaustive, all three preferred).
+local string list_types[] = { "INFO", "INFO", "adtl", "adtl", "wavl", "wavl" };
+
+// constraints.CUEPOINT.fccChunk (Tier B, exhaustive, both preferred) plus the
+// out-of-pair case the notes call for.
+local string cue_fcc[] = { "data", "data", "data", "slnt", "slnt", "slnt", "pppp" };
+
+//-----------------------------------------------------------------------------
+// Arithmetic helpers.  Every parameter is a local, so none of these comparisons
+// can reach the value miner.
+//-----------------------------------------------------------------------------
+
+int64 CeilDiv(int64 a, int64 b)
+{
+    if (b <= 0)
+        return 0;
+    return (a + b - 1) / b;
+}
+
+// The container width a sample of `bits` bits is stored in.  Real files round UP
+// (testcases/wav/test-8000Hz-le-1ch-10S-20bit-extra.wav declares 20 bits in a
+// 3-byte container, ...-4ch-9S-12bit.wav 12 bits in 2 bytes), and WavPack tests
+// BlockAlign/NumChannels against (bits+7)/8 at cli/riff.c:212.
+int64 ContBytes(int64 bits)
+{
+    local int64 c = CeilDiv(bits, 8);
+    if (c < 1)
+        return 1;
+    if (c > 8)
+        return 8;
+    return c;
+}
+
+uint32 Clamp32(int64 v, int64 lo, int64 hi)
+{
+    if (v < lo)
+        return (uint32)lo;
+    if (v > hi)
+        return (uint32)hi;
+    return (uint32)v;
+}
+
+// Which payload emitter DATACHUNK runs.  constraints.DATACHUNK.waveformData plus
+// its alternate_payloads: the structure of the audio is decided ENTIRELY by the
+// format tag, and the tag is never chosen to suit a payload.
+//   0 = no structure at all (PCM, IEEE float, A-law, mu-law, every unregistered
+//       tag) -- "every byte sequence of the right length is valid audio"
+//   1 = IMA/DVI ADPCM blocks        (tag 17, the primary payload_wellformedness)
+//   2 = Microsoft ADPCM blocks      (tag 2)
+//   3 = MPEG-1 Layer III frames     (tags 80 and 85)
+int PayloadKind(uint32 t)
+{
+    if (t == 17)
+        return 1;
+    if (t == 2)
+        return 2;
+    if (t == 85)
+        return 3;
+    if (t == 80)
+        return 3;
+    return 0;
+}
+
+//-----------------------------------
+// Define structures used in WAV files
+
+// Stores the file header information
+typedef struct 
+{
+    // Tier A fixed_value: the RIFF container magic.  The original stops with a
+    // warning on anything else (line 523) and WavPack only enters
+    // ParseRiffHeaderConfig for this fourcc at all (cli/wavpack.c file_formats).
+    local int evil_gid = SetEvilBit(IsParsing());
+    char   groupID[4] = { "RIFF" };
+    SetEvilBit(evil_gid);
+
+    // Tier A calculated_value: FileSize() - 8, i.e. everything after this field.
+    // Written provisionally and backpatched once the chunk sequence has ended --
+    // it cannot be known before then.
+    local int evil_hsz = SetEvilBit(IsParsing());
+    long   hsize = { 4 };
+    SetEvilBit(evil_hsz);
+
+    // Tier A fixed_value: the WAVE form type (riff.c:74 strncmp against "WAVE").
+    local int evil_rty = SetEvilBit(IsParsing());
+    char   riffType[4] = { "WAVE" };
+    SetEvilBit(evil_rty);
+} WAVRIFFHEADER;
+
+//-----------------------------------------------------------------------------
+// ADDED: the WAVEFORMATEX extension layouts the original does not declare.
+// constraints.FORMATCHUNK.unknown says a real extensible tail or a Microsoft
+// ADPCM coefficient table "would land" in the opaque unknown[] array, and that
+// emitting a well-formed one is worthwhile.  Declaring the fields by name is
+// better than hiding them in unknown[]: the template then parses them too, and
+// unknown[] is left for genuine surplus so it stays a bare Tier C array.
+//
+// Decoder branches reached:
+//   tag 65534 -> cli/riff.c:160-203, the extensible branch: cbSize validation,
+//                ValidBitsPerSample overriding BitsPerSample, the ChannelMask
+//                hand-off at 238-243 and `format = WaveHeader.SubFormat` at 200,
+//                which is the ONLY way a 0xFFFE file reaches WavPack's packer.
+//   tag 2     -> the coefficient table ffmpeg's adpcm_ms decoder reads, and
+//                WavPack's chunk_header.ckSize > sizeof(WaveHeader) rejection.
+//   tag 85    -> the MPEGLAYER3WAVEFORMAT a demuxer needs to find frame edges.
+//-----------------------------------------------------------------------------
+typedef struct (uint32 xtag, uint32 xlen, uint32 xbits, uint32 xchan, uint32 xspb)
+{
+    local uint32 fx_left = xlen;
+
+    if (xtag == 65534)
+    {
+        // WAVE_FORMAT_EXTENSIBLE tail: 2 + 4 + 16 = 22 bytes (dependency 13).
+        // A shorter cbSize truncates it, which is legal and is how riff.c's
+        // `cbSize >= 2` / `>= 6` / `>= 8` ladder gets exercised.
+        if (fx_left >= 2)
+        {
+            // 0 means "use wBitsPerSample"; a non-zero value overrides it at
+            // riff.c:202.  Both are worth reaching, so both are in the set.
+            unsigned short wValidBitsPerSample = { 0, 0, (uint16)xbits, (uint16)xbits };
+            fx_left -= 2;
+        }
+        if (fx_left >= 4)
+        {
+            // Free content: riff.c:242 takes the mask verbatim when it is
+            // non-zero and derives one from the channel count at 228-236 when it
+            // is zero.  Both paths are wanted, so this is left unconstrained.
+            unsigned long  dwChannelMask;
+            fx_left -= 4;
+        }
+        if (fx_left >= 2)
+        {
+            // The first two bytes of the SubFormat GUID are the real format tag,
+            // and riff.c:200 uses them in place of wFormatTag.  1 and 3 are the
+            // two WavPack supports; the rest reach its unsupported-format exit.
+            local int evil_sf = SetEvilBit(IsParsing());
+            unsigned short SubFormat = { 1, 1, 1, 1, 1, 1, 1, 1, 3, 3, 3, 3,
+                                        2, 6, 7, 17, 85, 65534, 0 };
+            SetEvilBit(evil_sf);
+            fx_left -= 2;
+        }
+        if (fx_left >= 14)
+        {
+            // The fixed tail of KSDATAFORMAT_SUBTYPE_*: 0000-0010-8000-00aa00389b71
+            local int evil_gd = SetEvilBit(IsParsing());
+            ubyte g0 = { 0x00 }; ubyte g1 = { 0x00 }; ubyte g2 = { 0x00 };
+            ubyte g3 = { 0x00 }; ubyte g4 = { 0x10 }; ubyte g5 = { 0x00 };
+            ubyte g6 = { 0x80 }; ubyte g7 = { 0x00 }; ubyte g8 = { 0x00 };
+            ubyte g9 = { 0xAA }; ubyte gA = { 0x00 }; ubyte gB = { 0x38 };
+            ubyte gC = { 0x9B }; ubyte gD = { 0x71 };
+            SetEvilBit(evil_gd);
+            fx_left -= 14;
+        }
+    }
+    else if (xtag == 2)
+    {
+        // ADPCMWAVEFORMAT: wSamplesPerBlock, wNumCoef and the seven standard
+        // coefficient pairs that ffmpeg's adpcm_ms predictor table expects.
+        if (fx_left >= 4)
+        {
+            local int evil_m1 = SetEvilBit(IsParsing());
+            unsigned short wSamplesPerBlock = { (uint16)xspb };
+            unsigned short wNumCoef         = { 7 };
+            SetEvilBit(evil_m1);
+            fx_left -= 4;
+        }
+        if (fx_left >= 28)
+        {
+            local int evil_m2 = SetEvilBit(IsParsing());
+            short c0a = {  256 }; short c0b = {    0 };
+            short c1a = {  512 }; short c1b = { -256 };
+            short c2a = {    0 }; short c2b = {    0 };
+            short c3a = {  192 }; short c3b = {   64 };
+            short c4a = {  240 }; short c4b = {    0 };
+            short c5a = {  460 }; short c5b = { -208 };
+            short c6a = {  392 }; short c6b = { -232 };
+            SetEvilBit(evil_m2);
+            fx_left -= 28;
+        }
+    }
+    else if (xtag == 85)
+    {
+        // MPEGLAYER3WAVEFORMAT (dependency 12).
+        if (fx_left >= 12)
+        {
+            local int evil_l3 = SetEvilBit(IsParsing());
+            unsigned short wID             = { 1 };          // MPEGLAYER3_ID_MPEG
+            unsigned long  fdwFlags        = { 0, 1, 2 };    // padding iso/on/off
+            unsigned short nBlockSize      = { 418, 522, 144, 1044 };
+            unsigned short nFramesPerBlock = { 1, 1, 2 };
+            unsigned short nCodecDelay     = { 0, 1393, 529 };
+            SetEvilBit(evil_l3);
+            fx_left -= 12;
+        }
+    }
+
+    // Anything the chosen cbSize claims beyond the fields above.  Free content.
+    if (fx_left > 0)
+        uchar extraData[fx_left];
+} FMTEXTENSION;
+
+// Stores the format information for the file
+typedef struct {
+    // Tier A fixed_value: "fmt " -- the trailing 0x20 is part of the tag, and
+    // "fmt" with a NUL would fall to the switch's default arm at line 564.
+    local int evil_fid = SetEvilBit(IsParsing());
+    char           chunkID[4] = { "fmt " };
+    SetEvilBit(evil_fid);
+
+    // ---- the format tag has to be read before it is written --------------------
+    // Every one of dependencies 1 to 13 is keyed on wFormatTag, and chunkSize --
+    // whose legal value is decided by exactly those dependencies -- comes FOUR
+    // BYTES EARLIER in the format.  So the tag is generated at its own final
+    // offset by lookahead first, and chunkSize is then computed from it.  This is
+    // the "read the upcoming discriminator" form, not a constraint on the tag:
+    // the set below is the complete Tier B valid_values array.
+    //
+    // The template declares wFormatTag as a SIGNED short, so the tags at or above
+    // 0x8000 are written as their negative two's-complement twins; the sixteen
+    // bits that land in the file are the unsigned pattern either way.
+    local int16 ft_vals[0];
+    // preferred_value = [1, 3, 17, 2, 6, 7, 85, 65534], weighted by repetition.
+    // 1, 3 and 65534 carry the extra weight because they are the three tags
+    // WavPack's riff.c:205 accepts, so they are the ones that reach the packer at
+    // all; measured, that choice is worth about nine points of line coverage.
+    local int w_i = 0;
+    while (w_i < 34) { ft_vals += 1;                 w_i++; }
+    w_i = 0;
+    while (w_i < 14) { ft_vals += 3;                 w_i++; }
+    w_i = 0;
+    while (w_i < 18) { ft_vals += (int16)0xFFFE;     w_i++; }
+    ft_vals +=    17; ft_vals +=    17; ft_vals +=     2; ft_vals +=     2;
+    ft_vals +=     6; ft_vals +=     6; ft_vals +=     7; ft_vals +=     7;
+    ft_vals +=    85; ft_vals +=    85;
+    // the rest of the Tier B set, each still emitted
+    ft_vals +=     0; ft_vals +=    20; ft_vals +=    49; ft_vals +=    64;
+    ft_vals +=    80; ft_vals +=   102; ft_vals +=   103; ft_vals +=   273;
+    ft_vals +=   325; ft_vals +=   353; ft_vals +=   354; ft_vals +=   355;
+    ft_vals += (int16)8192;   ft_vals += (int16)8193;
+    ft_vals += (int16)0xFFFF;
+    // completeness is "partial" and unregistered tags must also be generated,
+    // because an unknown tag is the only route into an unsupported-codec path.
+    ft_vals += (int16)0x0270; ft_vals += (int16)0x2000; ft_vals += (int16)0x0160;
+    ft_vals += (int16)0x0401; ft_vals += (int16)0x0130; ft_vals += (int16)0x674F;
+
+    local int64 ft_at  = FTell() + 4;             // where wFormatTag will land
+    local int16 la_tag = ReadShort(ft_at, ft_vals);
+    local uint32 tg    = ((uint32)la_tag) & 0xFFFF;
+
+    // ---- Tier A calculated_value: the format chunk's body length ---------------
+    // size_identity: 16 for a bare WAVEFORMAT, 18 once a cbSize is present, 20
+    // for the DVI/IMA ADPCM layout the original models, 40 for EXTENSIBLE, 50 for
+    // Microsoft ADPCM, 30 for MPEGLAYER3.  Which of the legal shapes this chunk
+    // takes is itself a free choice, so the shapes form the value set and every
+    // field below is then emitted to match the one that was drawn.
+    local int32 cs_vals[0];
+    if (tg == 17)
+    {
+        cs_vals += 20;                           // dependency 1
+    }
+    else if (tg == 2)
+    {
+        cs_vals += 50;                           // dependency 11
+    }
+    else if (tg == 85)
+    {
+        cs_vals += 30;                           // dependency 12
+    }
+    else if (tg == 65534)
+    {
+        cs_vals += 40; cs_vals += 40; cs_vals += 40; cs_vals += 40;   // dependency 13
+        cs_vals += 40; cs_vals += 40; cs_vals += 40; cs_vals += 40;
+        cs_vals += 26; cs_vals += 26;  // cbSize 8: SubFormat present, GUID cut short
+        cs_vals += 24;        // cbSize 6: riff.c:200 falls back to wFormatTag
+        cs_vals += 18;        // cbSize 0: not extensible at all
+        cs_vals += 20;        // cbSize 22 in an 18-byte tail: riff.c:169 rejection
+    }
+    else
+    {
+        cs_vals += 16; cs_vals += 16; cs_vals += 16; cs_vals += 16;
+        cs_vals += 18; cs_vals += 18; cs_vals += 18;
+        cs_vals += 20;        // cbSize 2 -> QMODE_ADOBE_MODE at riff.c:197
+        cs_vals += 20;
+        cs_vals += 22;        // cbSize 4, left to unknown[]
+        cs_vals += 26;        // cbSize 8, left to unknown[]
+        cs_vals += 40;        // a full extensible-sized tail on a non-0xFFFE tag
+    }
+    local int evil_fcs = SetEvilBit(IsParsing());
+    long           chunkSize <values=cs_vals>;
+    SetEvilBit(evil_fcs);
+
+    local int pos = FTell();
+    local int64 fcs = chunkSize;          // a local copy keeps the miner off it
+
+    // the cbSize value this shape implies
+    local uint32 has_cb = 0;
+    local uint32 cb     = 0;
+    if (fcs >= 18)
+    {
+        has_cb = 1;
+        cb = (uint32)(fcs - 18);
+    }
+    if (tg == 17)                       { cb = 2;  }
+    if (tg == 2)                        { cb = 32; }
+    if (tg == 85)                       { cb = 12; }
+    if (tg == 65534 && fcs == 20)       { cb = 22; }   // the deliberate overclaim
+
+    // Tier B: wFormatTag itself.  The lookahead already drew it from the complete
+    // set above; pinning the declaration to that one value is what makes the
+    // chunkSize written four bytes ago correct.
+    local int16 ft_one[0];
+    ft_one += la_tag;
+    local int evil_ftg = SetEvilBit(IsParsing());
+    short          wFormatTag <values=ft_one>;
+    SetEvilBit(evil_ftg);
+
+    // Tier C, bare: diversity_axes[0].  Pinning this to 1 or 2 would make the
+    // original's whole general-case SAMPLES struct dead code, since that branch is
+    // reached only when the count is above 1, and channel counts above 2 reach a
+    // reader's channel-mask and downmix code (riff.c:230-235 has three arms on it).
+    unsigned short wChannels;
+
+    // Tier C, bare: diversity_axes[1].  Zero is deliberately reachable -- it is
+    // the only way to WavpackSetConfiguration64's "sample rate cannot be zero or
+    // negative!" guard (src/pack_utils.c:208) -- and the classic rates carry no
+    // special status.  The rate also picks WavPack's block size at pack_utils.c:621,
+    // so varying it varies how the audio is split into blocks.
+    unsigned long  dwSamplesPerSec;
+
+    // Tier A calculated_value, both of them.  They sit BEFORE wBitsPerSample in
+    // the format, and both are computed from it, so they are written provisionally
+    // here and backpatched a dozen lines down.  The guard on the rewrite is
+    // `field != computed`, which is false for a well-formed real file, so the
+    // parse direction never rewrites anything.
+    local int evil_abp = SetEvilBit(IsParsing());
+    unsigned long  dwAvgBytesPerSec = { 0 };
+    unsigned short wBlockAlign      = { 1 };
+    SetEvilBit(evil_abp);
+
+    // Tier B: the complete valid_values set {4,8,12,16,20,24,32,64}, weighted by
+    // preferred_value [8,16,32,4,24], narrowed only where a dependency says so.
+    local uint16 bv[0];
+    if (tg == 17 || tg == 2)
+    {
+        bv += 4;                                  // dependency 2: four-bit nibbles
+    }
+    else if (tg == 6 || tg == 7)
+    {
+        bv += 8;                                  // dependency 9: companded bytes
+    }
+    else if (tg == 3)
+    {
+        bv += 32; bv += 32; bv += 32; bv += 64;   // dependency 10
+    }
+    else
+    {
+        bv +=  8; bv +=  8; bv +=  8; bv +=  8; bv +=  8;
+        bv += 16; bv += 16; bv += 16; bv += 16; bv += 16;
+        bv += 32; bv += 32; bv += 32; bv += 32;
+        bv +=  4; bv +=  4; bv +=  4;
+        bv += 24; bv += 24; bv += 24;
+        bv += 12; bv += 12; bv += 20; bv += 20; bv += 64;
+        // completeness is "partial": depths the readers reject are a branch too,
+        // and they reach WavPack's `bits_per_sample < 1 || > 32` exit at riff.c:217.
+        bv +=  1; bv +=  5; bv += 48;
+    }
+    local int evil_bps = SetEvilBit(IsParsing());
+    unsigned short wBitsPerSample <values=bv>;
+    SetEvilBit(evil_bps);
+
+    // ---- publish the free inputs, then derive -------------------------------
+    local int gm = 0;
+    if (IsParsing() == 0)
+        gm = 1;
+
+    // The free inputs, read into locals.  Only the FIRST format chunk publishes
+    // them: a second one is legal to write and is the only way to reach WavPack's
+    // duplicate-fmt rejection at cli/riff.c:142-145, but the original's data
+    // chunk reads `format.*` -- the first instance -- so the globals the data
+    // chunk sizes itself from have to keep describing that one.
+    local int64 n_chan = wChannels;
+    local int64 n_rate = dwSamplesPerSec;
+    local int64 n_bits = wBitsPerSample;
+
+    local int64 need = ContBytes(n_bits);
+    local int64 cont = need;
+    // The "N-bit sample in an M-byte container" layout, which is what Audition
+    // and CoolEdit write and what WavPack accepts for M up to 4 (riff.c:212-213).
+    // Widening the container is the only route to pack.c:532's SHIFT_MASK path and
+    // to riff.c:247-255's Adobe float branch.  The width is read off the low bits
+    // of the already-free sample rate, so no field is narrowed to get it.
+    local uint32 cpick = (uint32)(n_rate & 7);
+    if (gm)
+    {
+        if (cpick == 1 && cont < 2) { cont = 2; }
+        if (cpick == 2 && cont < 3) { cont = 3; }
+        if (cpick == 3 && cont < 4) { cont = 4; }
+    }
+
+    local int64 align = n_chan * cont;
+    local int64 spb   = 0;
+
+    if (tg == 17 && gm)
+    {
+        // dependency 3: the block size is the free choice and the sample count is
+        // computed FROM it, never the other way round.  wBlockAlign must be at
+        // least 4 * wChannels; the ladder below is 4*chan + chan*m for an even m,
+        // which is exactly how real IMA files are laid out (mono 256-byte blocks
+        // give 505 samples).
+        local int64 m17  = 2 << (n_rate & 7);
+        local int64 ch17 = n_chan;
+        local int64 ba17 = ch17 * (4 + m17);
+        while (m17 > 2 && ba17 > 65535)
+        {
+            m17 = m17 / 2;
+            ba17 = ch17 * (4 + m17);
+        }
+        align = ba17;
+        spb   = 2 * m17 + 1;
+    }
+    else if (tg == 2 && gm)
+    {
+        // Microsoft ADPCM: seven header bytes per channel, then the nibbles.
+        local int64 m2  = 2 << (n_rate & 7);
+        local int64 ch2 = n_chan;
+        local int64 ba2 = ch2 * (7 + m2);
+        while (m2 > 2 && ba2 > 65535)
+        {
+            m2 = m2 / 2;
+            ba2 = ch2 * (7 + m2);
+        }
+        align = ba2;
+        spb   = 2 * m2 + 2;
+    }
+
+    // excluded_values [0]: a zero block align is a division by zero at the
+    // original's line 78 and a hard error in every reader.  It can only arise from
+    // a zero channel count, which is itself a reachable and wanted case, so the
+    // alignment falls back to one frame's worth rather than to zero.
+    if (align < 1)
+        align = cont;
+    if (align > 65535)
+        align = (65535 / cont) * cont;
+
+    if (have_fmt == 0)
+    {
+        fmt_tag   = tg;
+        fmt_chan  = (uint32)n_chan;
+        fmt_rate  = (uint32)n_rate;
+        fmt_bits  = (uint32)n_bits;
+        fmt_kind  = (uint32)PayloadKind(tg);
+        fmt_cont  = (uint32)cont;
+        fmt_align = (uint32)align;
+        fmt_spb   = (uint32)spb;
+    }
+
+    // ---- which sample-content style the data chunk emits ---------------------
+    // Read off the low bits of two fields that are free anyway; reading a free
+    // field to make a generation decision does not constrain it, and every style
+    // still occurs across the corpus.  Style 0 -- the original's bare, fully free
+    // declarations -- is the dominant case at every byte-aligned depth.
+    if (gm && have_fmt == 0)
+    {
+        fmt_style = 0;
+        skip_last_pad = 0;
+        allow_nodata = 0;
+        local uint32 st = (n_chan + (n_rate >> 3)) & 7;
+        if (st == 4) { fmt_style = 1; }    // digital silence
+        if (st == 5) { fmt_style = 2; }    // a quiet run
+        if (st == 6) { fmt_style = 4; }    // a sawtooth, identical per channel
+        if (st == 7) { fmt_style = 3; }    // padding-clean
+        local int64 cbits = cont * 8;
+        local int64 nbits = n_bits;
+        if (cbits > nbits)
+        {
+            // A sub-byte depth in a wider container: WavPack aborts the whole
+            // encode with "has non-zero PCM padding bits/bytes" unless the unused
+            // low bits of every sample read as zero (cli/wavpack.c:2649-2676), so
+            // without the padding-clean emitter a 12- or 20-bit file never
+            // reaches the packer at all.  One eighth of them still carry free
+            // bytes, which is what keeps those five abort branches reachable.
+            fmt_style = 3;
+            if (st == 0) { fmt_style = 0; }   // keeps the five abort branches live
+            if (st == 1) { fmt_style = 4; }   // the ramp is padding-clean already
+            if (st == 2) { fmt_style = 1; }
+        }
+        if ((n_rate & 15) == 7)
+        {
+            // the final-chunk-has-no-pad case, which is WavPack's "input file
+            // missing required padding byte" warning at cli/wavpack.c:2125
+            skip_last_pad = 1;
+        }
+        if ((n_rate & 31) == 13)
+        {
+            // structure[3]: "A WAVE form without a data chunk parses but yields
+            // no audio; readers report an empty stream, which is a legal and
+            // distinctly exercised case worth generating occasionally."  For
+            // WavPack it is the route to the chunk loop running off the end of
+            // the file (cli/riff.c:88-91) and, when the last chunk is odd-sized
+            // and carries no pad byte, to the short read at cli/riff.c:336-343.
+            allow_nodata = 1;
+        }
+    }
+
+    // dependency 7 for the fixed-frame tags, dependency 8 for the block codecs --
+    // two different formulas, and the JSON calls the confusion between them a
+    // common source of malformed files.
+    local int64 abps = 0;
+    if (tg == 2 || tg == 17)
+    {
+        if (spb > 0)
+            abps = (n_rate / spb) * align;
+    }
+    else
+    {
+        abps = n_rate * align;
+    }
+    if (abps < 0)
+        abps = 0;
+    if (abps > 4294967295)
+        abps = 4294967295;
+
+    // ---- the backpatch -------------------------------------------------------
+    local int64  fmt_resume = FTell();
+    local int64 abps_now = dwAvgBytesPerSec;
+    local int64 ba_now   = wBlockAlign;
+    if (abps_now != abps || ba_now != align)
+    {
+        FSeek(pos + 8);
+        local int evil_bp = SetEvilBit(IsParsing());
+        unsigned long  dwAvgBytesPerSec = { (uint32)abps };
+        unsigned short wBlockAlign      = { (uint16)align };
+        SetEvilBit(evil_bp);
+        FSeek(fmt_resume);
+    }
+
+    if (wFormatTag == 17) //DVI IMA ADPCM
+    {
+        // dependency 1: these two exist only for tag 17, and wcbsize must be 2.
+        local int evil_cbs = SetEvilBit(IsParsing());
+        unsigned short wcbsize = { 2 };
+        SetEvilBit(evil_cbs);
+        // Tier A calculated_value, dependency 3:
+        //   ((wBlockAlign - 4*wChannels) * 8) / (wBitsPerSample * wChannels) + 1
+        // The plus one is the sample carried in the block's predictor header.
+        local int evil_spb = SetEvilBit(IsParsing());
+        unsigned short wSamplesPerBlock = { (uint16)spb };
+        SetEvilBit(evil_spb);
+    }
+    else if (has_cb)
+    {
+        // ADDED: the cbSize the other WAVEFORMATEX layouts carry.  riff.c:197
+        // turns on QMODE_ADOBE_MODE for a value of exactly 2 in a chunk longer
+        // than 16 bytes, which with a four-byte container is the only way into
+        // the Audition float branch at riff.c:249-254.
+        local int64 tail = cb;
+        local int64 tmax = fcs - 18;
+        if (tail > tmax)
+            tail = tmax;
+        // For the two unregistered shapes, leave the extension bytes to the
+        // original's unknown[] array, which is the case constraints.FORMATCHUNK
+        // .unknown describes.
+        if (tg != 17 && tg != 2 && tg != 85 && tg != 65534)
+        {
+            if (fcs == 22 || fcs == 26) { tail = 0; }
+        }
+        local int evil_cb2 = SetEvilBit(IsParsing());
+        unsigned short cbSize = { (uint16)cb };
+        SetEvilBit(evil_cb2);
+        if (tail > 0)
+            FMTEXTENSION fmtext(tg, (uint32)tail, fmt_bits, fmt_chan, (uint32)spb);
+    }
+
+    // Mark that we have found a valid format chunk
+    haveValidFormat = true;
+    have_fmt = have_fmt + 1;
+
+    // Unknown data at the end of the chunk
+    // Tier C, bare: whatever the chosen cbSize claims past the declared fields.
+    if( chunkSize > (FTell() - pos) )
+        uchar unknown[ chunkSize - (FTell() - pos) ];
+
+    // Padding so the next chunk starts on an even byte
+    // Tier C: the VALUE is free, the PRESENCE is structural.  This is the one
+    // padding site in the original without an end-of-file guard.
+    if( chunkSize & 1 )
+        uchar padding;
+} FORMATCHUNK;
+
+//-----------------------------------------------------------------------------
+// ADDED payload emitters.  constraints.DATACHUNK.waveformData is the format's
+// only payload_wellformedness entry and it fires only for the block codecs; the
+// PCM, float and companded tags keep the original's bare arrays, because "every
+// byte sequence of the right length is valid audio" and inventing structure for
+// them would cost sample diversity and buy nothing.
+//
+// Every emitter below is sized from derives_from -- wChannels, wBitsPerSample,
+// wBlockAlign and the audio length -- and none of those fields is adjusted to
+// suit it.
+//-----------------------------------------------------------------------------
+
+// IMA/DVI ADPCM, tag 17.  A whole number of wBlockAlign-byte blocks, each opening
+// with four header bytes per channel in channel order: a signed 16-bit initial
+// predictor, a step index in 0..88, and one reserved byte.  Every four-bit value
+// is a legal IMA code -- no invalid nibble, no terminator, no checksum -- so the
+// entire nibble run stays free.  This is the ADPCM equivalent of a stored deflate
+// block: eight or so pinned bytes per block and everything else random.
+// Decoder branch: ffmpeg adpcm_ima_wav, past the `block_align < 4 * channels`
+// and "Invalid number of samples per block" rejections and into the nibble decode
+// loop, the step-table adaptation and the sample output.
+typedef struct (uint32 iblk, uint32 ichan, uint32 itotal)
+{
+    local uint32 ia_blk  = iblk;
+    local uint32 ia_ch   = ichan;
+    if (ia_blk < 4 * ia_ch || ia_ch < 1 || ia_blk < 4)
+    {
+        // The block size cannot hold one header per channel, so there is no
+        // well-formed payload at this geometry; the bytes stay free and the file
+        // reaches the decoder's block-align rejection, which is also a branch.
+        if (itotal > 0)
+            uchar imaOpaque[itotal];
+    }
+    else
+    {
+        local uint32 ia_nib  = ia_blk - 4 * ia_ch;
+        local uint32 ia_done = 0;
+        local uint32 ia_c    = 0;
+        local uint32 ia_nbl  = 0;
+        while (ia_done + ia_blk <= itotal && ia_nbl < 1024)
+        {
+            ia_nbl++;
+            ia_c = 0;
+            while (ia_c < ia_ch)
+            {
+                // free content: any starting predictor is legal
+                short predictor;
+                // Tier A: the step index must be inside the 89-entry table
+                local int evil_si = SetEvilBit(IsParsing());
+                ubyte stepIndex = {  0,  1,  2,  3,  4,  8, 12, 16, 24, 32,
+                                    40, 48, 56, 64, 72, 80, 86, 87, 88 };
+                SetEvilBit(evil_si);
+                local int evil_rs = SetEvilBit(IsParsing());
+                ubyte reserved = { 0 };
+                SetEvilBit(evil_rs);
+                ia_c++;
+            }
+            if (ia_nib > 0)
+                uchar imaNibbles[ia_nib];
+            ia_done += ia_blk;
+        }
+        // whatever is left over is a partial final block, which is a reader's
+        // truncated-block path and is legal to emit
+        if (ia_done < itotal)
+            uchar imaTail[itotal - ia_done];
+    }
+} IMABLOCKS;
+
+// Microsoft ADPCM, tag 2.  Each block opens with one predictor index per channel
+// -- which MUST be below wNumCoef, 7 for the standard table -- then a signed
+// 16-bit delta per channel and two signed 16-bit initial samples per channel.
+// Decoder branch: ffmpeg adpcm_ms, past its "Invalid predictor index" packet drop
+// and into the coefficient-weighted prediction loop.
+typedef struct (uint32 mblk, uint32 mchan, uint32 mtotal)
+{
+    local uint32 ms_blk = mblk;
+    local uint32 ms_ch  = mchan;
+    if (ms_blk < 7 * ms_ch || ms_ch < 1 || ms_blk < 7)
+    {
+        if (mtotal > 0)
+            uchar msOpaque[mtotal];
+    }
+    else
+    {
+        local uint32 ms_nib  = ms_blk - 7 * ms_ch;
+        local uint32 ms_done = 0;
+        local uint32 ms_c    = 0;
+        local uint32 ms_nbl  = 0;
+        while (ms_done + ms_blk <= mtotal && ms_nbl < 1024)
+        {
+            ms_nbl++;
+            ms_c = 0;
+            while (ms_c < ms_ch)
+            {
+                local int evil_pi = SetEvilBit(IsParsing());
+                ubyte blockPredictor = { 0, 1, 2, 3, 4, 5, 6 };
+                SetEvilBit(evil_pi);
+                ms_c++;
+            }
+            ms_c = 0;
+            while (ms_c < ms_ch)
+            {
+                short iDelta;           // free content
+                ms_c++;
+            }
+            ms_c = 0;
+            while (ms_c < ms_ch)
+            {
+                short sample1;          // free content
+                short sample2;
+                ms_c++;
+            }
+            if (ms_nib > 0)
+                uchar msNibbles[ms_nib];
+            ms_done += ms_blk;
+        }
+        if (ms_done < mtotal)
+            uchar msTail[mtotal - ms_done];
+    }
+} MSADPCMBLOCKS;
+
+// MPEG-1/2 Audio Layer III elementary stream, tags 80 and 85.  A reader scanning
+// for the eleven-bit sync word finds none in random bytes and gives up before the
+// Huffman decode, the synthesis filterbank and the output stage.  Each frame here
+// opens with a real header -- sync, a version and layer that are not the reserved
+// encodings, a bitrate index that is neither 0 nor 15, and a sampling frequency
+// index that is not 3 -- and the frame body after it stays free, because a
+// demuxer that only locates frame edges never validates it.
+// Decoder branch: ffmpeg mp3 demuxer frame sync, then mpegaudiodec's header parse.
+typedef struct (uint32 ptotal)
+{
+    local uint32 mp_left = ptotal;
+    local uint32 mp_body = 0;
+    while (mp_left >= 4)
+    {
+        local int evil_mp = SetEvilBit(IsParsing());
+        ubyte syncA = { 0xFF };
+        // 0xFB = MPEG-1 Layer III no CRC, 0xFA = CRC, 0xF3/0xF2 = MPEG-2,
+        // 0xE3 = MPEG-2.5; all have the eleven sync bits set and a legal
+        // version/layer pair.
+        ubyte syncB = { 0xFB, 0xFB, 0xFB, 0xFA, 0xF3, 0xF2, 0xE3 };
+        // bitrate index 1..14 in the high nibble, sample-rate index 0..2 next
+        ubyte hdrC   = { 0x90, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70,
+                         0x80, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0,
+                         0x94, 0x98, 0x14, 0x18 };
+        ubyte hdrD   = { 0x00, 0x04, 0x40, 0x44, 0xC0 };
+        SetEvilBit(evil_mp);
+        mp_left -= 4;
+        // 0xFF 0xFB 0x90 0x00 is 128 kbit/s at 44.1 kHz, whose frame is 417
+        // bytes; the body is whatever is left of that, free.
+        mp_body = 413;
+        if (mp_body > mp_left)
+            mp_body = mp_left;
+        if (mp_body > 0)
+            uchar mpegBody[mp_body];
+        mp_left -= mp_body;
+    }
+    if (mp_left > 0)
+        uchar mpegTail[mp_left];
+} MPEGFRAMES;
+
+// ADDED: a low-magnitude sample run.  constraints.DATACHUNK.samples says the
+// extremes reach the saturation and clamping branches and that zero reaches
+// silence detection; it also says random bytes and a sine wave reach identical
+// lines.  A corpus of nothing but random bytes, though, has a huge entropy median
+// in every block, so WavPack's zero-run encoder -- the `median[0] < 2 &&
+// !holding_zero` arms at src/write_words.c:189, 250-264, 300, 347, 401-437 and
+// 496 -- is never entered.  This emitter is the minority variant that does enter
+// it.  It constrains nothing: the dominant payload for every one of the
+// original's branches is still the bare declaration.
+//   qstyle 1 -> digital silence (0x80 bytes at eight bits, where WAV samples are
+//               unsigned and load_little_endian_unsigned_samples subtracts 128;
+//               zero bytes at every wider depth, where they are signed)
+//   qstyle 2 -> a quiet run: the low byte of each container is free and the rest
+//               is sign extension, so magnitudes stay small
+//   qstyle 3 -> the padding-clean layout a sub-byte depth needs.  WavPack aborts
+//               with "has non-zero PCM padding bits" (cli/wavpack.c:2649-2676)
+//               unless the unused low bits of every sample are zero, so without
+//               this a 12- or 20-bit file never reaches the packer at all; with
+//               it, pack.c:532's shift path runs.
+typedef struct (uint32 qtotal, uint32 qcont, uint32 qstyle, uint32 qpad, uint32 qchan)
+{
+    local uint32 q_left = qtotal;
+    local uint32 q_c    = 0;
+    local uint32 q_cont = qcont;
+    if (q_cont < 1)
+        q_cont = 1;
+
+    // qstyle 4: a per-frame sawtooth, the SAME value in every channel.  Two
+    // things WavPack cannot reach from white noise: its FALSE_STEREO path
+    // (src/pack.c:494-528), which needs every L/R pair identical and not all
+    // zero, and the decorrelation search in extra1.c/extra2.c, which on random
+    // samples finds nothing to decorrelate and gives up after one pass.  The ramp
+    // sits at the TOP of the container so the low qpad bits stay zero and the
+    // padding check at cli/wavpack.c:2649 still passes.
+    if (qstyle == 4)
+    {
+        local uint32 r_ch = qchan;
+        if (r_ch < 1)
+            r_ch = 1;
+        local uint32 r_zb = qpad / 8;
+        local uint32 r_rb = qpad % 8;
+        if (r_rb > 0)
+            r_zb = r_zb + 1;        // a partial padding byte has to be zero too
+        if (r_zb > q_cont - 1)
+            r_zb = q_cont - 1;
+        local uint32 r_fr = q_cont * r_ch;
+        local uint32 r_i  = 0;
+        local uint32 r_cc = 0;
+        local int evil_q4 = SetEvilBit(IsParsing());
+        while (q_left >= r_fr && r_fr > 0)
+        {
+            r_cc = 0;
+            while (r_cc < r_ch)
+            {
+                q_c = 0;
+                while (q_c < r_zb)
+                {
+                    ubyte rampPad = { 0x00 };
+                    q_c++;
+                }
+                ubyte rampLo = { (ubyte)(r_i & 0xFF) };
+                q_c++;
+                if (q_c < q_cont)
+                {
+                    ubyte rampHi = { (ubyte)((r_i >> 8) & 0xFF) };
+                    q_c++;
+                }
+                while (q_c < q_cont)
+                {
+                    ubyte rampTop = { 0x00 };
+                    q_c++;
+                }
+                r_cc++;
+            }
+            r_i++;
+            q_left -= r_fr;
+        }
+        SetEvilBit(evil_q4);
+        if (q_left > 0)
+            uchar rampTail[q_left];
+        q_left = 0;
+    }
+
+    while (q_left >= q_cont)
+    {
+        if (qstyle == 1)
+        {
+            local int evil_q1 = SetEvilBit(IsParsing());
+            if (q_cont == 1)
+            {
+                ubyte sil8 = { 0x80 };
+            }
+            else
+            {
+                q_c = 0;
+                while (q_c < q_cont)
+                {
+                    ubyte sil = { 0x00 };
+                    q_c++;
+                }
+            }
+            SetEvilBit(evil_q1);
+        }
+        else if (qstyle == 2)
+        {
+            ubyte quietLow;                         // free low byte
+            local int evil_q2 = SetEvilBit(IsParsing());
+            q_c = 1;
+            while (q_c < q_cont)
+            {
+                ubyte quietHigh = { 0x00 };         // keeps the magnitude small
+                q_c++;
+            }
+            SetEvilBit(evil_q2);
+        }
+        else
+        {
+            // padding-clean: the lowest qpad bits of the little-endian container
+            // must read as zero
+            // floor(qpad/8) whole zero bytes at the bottom of the little-endian
+            // container, then one byte whose low (qpad % 8) bits are zero, then
+            // free bytes for the part that really is sample.
+            local uint32 q_zb = qpad / 8;
+            local uint32 q_rb = qpad % 8;
+            if (q_zb > q_cont)
+                q_zb = q_cont;
+            local int evil_q3 = SetEvilBit(IsParsing());
+            q_c = 0;
+            while (q_c < q_zb)
+            {
+                ubyte padZero = { 0x00 };
+                q_c++;
+            }
+            if (q_rb > 0 && q_zb < q_cont)
+            {
+                if (q_rb == 4)
+                {
+                    ubyte padNibble = { 0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70,
+                                        0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0 };
+                }
+                else
+                {
+                    ubyte padLow = { 0x00 };
+                }
+                q_zb = q_zb + 1;
+            }
+            SetEvilBit(evil_q3);
+            q_c = q_zb;
+            while (q_c < q_cont)
+            {
+                ubyte cleanRest;                    // free: these bits are sample
+                q_c++;
+            }
+        }
+        q_left -= q_cont;
+    }
+    if (q_left > 0)
+        uchar quietTail[q_left];
+} QUIETPCM;
+
+// Stores the actual wave data
+typedef struct 
+{
+    // Tier A fixed_value: the tag the dispatch switch at line 544 matches.
+    local int evil_did = SetEvilBit(IsParsing());
+    char           chunkID[4] = { "data" };
+    SetEvilBit(evil_did);
+
+    // ---- Tier A calculated_value, and diversity_axes[5] ----------------------
+    // The VALUE must equal the bytes actually written; HOW MANY bytes of audio to
+    // write is the generator's free choice and is where the corpus's duration
+    // diversity comes from.  So the set below is a ladder of frame counts, and the
+    // output_budget is spent by picking a shorter run -- never by narrowing a
+    // channel count, a rate, a depth or a block size.
+    local int64 d_align = fmt_align;
+    if (d_align < 1)
+        d_align = 1;
+    local int64 d_room = (int64)AUDIO_BUDGET - (int64)used_audio;
+    local int64 d_cap  = (int64)FILE_BUDGET - (int64)FTell() - 64;
+    if (d_cap < d_room)
+        d_room = d_cap;
+    if (d_room < 0)
+        d_room = 0;
+
+    local int32 ds_vals[0];
+    local int   ds_n = 0;
+    local int64 d_pre = ds64_bytes;
+    if (d_pre > 0 && d_pre <= d_room)
+    {
+        // a ds64 chunk earlier in the file has already committed to this length,
+        // and riff.c:298 cross-checks it against ds64's sampleCount64
+        ds_vals += (int32)ds64_bytes;
+        ds_n++;
+    }
+    else
+    {
+        local int64 d_fr = 1;
+        local int   d_n  = 0;
+        while (d_fr * d_align <= d_room && d_n < 17)
+        {
+            ds_vals += (int32)(d_fr * d_align);
+            d_fr = d_fr * 2 + 1;
+            d_n++;
+            ds_n++;
+        }
+        // Sizes that are NOT a whole multiple of the block align are worth
+        // generating deliberately: they drive the original into its opaque
+        // waveformData branch at line 81, a reader into its partial-final-block
+        // handling, and WavPack into reading the remainder as trailing wrapper.
+        if (d_align > 1 && d_align + 1 <= d_room)
+        {
+            ds_vals += (int32)(d_align + 1);
+            ds_n++;
+            if (3 * d_align - 1 <= d_room)
+            {
+                ds_vals += (int32)(3 * d_align - 1);
+                ds_n++;
+            }
+        }
+        // An odd length exercises the RIFF pad byte, and with it WavPack's
+        // "input file has non-zero padding byte" and "missing required padding
+        // byte" warnings at cli/wavpack.c:2124-2127.
+        if (d_align > 0 && 5 * d_align + 1 <= d_room)
+        {
+            ds_vals += (int32)(5 * d_align + 1);
+            ds_n++;
+        }
+        if (d_room >= 1)
+        {
+            ds_vals += 1;
+            ds_n++;
+        }
+        // diversity_axes[5]: "a size of zero reaches the empty-stream path",
+        // which is WavPack's "this .WAV file has no audio samples" exit at
+        // cli/riff.c:303-306.
+        ds_vals += 0;
+        ds_n++;
+    }
+    if (ds_n == 0)
+    {
+        ds_vals += 0;
+    }
+    local int evil_dcs = SetEvilBit(IsParsing());
+    long           chunkSize <values=ds_vals>;
+    SetEvilBit(evil_dcs);
+
+    // Test if we have a valid format
+    if( !haveValidFormat )
+    {
+        Warning( "File contains no valid WAVE format chunk." );
+        return -1;
+    }
+
+    // Locals, not the fields themselves: a `format.wChannels == 1` test in an
+    // instantiated struct would install {1} as wChannels' global known_values and
+    // silently pin a Tier C diversity axis.  Reading the field into a local and
+    // comparing that leaves the field bare.
+    local int64  d_bits = format.wBitsPerSample;
+    local int64  d_chan = format.wChannels;
+    local int64  d_ba   = format.wBlockAlign;
+    local int64  d_size = chunkSize;
+    local uint32 d_kind = fmt_kind;
+    local uint32 d_styl = fmt_style;
+    local uint32 d_cont = fmt_cont;
+    local uint32 d_pad  = 0;
+    local int64  d_cbits = d_cont;
+    d_cbits = d_cbits * 8;
+    if (d_cbits > d_bits)
+        d_pad = (uint32)(d_cbits - d_bits);
+
+    used_audio += (uint32)d_size;
+
+    // A zero channel count is a reachable and wanted case (it is the only route
+    // to libsndfile's SFE_CHANNEL_COUNT_ZERO and to riff.c:211's rejection), but
+    // the original's general-case branch would then declare a zero-length
+    // channels[] array, so it is routed to the opaque branch instead.
+    local int d_bad = 0;
+    if (d_chan < 1)
+        d_bad = 1;
+
+    if (d_size == 0)
+    {
+        // diversity_axes[5]: an empty data chunk, which is the empty-stream path
+        // -- WavPack's "this .WAV file has no audio samples" exit.  There is
+        // nothing to declare for it.
+        local int d_empty = 1;
+    }
+    // Parse the samples of the data
+    else if( d_bad || ((d_bits != 8) && (d_bits != 16) && (d_bits != 32)) 
+        || d_ba == 0 || (d_size % d_ba != 0) )
+    {
+        // Unsupported storage method used
+        // This is where every compressed format tag lands, and where the format's
+        // single payload_wellformedness entry applies.
+        if (d_kind == 1)
+            IMABLOCKS      imaData((uint32)d_ba, (uint32)d_chan, (uint32)d_size);
+        else if (d_kind == 2)
+            MSADPCMBLOCKS  msData((uint32)d_ba, (uint32)d_chan, (uint32)d_size);
+        else if (d_kind == 3)
+            MPEGFRAMES     mp3Data((uint32)d_size);
+        else if (d_styl > 0)
+            QUIETPCM       quietData((uint32)d_size, d_cont, d_styl, d_pad, (uint32)d_chan);
+        else
+            unsigned char  waveformData[d_size];
+    }
+    else if( (d_chan == 1) && (d_bits == 8) )
+    {
+        // Define an array of 8-bit samples - common case
+        if (d_styl > 0)
+            QUIETPCM quiet8((uint32)d_size, 1, d_styl, 0, 1);
+        else
+            uchar samples[ chunkSize ];         // Tier C, bare
+    }
+    else if( (d_chan == 1) && (d_bits == 16) )
+    {
+        // Define an array of 16-bit samples - common case
+        if (d_styl > 0)
+            QUIETPCM quiet16((uint32)d_size, d_cont, d_styl, d_pad, 1);
+        else
+            short samples[ chunkSize/2 ];       // Tier C, bare
+    }
+    else if( (d_chan == 1) && (d_bits == 32) )
+    {
+        // Define an array of 32-bit samples - common case
+        if (d_styl > 0)
+            QUIETPCM quiet32((uint32)d_size, d_cont, d_styl, d_pad, 1);
+        else
+            int samples[ chunkSize/4 ];         // Tier C, bare
+    }
+    else
+    {
+        // Define general case sample
+        // Reached only when wChannels is above 1, which is exactly why the
+        // channel count has to stay free: a corpus of mono files leaves this
+        // whole struct unexecuted.
+        if (d_styl > 0)
+        {
+            QUIETPCM quietN((uint32)d_size, d_cont, d_styl, d_pad, (uint32)d_chan);
+        }
+        else
+        {
+            struct SAMPLES {
+                local int64 s_bits = format.wBitsPerSample;
+                local int64 s_chan = format.wChannels;
+                if( s_bits == 8 )
+                     uchar channels[ s_chan ];   // Tier C, bare
+                else if( s_bits == 16 )
+                     short channels[ s_chan ];
+                else if( s_bits == 32 )
+                     int   channels[ s_chan ];
+                // ADDED: when the container is wider than the sample -- the
+                // "N-bit sample in an M-byte container" layout -- the frame's
+                // declared stride is wBlockAlign, which is larger than the
+                // samples the original declares here, and the original would
+                // leave the difference unconsumed and desynchronise the chunk
+                // walk.  This absorbs it; the bytes themselves are free.
+                local int64 s_used = s_chan * (s_bits / 8);
+                local int64 s_strd = format.wBlockAlign;
+                if( s_strd > s_used )
+                     uchar stride[ s_strd - s_used ];
+            } samples[ chunkSize / d_ba ];
+        }
+    }
+
+    have_data = 1;
+
+    // Padding so the next chunk starts on an even byte
+    // Tier C: the VALUE is free, the PRESENCE is structural.  A file whose final
+    // chunk is an odd-sized data chunk legitimately has no trailing pad, which is
+    // WavPack's "input file missing required padding byte" warning; a non-zero pad
+    // byte is its other warning at cli/wavpack.c:2127, and a zero one takes
+    // neither.  See skip_last_pad for why FileSize() is only called when parsing.
+    local int d_pad_ok = 0;
+    if( chunkSize & 1 )
+    {
+        if (IsParsing() == 0)
+        {
+            if (skip_last_pad == 0)
+            {
+                d_pad_ok = 1;
+            }
+            else
+            {
+                force_end = 1;
+            }
+        }
+        else if( FTell() < FileSize() )
+        {
+            d_pad_ok = 1;
+        }
+    }
+    if( d_pad_ok )
+        uchar padding;
+} DATACHUNK;
+
+// Stores the size of the wave after decompression
+typedef struct
+{
+    // Tier A fixed_value: the tag the switch at line 548 matches.
+    local int evil_aid = SetEvilBit(IsParsing());
+    char           chunkID[4] = { "fact" };
+    SetEvilBit(evil_aid);
+
+    // Tier A calculated_value with a template_parse_requirement: the original
+    // reads exactly four bytes of body and declares neither a skip for surplus
+    // nor a pad byte, so any other size leaves the parse at the wrong offset.
+    local int evil_acs = SetEvilBit(IsParsing());
+    long           chunkSize = { 4 };
+    SetEvilBit(evil_acs);
+
+    // Tier C, bare: diversity_axes[7].  Deriving this from the real audio length
+    // would delete every duration-mismatch branch, which is the only interesting
+    // thing this chunk can do.  Zero is meaningful and is not excluded.
+    unsigned long  uncompressedSize;
+} FACTCHUNK;
+
+// Stores a list of cue points or markers to points in the data
+typedef struct {
+    // All six are Tier C and bare.  dwIdentifier collisions reach a reader's
+    // duplicate handling and are worth generating rather than avoiding;
+    // dwPosition is diversity_axes[16] and out-of-range positions are the only
+    // way to reach marker-bounds checking.
+    long    dwIdentifier;
+    long    dwPosition;
+
+    // Tier B, exhaustive: "data" for a cue into the data chunk, "slnt" for one
+    // into a silence chunk inside a wavl list (dependency 23).  Both preferred;
+    // the out-of-pair value reaches the ignore path.
+    local int evil_fcc = SetEvilBit(IsParsing());
+    char    fccChunk[4] = { cue_fcc };
+    SetEvilBit(evil_fcc);
+
+    long    dwChunkStart;
+    long    dwBlockStart;
+    long    dwSampleOffset;
+} CUEPOINT;
+
+typedef struct {
+    // Tier A fixed_value: the trailing 0x20 is mandatory, as with "fmt ".
+    local int evil_cid = SetEvilBit(IsParsing());
+    char      chunkID[4] = { "cue " };
+    SetEvilBit(evil_cid);
+
+    // Tier A calculated_value: 4 + 24 * dwCuePoints, plus any surplus the
+    // original absorbs into unknown[].  How many cue points to write is free
+    // (diversity_axes[8]), so the record count is what the value set varies and
+    // dwCuePoints below simply records the choice.
+    local int64 c_room = (int64)XTRA_BUDGET - (int64)used_xtra;
+    local int32 cc_vals[0];
+    cc_vals += 4;                                   // zero cue points
+    if (c_room >= 36)  { cc_vals += 28; cc_vals += 28; }
+    if (c_room >= 60)  { cc_vals += 52; }
+    if (c_room >= 110) { cc_vals += 100; }
+    if (c_room >= 210) { cc_vals += 196; }
+    if (c_room >= 420) { cc_vals += 388; }
+    // A surplus tail, which is the one place in this chunk where the declared size
+    // and the record count can legitimately disagree.  It has to keep the body an
+    // EVEN number of bytes: the original declares no padding field here, on the
+    // grounds that 4 + 24n is always even, so an odd cue chunk would leave every
+    // later chunk on an odd offset and a word-aligned reader would misparse the
+    // whole tail of the file.
+    if (c_room >= 50)  { cc_vals += 32; }           // one record plus 4 spare bytes
+    if (c_room >= 90)  { cc_vals += 80; }           // three records plus 4 spare
+    local int evil_ccs = SetEvilBit(IsParsing());
+    long      chunkSize <values=cc_vals>;
+    SetEvilBit(evil_ccs);
+
+    local int pos = FTell();
+    local int64 c_sz  = chunkSize;
+    local int64 c_sur = (c_sz - 4) % 24;
+    local int64 c_n   = (c_sz - 4 - c_sur) / 24;
+    if (c_n < 0)
+        c_n = 0;
+
+    // Tier A calculated_value: the array bound for points[] below.
+    local int evil_cnp = SetEvilBit(IsParsing());
+    long      dwCuePoints = { (int32)c_n };
+    SetEvilBit(evil_cnp);
+
+    CUEPOINT  points[dwCuePoints];
+
+    cue_count = (uint32)c_n;
+    used_xtra += (uint32)(c_sz + 8);
+
+    // Unknown data at the end of the chunk
+    // Tier C, bare.  This is the one place in the cue chunk where the declared
+    // size and the record count can legitimately disagree, and readers differ on
+    // which of the two they trust.
+    if( chunkSize > (FTell() - pos) )
+        uchar unknown[ chunkSize - (FTell() - pos) ];
+} CUECHUNK;
+
+// Define a list chunk with a set of subchunks
+typedef struct (uint32 sb_type, uint32 sb_size) {
+    // Tier B: the registered INFO set inside an INFO list, the adtl records
+    // inside an adtl list, and data/slnt inside a wavl list (dependencies 20-22),
+    // plus unregistered tags, which are the only route into a reader's
+    // skip-and-continue path.  The tag is declared ONCE and the branches build its
+    // value set, because a field declared inside an if arm is not visible after it.
+    local string sid_vals[0];
+    if (sb_type == 1)
+    {
+        sid_vals = adtl_tags;
+    }
+    else if (sb_type == 2)
+    {
+        sid_vals = wavl_tags;
+    }
+    else
+    {
+        sid_vals = info_tags;
+    }
+    local int evil_sid = SetEvilBit(IsParsing());
+    char      chunkID[4] = { sid_vals };
+    SetEvilBit(evil_sid);
+
+    // Tier A calculated_value: exactly the byte count of listData.  The enclosing
+    // list has to read this field by lookahead four bytes before the subchunk
+    // starts -- that is what the original does at line 166 -- so the CALLER draws
+    // the length from its ladder and this field records that one value.  Drawing
+    // it again here would disagree with the bytes the lookahead already wrote.
+    local int32 sc_vals[0];
+    sc_vals += (int32)sb_size;
+    local int evil_scs = SetEvilBit(IsParsing());
+    long      chunkSize <values=sc_vals>;
+    SetEvilBit(evil_scs);
+
+    local int64 s_sz = chunkSize;
+    if (s_sz < 0)
+        s_sz = 0;
+
+    // ADDED: the structured heads the adtl records carry.  dependency 21: labl
+    // and note begin with a four-byte cue point identifier and ltxt with a full
+    // eight-field header, so their payload reaches structured parsing that the
+    // free-text INFO tags do not.  Decoder branch: a reader's cue-reference
+    // resolution and labelled-text-region handling.
+    local int64  s_hd  = 0;
+    if (sb_type == 1)
+    {
+        if (Strcmp(chunkID, "labl") == 0 || Strcmp(chunkID, "note") == 0)
+        {
+            if (s_sz >= 4)
+            {
+                // free: matching an identifier in the cue chunk reaches the
+                // cross-chunk resolution, missing one reaches the failure path
+                long dwName;
+                s_hd = 4;
+            }
+        }
+        else if (Strcmp(chunkID, "ltxt") == 0)
+        {
+            if (s_sz >= 20)
+            {
+                long           dwName;
+                long           dwSampleLength;
+                long           dwPurpose;
+                unsigned short wCountry;
+                unsigned short wLanguage;
+                unsigned short wDialect;
+                unsigned short wCodePage;
+                s_hd = 20;
+            }
+        }
+    }
+    else if (sb_type == 2)
+    {
+        if (Strcmp(chunkID, "slnt") == 0)
+        {
+            if (s_sz >= 4)
+            {
+                // dwSamples: the run of silence a wavl list carries in place of
+                // audio, which is a reader's fragmented-audio assembly path
+                unsigned long dwSamples;
+                s_hd = 4;
+            }
+        }
+    }
+
+    // Tier C, bare: diversity_axes[13].  The INFO convention is a NUL-terminated
+    // ASCII string but nothing enforces it -- unterminated strings, embedded NULs,
+    // non-ASCII bytes and zero-length payloads each reach different string
+    // handling, and all of them are wanted.
+    if (s_sz - s_hd > 0)
+        char      listData[s_sz - s_hd];
+
+    // Padding so the next chunk starts on an even byte
+    // Tier C: the VALUE is free, the PRESENCE is structural.  FileSize() is only
+    // consulted in the parse direction -- see skip_last_pad at the top of the file.
+    local int s_pad_ok = 0;
+    if( chunkSize & 1 )
+    {
+        if (IsParsing() == 0)
+        {
+            s_pad_ok = 1;
+        }
+        else if( FTell() < FileSize() )
+        {
+            s_pad_ok = 1;
+        }
+    }
+    if( s_pad_ok )
+        uchar padding;
+} LISTSUBCHUNK;
+
+typedef struct {
+    // Tier A fixed_value: upper case; the lower-case "list" variant some writers
+    // emit would fall to the switch's default arm at line 564.
+    local int evil_lid = SetEvilBit(IsParsing());
+    char      chunkID[4] = { "LIST" };
+    SetEvilBit(evil_lid);
+
+    // Tier A calculated_value: 4 for chunkType plus, for every subchunk, 8 + its
+    // size + its pad byte.  The original's walk at line 165 terminates on this
+    // value exactly, so it cannot be backpatched after the fact; instead the total
+    // is drawn from a ladder here and the subchunk loop below fills it precisely.
+    local int64 l_room = (int64)LIST_BUDGET - (int64)used_list;
+    local int64 l_cap  = (int64)FILE_BUDGET - (int64)FTell() - 64;
+    if (l_cap < l_room)
+        l_room = l_cap;
+    local int32 lc_vals[0];
+    lc_vals += 4;                                   // chunkType and nothing else
+    if (l_room >= 20)   { lc_vals += 16; lc_vals += 17; }
+    if (l_room >= 40)   { lc_vals += 32; lc_vals += 37; }
+    if (l_room >= 80)   { lc_vals += 72; lc_vals += 65; }
+    if (l_room >= 160)  { lc_vals += 148; }
+    if (l_room >= 400)  { lc_vals += 384; }
+    if (l_room >= 1100) { lc_vals += 1024; }
+    if (l_room >= 2200) { lc_vals += 2048; }
+    local int evil_lcs = SetEvilBit(IsParsing());
+    long      chunkSize <values=lc_vals>;
+    SetEvilBit(evil_lcs);
+
+    local quad pos = FTell();
+    local uint size;
+
+    // Tier B, exhaustive: all three list types, all three preferred.  INFO holds
+    // free text, adtl holds the structured records that reference cue
+    // identifiers, and wavl is the form in which the audio itself is split into
+    // alternating silence and data subchunks.
+    local int evil_lty = SetEvilBit(IsParsing());
+    char      chunkType[4] = { list_types };
+    SetEvilBit(evil_lty);
+
+    // chunkType carries an explicit value set, so these two comparisons cannot
+    // reach the value miner.
+    // Strcmp rather than ==: pfp cannot evaluate a second char-array comparison
+    // in an else-if chain.  chunkType carries an explicit value set, so neither
+    // test can reach the value miner.
+    local uint32 l_sel = 0;
+    if (Strcmp(chunkType, "adtl") == 0)
+    {
+        l_sel = 1;
+    }
+    else if (Strcmp(chunkType, "wavl") == 0)
+    {
+        l_sel = 2;
+    }
+
+    local int64  l_sz    = chunkSize;
+    local int64  l_rem   = 0;
+    local int    l_cnt   = 0;
+    local int    l_short = 0;
+    local uint32 sz_set[0];
+
+    // Read the subchunks
+    while( FTell() - pos < chunkSize ) {
+        // How much of the list is still unclaimed, the next header included.
+        l_rem = l_sz - (FTell() - pos);
+        sz_set = empty_u32;
+        l_short = 0;
+        if (IsParsing() == 0)
+        {
+            // Every subchunk costs 8 + size + (size & 1), which is always EVEN, so
+            // an odd or sub-header remainder can never be filled by one; the
+            // original's lookahead would then write four bytes past the end of the
+            // list and poison the next chunk's tag, so the remainder is consumed
+            // directly here -- which is the same unknown-bytes branch the
+            // original's line 170 takes.
+            if (l_rem < 8 || (l_rem % 2) == 1)
+            {
+                l_short = 1;
+            }
+            else if (l_rem <= 136 || l_cnt >= 24)
+            {
+                // Close the list: either one last subchunk sized to land exactly
+                // on the boundary, or a size that overruns it by one byte.  The
+                // guard below compares FTell() - pos + size against chunkSize
+                // WITHOUT allowing for the subchunk's own eight header bytes -- a
+                // genuine off-by-eight in the original -- so the overrunning draw
+                // is what reaches its unknown-bytes branch at line 170, which the
+                // JSON asks for deliberately.  Both options consume exactly the
+                // remainder, so chunkSize stays exact either way.
+                sz_set += (uint32)(l_rem - 8);
+                sz_set += (uint32)(l_rem - 8);
+                sz_set += (uint32)(l_rem - 8);
+                sz_set += (uint32)(l_rem + 1);
+            }
+            else
+            {
+                sz_set += 4;  sz_set += 8;  sz_set += 16;
+                sz_set += 7;  sz_set += 21; sz_set += 64; sz_set += 512;
+                sz_set += (uint32)(l_rem + 1);
+            }
+        }
+        if (l_short)
+        {
+            uchar unknownTail[ l_rem ];
+        }
+        else
+        {
+            size = ReadUInt( FTell()+4, sz_set );
+            if  (FTell() - pos + size<= chunkSize)
+                LISTSUBCHUNK subchunk(l_sel, size);
+            else
+                uchar unknown[ chunkSize - (FTell() - pos) ];       
+        }
+        l_cnt++;
+    }
+
+    have_list = 1;
+    used_list += (uint32)(l_sz + 8);
+
+    // Padding so the next chunk starts on an even byte
+    // Tier C: the VALUE is free, the PRESENCE is structural.  FileSize() is only
+    // consulted in the parse direction -- see skip_last_pad at the top of the file.
+    local int l_pad_ok = 0;
+    if( chunkSize & 1 )
+    {
+        if (IsParsing() == 0)
+        {
+            l_pad_ok = 1;
+        }
+        else if( FTell() < FileSize() )
+        {
+            l_pad_ok = 1;
+        }
+    }
+    if( l_pad_ok )
+        uchar padding;
+} LISTCHUNK;
+
+//-----------------------------------------------------------------------------
+// ADDED: plausible bodies for the unmodelled tags a real reader DOES handle.
+// constraints.UNKNOWNCHUNK.unknownData: "Emitting a plausible body for a named
+// tag reaches that reader's handler; emitting random bytes reaches its rejection
+// path.  Both are wanted."
+//-----------------------------------------------------------------------------
+
+// The RF64/BW64 data-size-64 chunk.  Decoder branch: WavPack's
+// ParseRiffHeaderConfig ds64 arm at cli/riff.c:101-137 -- the only part of that
+// function the six tags this template models cannot reach.  It validates
+// ckSize >= 28, then tableLength * 12 == ckSize - 28, then reads that many
+// CS64Chunk records, and the data chunk later cross-checks sampleCount64 against
+// the audio length at riff.c:298-301.
+typedef struct (uint32 d_tbl, uint32 d_bad, uint32 d_bytes, uint32 d_align)
+{
+    local int evil_d64 = SetEvilBit(IsParsing());
+    uint64 riffSize64    = { 0 };
+    uint64 dataSize64    = { d_bytes };
+    local uint64 d_smp = 0;
+    if (d_align > 0)
+        d_smp = d_bytes / d_align;
+    if (d_bad)
+    {
+        // the deliberate mismatch, which reaches riff.c:299's rejection
+        uint64 sampleCount64 = { d_smp + 1 };
+    }
+    else
+    {
+        uint64 sampleCount64 = { d_smp };
+    }
+    unsigned long tableLength = { d_tbl };
+    SetEvilBit(evil_d64);
+    local uint32 d_i = 0;
+    while (d_i < d_tbl)
+    {
+        // one CS64Chunk per table entry: a fourcc and a 64-bit size
+        char   cs64id[4];
+        uint64 cs64size;
+        d_i++;
+    }
+} DS64BODY;
+
+// The EBU Broadcast Wave extension: a 602-byte fixed layout a broadcast reader
+// parses field by field, where random bytes reach only its rejection.
+typedef struct (uint32 b_len)
+{
+    local uint32 b_left = b_len;
+    if (b_left >= 602)
+    {
+        char Description[256];
+        char Originator[32];
+        char OriginatorReference[32];
+        char OriginationDate[10];
+        char OriginationTime[8];
+        unsigned long TimeReferenceLow;
+        unsigned long TimeReferenceHigh;
+        local int evil_bv = SetEvilBit(IsParsing());
+        unsigned short Version = { 0, 1, 2 };
+        SetEvilBit(evil_bv);
+        ubyte UMID[64];
+        short LoudnessValue;
+        short LoudnessRange;
+        short MaxTruePeakLevel;
+        short MaxMomentaryLoudness;
+        short MaxShortTermLoudness;
+        ubyte Reserved[180];
+        b_left -= 602;
+        if (b_left > 0)
+            char CodingHistory[b_left];
+    }
+    else
+    {
+        if (b_left > 0)
+            uchar bextShort[b_left];
+    }
+} BEXTBODY;
+
+// A chunk which could not be identified
+typedef struct {
+    // Tier B pattern_constraint: four bytes that are NOT one of the six the
+    // dispatch switch claims.  The named tags reach real handlers in a real
+    // reader; the arbitrary ones reach the generic seek-past-chunkSize skip.
+    local int evil_uid = SetEvilBit(IsParsing());
+    char      chunkID[4] = { unk_tags };
+    SetEvilBit(evil_uid);
+
+    local int64  u_room = (int64)UNK_BUDGET - (int64)used_unk;
+    local int64  u_cap  = (int64)FILE_BUDGET - (int64)FTell() - 64;
+    if (u_cap < u_room)
+        u_room = u_cap;
+    if (u_room < 0)
+        u_room = 0;
+
+    // Tier A calculated_value: exactly the byte count of unknownData.  Skipping
+    // an unknown chunk correctly is the single most valuable thing an unknown
+    // chunk does, so this has to be exact.
+    local uint32 u_sel  = 0;        // 0 free bytes, 1 ds64, 2 bext, 3 inst
+    local uint32 u_tbl  = 0;
+    local uint32 u_bad  = 0;
+    local int32  uc_vals[0];
+    if (Strcmp(chunkID, "ds64") == 0 && u_room >= 28 && fmt_align > 0 && have_data == 0)
+    {
+        u_sel = 1;
+        // ckSize must be exactly 28 + 12 * tableLength or riff.c:122 rejects it;
+        // two of the shapes below are deliberately wrong, which is how that line
+        // and the `ckSize < sizeof(DS64Chunk)` rejection at riff.c:102 are reached.
+        uc_vals += 28; uc_vals += 28; uc_vals += 28;
+        if (u_room >= 40) { uc_vals += 40; }
+        if (u_room >= 52) { uc_vals += 52; }
+        uc_vals += 36;                            // 28 + 8: not a multiple of 12
+        uc_vals += 20;                            // below sizeof(DS64Chunk)
+    }
+    else if (Strcmp(chunkID, "bext") == 0 && u_room >= 602)
+    {
+        u_sel = 2;
+        uc_vals += 602; uc_vals += 602;
+        if (u_room >= 700) { uc_vals += 666; }
+    }
+    else if (Strcmp(chunkID, "inst") == 0 && u_room >= 7)
+    {
+        u_sel = 3;
+        uc_vals += 7;
+    }
+    else
+    {
+        local int64 u_max = u_room;
+        if (have_data > 0 && u_max > 2048)
+            u_max = 2048;
+        if (u_max > 20000)
+            u_max = 20000;
+        uc_vals += 0;
+        if (u_max >= 1)    { uc_vals += 1; }
+        if (u_max >= 2)    { uc_vals += 2; }
+        if (u_max >= 4)    { uc_vals += 4; uc_vals += 3; }
+        if (u_max >= 10)   { uc_vals += 10; uc_vals += 9; }
+        if (u_max >= 32)   { uc_vals += 32; uc_vals += 29; }
+        if (u_max >= 128)  { uc_vals += 128; uc_vals += 101; }
+        if (u_max >= 512)  { uc_vals += 512; }
+        if (u_max >= 2048) { uc_vals += 2048; }
+        // One chunk large enough to push the stored RIFF header past the 16384
+        // bytes at which WavpackPackInit flushes a metadata block early
+        // (src/pack_utils.c:554-555); only reachable before the audio, since the
+        // riff.c loop stops there.
+        if (u_max >= 20000) { uc_vals += 20000; }
+    }
+    local int evil_ucs = SetEvilBit(IsParsing());
+    long      chunkSize <values=uc_vals>;
+    SetEvilBit(evil_ucs);
+
+    local int64 u_sz = chunkSize;
+    if (u_sz < 0)
+        u_sz = 0;
+    used_unk += (uint32)(u_sz + 8);
+
+    if (u_sel == 1 && u_sz >= 28)
+    {
+        // tableLength is what makes ckSize == 28 + 12 * tableLength hold; the
+        // 36-byte shape leaves eight bytes over, which is the mis-size.
+        u_tbl = (uint32)((u_sz - 28) / 12);
+        // Commit the audio length now, so the data chunk can be written to agree
+        // with sampleCount64 -- riff.c:298 rejects the file when they disagree,
+        // and one file in two is generated disagreeing on purpose to reach it.
+        local int64 u_fr = 7;
+        local int64 u_al = fmt_align;
+        local int64 u_lim = AUDIO_BUDGET;
+        u_lim = u_lim / 2;
+        if (u_al < 1)
+            u_al = 1;
+        while (u_fr * u_al > u_lim && u_fr > 1)
+        {
+            u_fr = u_fr / 2;
+        }
+        ds64_bytes = (uint32)(u_fr * u_al);
+        u_bad = fmt_rate & 1;
+        have_ds64 = 1;
+        DS64BODY ds64body(u_tbl, u_bad, ds64_bytes, fmt_align);
+        local int64 u_used = u_sz - 28 - (int64)u_tbl * 12;
+        if (u_used > 0)
+            uchar ds64Tail[u_used];
+    }
+    else if (u_sel == 1)
+    {
+        // a ds64 chunk too short to hold a DS64Chunk, which riff.c:102 rejects
+        if (u_sz > 0)
+            uchar ds64Short[u_sz];
+    }
+    else if (u_sel == 2)
+    {
+        BEXTBODY bextbody((uint32)u_sz);
+    }
+    else if (u_sel == 3)
+    {
+        // The seven-byte instrument chunk a sampler reads field by field.
+        ubyte UnshiftedNote;
+        byte  FineTune;
+        byte  Gain;
+        ubyte LowNote;
+        ubyte HighNote;
+        ubyte LowVelocity;
+        ubyte HighVelocity;
+    }
+    else
+    {
+        // Tier C, bare: the body of a chunk nobody models, skipped wholesale.
+        if (u_sz > 0)
+            uchar     unknownData[u_sz];
+    }
+
+    // Padding so the next chunk starts on an even byte
+    // Tier C: the VALUE is free, the PRESENCE is structural.  FileSize() is only
+    // consulted in the parse direction -- see skip_last_pad at the top of the file.
+    local int u_pad_ok = 0;
+    if( chunkSize & 1 )
+    {
+        if (IsParsing() == 0)
+        {
+            u_pad_ok = 1;
+            if (allow_nodata && have_data == 0)
+            {
+                // The one case the original's own end-of-file guard describes: a
+                // final odd-sized chunk carries no pad byte.  WavPack rounds the
+                // skip up to (ckSize + 1) & ~1 regardless, so it reads one byte
+                // past the end and takes the short-read path at cli/riff.c:336.
+                u_pad_ok  = 0;
+                force_end = 1;
+            }
+        }
+        else if( FTell() < FileSize() )
+        {
+            u_pad_ok = 1;
+        }
+    }
+    if( u_pad_ok )
+        uchar padding;
+} UNKNOWNCHUNK;
+
+//---------------------------------------------
+// SMPL / SMPL Loop
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Cue_ID <read=WAV_SMPLLOOPS_Cue_ID>;
+
+string
+WAV_SMPLLOOPS_Cue_ID( SMPLLOOPS_Cue_ID cid )
+{
+    string  sret;
+    SPrintf( sret, "Cue Point ID: %u", cid );
+
+return sret;
+}
+
+//---------------------------------------------
+
+typedef long SMPLLOOPS_Play_Count <read=WAV_SMPLLOOPS_Play_Count>;
+
+string
+WAV_SMPLLOOPS_Play_Count( SMPLLOOPS_Play_Count pc )
+{
+    string  sret;
+
+    if (pc==0)
+    {
+        SPrintf( sret, " Infinite Sustain Loop (%u)", pc );
+    }
+    else
+    {
+        SPrintf( sret, "Play Count: %u", pc );
+    }
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Start <read=WAV_SMPLLOOPS_Start>;
+
+string
+WAV_SMPLLOOPS_Start( SMPLLOOPS_Start st )
+{
+    string  sret;
+    SPrintf( sret, "Loop Start at %u byte offset", st );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_End <read=WAV_SMPLLOOPS_End>;
+
+string
+WAV_SMPLLOOPS_End( SMPLLOOPS_End end )
+{
+    string  sret;
+    SPrintf( sret, "Loop End at %u byte offset", end );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPLLOOPS_Fraction <read=WAV_SMPLLOOPS_Fraction>;
+
+string
+WAV_SMPLLOOPS_Fraction( SMPLLOOPS_Fraction f )
+{
+    string  sret;
+    SPrintf( sret, "Fraction: %u", f );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SL <read=WAV_SMPL_SL>;
+
+string
+WAV_SMPL_SL( SMPL_SL sl )
+{
+    string  sret;
+    SPrintf( sret, "Number of Samples Loops (Sustain Loops): %u", sl );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SD <read=WAV_SMPL_SD>;
+
+string
+WAV_SMPL_SD( SMPL_SD sd )
+{
+    string  sret;
+    SPrintf( sret, "Sample Data (number of bytes): %u", sd );
+
+return sret;
+}
+
+
+//---------------------------------------------
+typedef long SMPL_SMPTE_Offset <read=WAV_SMPL_SMPTE_Offset>;
+
+string
+WAV_SMPL_SMPTE_Offset( SMPL_SMPTE_Offset so )
+{
+    string  sret;
+    SPrintf( sret, "SMPTE Offset (for synchronization): %u", so );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Pitch_Fraction <read=WAV_SMPL_MIDI_Pitch_Fraction>;
+
+string
+WAV_SMPL_MIDI_Pitch_Fraction( SMPL_MIDI_Pitch_Fraction pf )
+{
+    string  sret;
+    SPrintf( sret, "MIDI Pitch Fraction: %u", pf );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_MIDI_Unity_Note <read=WAV_SMPL_MIDI_Unity_Note>;
+
+string
+WAV_SMPL_MIDI_Unity_Note( SMPL_MIDI_Unity_Note un )
+{
+    string  sret;
+    SPrintf( sret, "MIDI unity note value: %u", un );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Product <read=WAV_SMPL_Product>;
+
+string
+WAV_SMPL_Product( SMPL_Product product )
+{
+    string  sret;
+    SPrintf( sret, "MIDI model ID (defined by the manufacturer): %u", product );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Sample_Period <read=WAV_SMPL_Sample_Period>;
+
+string
+WAV_SMPL_Sample_Period( SMPL_Sample_Period sp )
+{
+    string  sret;
+     // The sample period specifies the duration of time that passes during the playback of one sample in nanoseconds (normally equal to 1 / Samplers Per Second, where Samples Per Second is the value found in the format chunk).
+    SPrintf( sret, "Sample Period: %u", sp );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_SMPTE <read=WAV_SMPL_SMPTE>;
+
+string
+WAV_SMPL_SMPTE( SMPL_SMPTE smptef )
+{
+    string  s;
+    string  sret;
+
+    switch( smptef )
+    {
+    case 0: SPrintf( s, "No SMPTE offset" ); break;
+    case 24: SPrintf( s, "24 frames per second" ); break;
+    case 25: SPrintf( s, "25 frames per second" ); break;
+    case 29: SPrintf( s, "30 frames per second with frame dropping (30 drop)" ); break;
+    case 30: SPrintf( s, "30 frames per second" ); break;
+    default: SPrintf( s, "unknown (%u)", smptef ); break;
+    }
+
+    SPrintf( sret, "SMPTE Format: %s", s );
+
+return sret;
+}
+
+//---------------------------------------------
+typedef long SMPL_Manufacturer <read=WAV_SMPL_Manufacturer>;
+
+string
+WAV_SMPL_Manufacturer( SMPL_Manufacturer manufacture )
+{
+    string  s;
+    string  sret;
+
+    switch( manufacture )
+    {
+    case 0: SPrintf( s, "Unknown" ); break;
+    case 1: SPrintf( s, "Sequential Circuits"); break;
+    case 2: SPrintf( s, "Big Briar"); break;
+    case 3: SPrintf( s, "Octave / Plateau"); break;
+    case 4: SPrintf( s, "Moog"); break;
+    case 5: SPrintf( s, "Passport Designs"); break;
+    case 6: SPrintf( s, "Lexicon"); break;
+    case 7: SPrintf( s, "Kurzweil"); break;
+    case 8: SPrintf( s, "Fender"); break;
+    case 9: SPrintf( s, "Gulbransen"); break;
+    case 10: SPrintf( s, "Delta Labs"); break;
+    case 11: SPrintf( s, "Sound Comp."); break;
+    case 12: SPrintf( s, "General Electro"); break;
+    case 13: SPrintf( s, "Techmar"); break;
+    case 14: SPrintf( s, "Matthews Research"); break;
+    case 16: SPrintf( s, "Oberheim"); break;
+    case 17: SPrintf( s, "PAIA"); break;
+    case 18: SPrintf( s, "Simmons"); break;
+    case 19: SPrintf( s, "DigiDesign"); break;
+    case 20: SPrintf( s, "Fairlight"); break;
+    case 21: SPrintf( s, "JL Cooper"); break;
+    case 22: SPrintf( s, "Lowery"); break;
+    case 23: SPrintf( s, "Lin"); break;
+    case 24: SPrintf( s, "Emu"); break;
+    case 27: SPrintf( s, "Peavey"); break;
+    case 32: SPrintf( s, "Bon Tempi"); break;
+    case 33: SPrintf( s, "S.I.E.L."); break;
+    case 35: SPrintf( s, "SyntheAxe"); break;
+    case 36: SPrintf( s, "Hohner"); break;
+    case 37: SPrintf( s, "Crumar"); break;
+    case 38: SPrintf( s, "Solton"); break;
+    case 39: SPrintf( s, "Jellinghaus Ms"); break;
+    case 40: SPrintf( s, "CTS"); break;
+    case 41: SPrintf( s, "PPG"); break;
+    case 47: SPrintf( s, "Elka"); break;
+    case 54: SPrintf( s, "Cheetah"); break;
+    case 62: SPrintf( s, "Waldorf"); break;
+    case 64: SPrintf( s, "Kawai"); break;
+    case 65: SPrintf( s, "Roland"); break;
+    case 66: SPrintf( s, "Korg"); break;
+    case 67: SPrintf( s, "Yamaha"); break;
+    case 68: SPrintf( s, "Casio"); break;
+    case 70: SPrintf( s, "Kamiya Studio"); break;
+    case 71: SPrintf( s, "Akai"); break;
+    case 72: SPrintf( s, "Victor"); break;
+    case 75: SPrintf( s, "Fujitsu"); break;
+    case 76: SPrintf( s, "Sony"); break;
+    case 78: SPrintf( s, "Teac"); break;
+    case 80: SPrintf( s, "Matsushita"); break;
+    case 81: SPrintf( s, "Fostex"); break;
+    case 82: SPrintf( s, "Zoom"); break;
+    case 84: SPrintf( s, "Matsushita"); break;
+    case 85: SPrintf( s, "Suzuki"); break;
+    case 86: SPrintf( s, "Fuji Sound"); break;
+    case 87: SPrintf( s, "Acoustic Technical Laboratory"); break;
+    default: SPrintf( s, "Unknown"); break;
+    }
+
+SPrintf( sret, "Manufacturer: %s", s);
+
+return sret;
+}
+
+//----------------------------------------------------------------------
+typedef long SMPLLOOPS_Type <read=WAV_SMPL_Loop_Type>;
+
+string
+WAV_SMPL_Loop_Type( SMPLLOOPS_Type loop )
+{
+    string  s;
+
+    switch( loop )
+    {
+        case 0 :
+            SPrintf( s, "Loop: Forward (%u)", loop );
+            break;
+
+        case 1 :
+            SPrintf( s, "Loop: Ping Pong (%u)", loop );
+            break;
+
+        case 2 :
+            SPrintf( s, "Loop: Reverse (%u)", loop );
+            break;
+
+        case 3 :
+            SPrintf( s, "Loop [reserved for future standard types] (%u)", loop );
+            break;
+
+        default:
+            s = "Loop: <unknown>";
+    }
+
+    return s;
+}
+
+//----------------------------------------------------------------------
+// SMPL Loop
+typedef struct {
+    // Tier C, bare: matching an identifier in the cue chunk reaches a reader's
+    // cross-chunk resolution and missing one reaches the failure path, so this is
+    // deliberately NOT derived from the cue chunk.
+    SMPLLOOPS_Cue_ID     Cue_Point;
+
+    // Tier B, exhaustive: the four traversal modes the original's own switch
+    // distinguishes, including case 3, which it labels "reserved for future
+    // standard types" and which is not dropped.  Values above 3 reach the
+    // default arm printing "Loop: <unknown>", so they are generated too.
+    local int32 lt_vals[0];
+    lt_vals += 0; lt_vals += 0;
+    lt_vals += 1; lt_vals += 1;
+    lt_vals += 2; lt_vals += 2;
+    lt_vals += 3; lt_vals += 3;
+    lt_vals += 4; lt_vals += 255;
+    local int evil_lt = SetEvilBit(IsParsing());
+    SMPLLOOPS_Type       Type <values=lt_vals>;
+    SetEvilBit(evil_lt);
+
+    // Tier C, bare, all four: a start past the end, a start beyond the end and a
+    // play count of zero -- the infinite-sustain case the original's display
+    // function branches on -- are all accepted by every parser and all drive the
+    // loop-validation branches.
+    SMPLLOOPS_Start      Start;
+    SMPLLOOPS_End        End;
+    SMPLLOOPS_Fraction   Fraction;
+    SMPLLOOPS_Play_Count Play_Count;
+
+} SMPLLOOPS;
+
+//----------------------------------------------------------------------
+// Chunk SMPL
+typedef struct {
+    // Tier A fixed_value: the tag the switch at line 556 matches.
+    local int evil_mid = SetEvilBit(IsParsing());
+    char                     chunkID[4] = { "smpl" };
+    SetEvilBit(evil_mid);
+
+    // Tier A calculated_value: 36 + 24 * Num_Sample_Loops + Sampler_Data.  How
+    // many loops to write is free (diversity_axes[9]) -- zero, one and several
+    // take three different paths through a reader's loop list -- so the loop count
+    // is what the value set varies.
+    local int64 m_room = (int64)XTRA_BUDGET - (int64)used_xtra;
+    local int32 ms_vals[0];
+    ms_vals += 36; ms_vals += 36;                   // no loops at all
+    if (m_room >= 68)  { ms_vals += 60; ms_vals += 60; }
+    if (m_room >= 92)  { ms_vals += 84; }
+    if (m_room >= 140) { ms_vals += 132; }
+    if (m_room >= 240) { ms_vals += 228; }
+    if (m_room >= 450) { ms_vals += 420; }
+    local int evil_mcs = SetEvilBit(IsParsing());
+    long                     chunkSize <values=ms_vals>;
+    SetEvilBit(evil_mcs);
+
+    local int64 m_sz = chunkSize;
+    local int64 m_n  = (m_sz - 36) / 24;
+    if (m_n < 0)
+        m_n = 0;
+
+    // Tier B: the fifty-five literals the original's switch compares against,
+    // weighted by preferred_value [0,1,4,65,66,67,71].  completeness is "partial"
+    // -- every other value is legal, reaches the switch's default arm at line 438
+    // and is generated too.
+    local int32 mf_vals[0];
+    mf_vals += 0; mf_vals += 0; mf_vals += 0; mf_vals += 0;
+    mf_vals += 1; mf_vals += 1; mf_vals += 4; mf_vals += 4;
+    mf_vals += 65; mf_vals += 65; mf_vals += 66; mf_vals += 66;
+    mf_vals += 67; mf_vals += 67; mf_vals += 71; mf_vals += 71;
+    mf_vals += 2;  mf_vals += 3;  mf_vals += 5;  mf_vals += 6;
+    mf_vals += 7;  mf_vals += 8;  mf_vals += 9;  mf_vals += 10;
+    mf_vals += 11; mf_vals += 12; mf_vals += 13; mf_vals += 14;
+    mf_vals += 16; mf_vals += 17; mf_vals += 18; mf_vals += 19;
+    mf_vals += 20; mf_vals += 21; mf_vals += 22; mf_vals += 23;
+    mf_vals += 24; mf_vals += 27; mf_vals += 32; mf_vals += 33;
+    mf_vals += 35; mf_vals += 36; mf_vals += 37; mf_vals += 38;
+    mf_vals += 39; mf_vals += 40; mf_vals += 41; mf_vals += 47;
+    mf_vals += 54; mf_vals += 62; mf_vals += 64; mf_vals += 68;
+    mf_vals += 70; mf_vals += 72; mf_vals += 75; mf_vals += 76;
+    mf_vals += 78; mf_vals += 80; mf_vals += 81; mf_vals += 82;
+    mf_vals += 84; mf_vals += 85; mf_vals += 86; mf_vals += 87;
+    // the missing cases, which fall through to the default arm
+    mf_vals += 15; mf_vals += 25; mf_vals += 26; mf_vals += 28;
+    mf_vals += 34; mf_vals += 999; mf_vals += 65536;
+    local int evil_mmf = SetEvilBit(IsParsing());
+    SMPL_Manufacturer        Manufacturer <values=mf_vals>;
+    SetEvilBit(evil_mmf);
+
+    // Tier C, bare.
+    SMPL_Product             Product; // Product code (Manufacture)
+
+    // Tier C, bare: the original's comment at line 342 states the convention that
+    // this is 1000000000 / dwSamplesPerSec, and dependency 25 records it as
+    // advisory rather than a pin -- a mismatch parses and plays, and zero is the
+    // value that makes a reader's rate arithmetic divide by zero.
+    SMPL_Sample_Period       Sample_Period;
+
+    // Tier C, bare: the 0..127 MIDI range is deliberately NOT a bound, since
+    // values above it are the only way to reach a sampler's note clamping.
+    SMPL_MIDI_Unity_Note     MIDI_Unity_Note;
+    SMPL_MIDI_Pitch_Fraction MIDI_Pitch_Fraction;
+
+    // Tier B, exhaustive: the five defined frame rates, all five preferred.  29 is
+    // the drop-frame case whose time arithmetic differs from every other value,
+    // and undefined values reach the default arm at line 364.
+    local int32 sm_vals[0];
+    sm_vals += 0;  sm_vals += 0;  sm_vals += 24; sm_vals += 24;
+    sm_vals += 25; sm_vals += 25; sm_vals += 29; sm_vals += 29;
+    sm_vals += 30; sm_vals += 30;
+    sm_vals += 23; sm_vals += 60;
+    local int evil_smp = SetEvilBit(IsParsing());
+    SMPL_SMPTE               SMPTE <values=sm_vals>;
+    SetEvilBit(evil_smp);
+
+    // Tier C, bare: out-of-range components -- sixty-one seconds, thirty-five
+    // frames at 24 fps -- are the only way to reach timecode validation.
+    SMPL_SMPTE_Offset        SMPTE_Offset;
+
+    // Tier A calculated_value: the array bound for loops[] below.
+    local int evil_mnl = SetEvilBit(IsParsing());
+    SMPL_SL                  Num_Sample_Loops = { (int32)m_n };
+    SetEvilBit(evil_mnl);
+
+    // Tier A calculated_value with a template_parse_requirement: the original
+    // declares no array for the vendor data and goes from loops[] straight to the
+    // pad byte, so a non-zero value here would leave that many bytes unconsumed
+    // and desynchronise this parser even though it is legal WAV.
+    local int evil_msd = SetEvilBit(IsParsing());
+    SMPL_SD                  Sampler_Data = { 0 };
+    SetEvilBit(evil_msd);
+
+    SMPLLOOPS                loops[Num_Sample_Loops];
+
+    have_smpl = 1;
+    used_xtra += (uint32)(m_sz + 8);
+
+     // Padding so the next chunk starts on an even byte
+     // Tier C: the VALUE is free, the PRESENCE is structural.  FileSize() is only
+     // consulted in the parse direction -- see skip_last_pad at the top of the file.
+     local int m_pad_ok = 0;
+     if( chunkSize & 1 )
+     {
+         if (IsParsing() == 0)
+         {
+             m_pad_ok = 1;
+         }
+         else if( FTell() < FileSize() )
+         {
+             m_pad_ok = 1;
+         }
+     }
+     if( m_pad_ok )
+         uchar padding;
+
+} SMPLCHUNK;
+
+
+
+//---------------------------------------------
+
+// Define the headers
+LittleEndian(); 
+SetBackColor( cLtPurple );
+WAVRIFFHEADER header;
+
+// Check for valid header
+if( header.groupID != "RIFF" || header.riffType != "WAVE" )
+{
+    Warning( "File is not a valid wave file. Template stopped." );
+    return -1;
+}
+
+// Read the file as a set of chunks
+local char tag[4];
+local uint size;
+
+// structure[0] first_element / structure[12] forbidden: nothing may precede the
+// twelve-byte head, which is why it is declared outside the loop.
+// structure[1] required + structure[2] ordering: exactly one format chunk, and it
+// must come before the data chunk.  Every real writer puts it first, so the
+// preferred set below starts as "fmt " alone and only grows afterwards.
+local string pref_tag[0];
+local string poss_tag[0];
+local int64  t_left = 0;
+local double eof_p  = 0.10;
+
+// The continuation test is taken at the END of each pass, and in a different
+// order per direction.  Generating, FEof() must not be consulted while the file
+// still owes its data chunk, because FEof() latches the file size the moment it
+// fires and nothing more could then be written.  Parsing, end of file has to end
+// the loop whatever the file contains, or a WAVE form with no data chunk -- which
+// structure[3] calls a legal case worth generating -- would read past the end.
+local int keep_going = 1;
+
+while( top_n < 64 && force_end == 0 && keep_going )
+{
+    // ---- walk the legal state machine (structure[2] ordering) --------------
+    // pref_tag is what the format's state machine wants next and poss_tag is
+    // everything that is legal here; ReadBytes draws from pref_tag with
+    // probability p and from poss_tag otherwise, so p is the steering strength.
+    // poss_tag has to contain EVERY tag this iteration may produce, because the
+    // lookahead writes the four bytes the chunk's own pinned chunkID then has to
+    // agree with -- a tag the chunk's own value set does not contain would leave
+    // the generator no compatible value and it would fall back to random bytes.
+    t_left = (int64)FILE_BUDGET - FTell();
+    pref_tag = empty_str;
+    eof_p = 0.10;
+    // The unmodelled tags go in FIRST, as a whole-array assignment, because the
+    // set has to be seeded before the state-dependent tags are appended one by
+    // one.  They are scattered before and after the data chunk rather than
+    // clustered, since a reader's post-audio chunk handling differs from its
+    // pre-audio handling.
+    if (have_fmt >= 1 && t_left >= 64 && used_unk + 16 < UNK_BUDGET)
+    {
+        poss_tag = unk_tags;
+    }
+    else
+    {
+        poss_tag = empty_str;
+    }
+    if (have_fmt == 0)
+    {
+        // nothing but the format chunk is useful yet: without it the original's
+        // data chunk aborts at line 73 and every reader reports a file with no
+        // format description.
+        pref_tag += "fmt ";
+        poss_tag += "fmt ";
+    }
+    else if (t_left < 64)
+    {
+        // the budget is spent; stop opening chunks
+        pref_tag += "data";
+        poss_tag += "data";
+    }
+    else
+    {
+        // structure[3] required "data", structure[8]/[10] cardinality for the
+        // metadata and unmodelled chunks, structure[7] ordering for "fact".
+        if (have_data == 0 && allow_nodata == 0)
+        {
+            // Real writers put the audio immediately after the format chunk, and
+            // the fact chunk between them when the tag needs one; the metadata
+            // chunks go afterwards.  Keeping the data chunk early is also what
+            // leaves it the whole audio budget, so the audio-length ladder stays
+            // broad rather than collapsing onto its smallest rungs.  WavPack's
+            // riff.c loop BREAKS at the data chunk, so the chunks that reach its
+            // parser at all are exactly the ones placed here.
+            poss_tag = empty_str;
+            pref_tag += "data"; pref_tag += "data"; pref_tag += "data";
+            poss_tag += "data"; poss_tag += "data";
+            poss_tag += "data"; poss_tag += "data";
+            if (have_fact == 0 && used_xtra + 12 < XTRA_BUDGET)
+            {
+                // dependency 14 and structure[7]: the spec requires a fact chunk
+                // for every format other than PCM, conventionally before the
+                // audio; most readers tolerate its absence, which is itself a
+                // distinct path, so it is possible rather than certain.
+                if (fmt_tag != 1)
+                {
+                    pref_tag += "fact";
+                }
+                poss_tag += "fact";
+            }
+            if (have_fmt == 1 && top_n < 4)
+            {
+                // structure[1] says exactly one format chunk is valid; a SECOND
+                // one before the data chunk is still legal to write and is the
+                // only way to reach WavPack's `if (format_chunk++)` rejection at
+                // cli/riff.c:142-145.  It publishes nothing, so the data chunk
+                // still sizes itself from the first one.
+                poss_tag += "fmt ";
+            }
+            if (used_unk + 16 < UNK_BUDGET)
+            {
+                // The unmodelled chunks that have to precede the audio to be seen
+                // by riff.c at all: ds64 reaches its dedicated arm, the rest its
+                // copy-and-continue branch.
+                poss_tag += "ds64"; poss_tag += "ds64";
+                poss_tag += "bext"; poss_tag += "inst"; poss_tag += "JUNK";
+                poss_tag += "cset"; poss_tag += "id3 "; poss_tag += "iXML";
+                poss_tag += "PAD "; poss_tag += "xxxx";
+            }
+        }
+        else if (have_data > 0)
+        {
+            // a second data chunk is tolerated by readers and keeps either the
+            // first or the last, which is a branch worth reaching occasionally
+            poss_tag += "data";
+        }
+        if (have_fact == 0 && have_data > 0 && used_xtra + 12 < XTRA_BUDGET)
+        {
+            // the fact chunk also placed AFTER the audio, which the JSON notes is
+            // still parsed but too late to help -- a separate path
+            poss_tag += "fact";
+        }
+        if (have_cue == 0 && used_xtra + 40 < XTRA_BUDGET)
+        {
+            // Weighted up: the cue and sampler chunks are the only carriers of
+            // CUEPOINT.fccChunk, SMPLLOOPS.Type, SMPLCHUNK.SMPTE and the
+            // fifty-five-value Manufacturer set, and a Tier B set is only emitted
+            // completely if its chunk appears often enough to draw from it.
+            poss_tag += "cue "; poss_tag += "cue "; poss_tag += "cue ";
+        }
+        if (have_smpl == 0 && used_xtra + 48 < XTRA_BUDGET)
+        {
+            poss_tag += "smpl"; poss_tag += "smpl"; poss_tag += "smpl";
+            poss_tag += "smpl"; poss_tag += "smpl"; poss_tag += "smpl";
+        }
+        if (used_list + 32 < LIST_BUDGET)
+        {
+            // Likewise for the twenty-six registered INFO tags and the four adtl
+            // records, which only exist inside a LIST.
+            poss_tag += "LIST"; poss_tag += "LIST"; poss_tag += "LIST";
+            poss_tag += "LIST"; poss_tag += "LIST"; poss_tag += "LIST";
+        }
+        if (have_data == 1 && used_xtra + 48 >= XTRA_BUDGET && used_list + 32 >= LIST_BUDGET && used_unk + 16 >= UNK_BUDGET)
+        {
+            // every optional budget is spent; let the file end
+            eof_p = 0.90;
+            pref_tag += "data";
+            poss_tag += "data";
+        }
+    }
+
+    // Read the chunk tag 
+    // p = 0.72: roughly seven draws in ten follow the state machine and the rest
+    // come from everything else that is legal at this point.
+    ReadBytes( tag, FTell(), 4, pref_tag, poss_tag, 0.72 );
+
+    // See which chunk this is
+    switch( tag )
+    {
+        case "fmt ":
+            SetBackColor( cLtGray );
+            FORMATCHUNK format;
+            break;
+        case "data":
+            SetBackColor( cNone );
+            DATACHUNK   data;
+            break;
+        case "fact":
+            SetBackColor( cLtBlue );
+            FACTCHUNK   fact;
+            have_fact = 1;
+            used_xtra += 12;
+            break;
+        case "cue ":
+            SetBackColor( cLtGray );
+            CUECHUNK    cue;
+            have_cue = 1;
+            break;
+        case "smpl":
+            SetBackColor( cLtGray );
+            SMPLCHUNK    smpl;
+            break;
+        case "LIST":
+            SetBackColor( cLtYellow );
+            LISTCHUNK   list;
+            break;
+        default:
+            // Unknown chunk
+            // The original reads the size here purely to print a diagnostic.  In
+            // the GENERATE direction that lookahead would write four random bytes
+            // at the very offset UNKNOWNCHUNK.chunkSize occupies and leave its own
+            // value set nothing compatible to pick, so the diagnostic is kept for
+            // the direction it is meaningful in.
+            if( IsParsing() )
+            {
+                size = ReadUInt( FTell()+4 );
+                Printf( "Encountered unknown chunk '%s' of size %d at position %Ld.\n",
+                    tag, size, FTell() );
+            }
+            SetBackColor( cNone );
+            UNKNOWNCHUNK unknown;
+            break;
+    }
+
+    used_total = (uint32)FTell();
+    top_n++;
+
+    keep_going = 0;
+    if (IsParsing() == 0 && have_data == 0 && allow_nodata == 0)
+    {
+        keep_going = 1;
+    }
+    else if (!FEof( eof_p ))
+    {
+        keep_going = 1;
+    }
+}
+
+// ---- Tier A calculated_value: hsize == FileSize() - 8 ----------------------
+// structure[13] last_element: WAV has no trailer, so this field carries the whole
+// burden of delimiting the container, and it can only be written once the chunk
+// sequence has ended.  The guard is `field != computed`, which is false for a
+// well-formed real file, so the parse direction never rewrites anything.
+local int64 wav_end = FTell();
+local int64 want_hsize = wav_end - 8;
+local int64 hsize_now = header.hsize;
+if (IsParsing() == 0 && hsize_now != want_hsize && want_hsize >= 4)
+{
+    FSeek(4);
+    local int evil_hs2 = SetEvilBit(IsParsing());
+    long hsize = { (int32)want_hsize };
+    SetEvilBit(evil_hs2);
+    FSeek(wav_end);
+}

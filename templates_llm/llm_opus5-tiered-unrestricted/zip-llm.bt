@@ -1,0 +1,2057 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: ZIPAdv.bt
+//    Author: SweetScape Software
+//   Version: 2.6
+//   Purpose: Defines a template for
+//            parsing ZIP files. Handles more
+//            complex ZIP data such as ZIP64
+//            that the base ZIP.bt cannot read.
+//  Category: Archive
+// File Mask: *.zip
+//  ID Bytes: 50 4B //PK
+//   History:  
+//   2.6   2015-07-18  SweetScape: Updated header for repository submission.
+//   2.5   G Woods:    Handle zero compressed size in header with ZIPDATADESCR header 
+//                     after compressed data.
+//   2.3   DCeres:     Added write function for VERECORD structure.
+//                     Added write function for ZIP64ENDLOCATORRECORD structure.
+//                     Added write function for ZIP64ENDLOCATOR structure.
+//                     Added write function for EXTRAFIELD structure.
+//   2.2   S.Gibson    Fix for entry comment field
+//                     Fix for parsing data descriptors
+//   2.1   SweetScape  Added write function for ZIPFILERECORD structure
+//   2.0   SweetScape  Added read functions
+//   1.0   SweetScape  Initial release
+//
+// More information available at:
+//  https://en.wikipedia.org/wiki/Zip_%28file_format%29
+//------------------------------------------------
+//
+// REWRITE NOTE (FormatFuzzer generative specification, tiered strategy)
+// =====================================================================
+// Same structs, same field order, same identifiers as the parser above; what
+// changed is that every field now says where its value comes from.
+//
+//  * Tier A (fixed/calculated/payload) is pinned inside a SetEvilBit() guard.
+//    The guard argument is IsParsing(), not false: while generating the two are
+//    identical, so no Tier A field ever takes the 1/128 out-of-set value, but
+//    while parsing a real archive a computed field has no other way to accept
+//    the file's own number (a real CRC, a real deflate stream, a real offset).
+//    With a literal false this template rejects every real .zip.
+//  * Tier B emits its complete valid_values set. Where the JSON records a
+//    preferred_value the set carries that value several times: duplicates are
+//    a weighting, not a filter, so every legal value is still reachable.
+//  * Tier C is declared bare - no value set, no <min=>, no <max=>.
+//
+// The three quantities ZIP is really made of - how long an entry's content is,
+// how long its name is, how many extra fields it carries - are free choices
+// drawn from this entry's own unconstrained fields (frFileTime, frFileDate,
+// frFlags, frCompression) stirred into a derived PRNG. The Tier A length
+// fields then RECORD those choices exactly, which is what the JSON's
+// "tier on a diversity axis" extension asks for: do not fix the quantity, do
+// not let the field disagree with it.
+//
+// Sizing discipline: every variable-length array is sized from the DECLARED
+// length field, never from the local that computed it, and every record ends
+// with a residual consumer. One body therefore serves both directions - while
+// generating the computed length equals what was emitted (the residual arrays
+// never fire), while parsing the real file's length drives the array.
+//
+// output_budget: the JSON's figures (4 MB of local records, 4 KB of extra
+// fields per entry) are above FormatFuzzer's MAX_FILE_SIZE of 65536, so they
+// are scaled to that ceiling with the mechanism and the proportions kept. The
+// budget decides whether another entry / extra field / comment is added; it
+// never caps a dimension, a count or a repetition field.
+//------------------------------------------------
+
+// Define structures used in ZIP files
+
+typedef enum <uint> {
+	S_ZIPFILERECORD 		= 0x04034b50,
+	S_ZIPDATADESCR 			= 0x08074b50,
+	S_ZIPDIRENTRY 			= 0x02014b50, 
+	S_ZIPDIGITALSIG 		= 0x05054b50,
+	S_ZIP64ENDLOCATORRECORD = 0x06064b50,
+	S_ZIP64ENDLOCATOR 		= 0x07064b50,
+	S_ZIPENDLOCATOR 		= 0x06054b50
+} SignatureTYPE <format=hex>;
+
+typedef enum <byte> {
+	OS_FAT      = 0,
+	OS_AMIGA    = 1,
+	OS_VMS      = 2,  // VAX/VMS
+	OS_Unix     = 3,
+	OS_VM_CMS   = 4,
+	OS_Atari    = 5,  // what if it's a minix filesystem? [cjh]
+	OS_HPFS     = 6,  // filesystem used by OS/2 (and NT 3.x)
+	OS_Mac      = 7,
+	OS_Z_System = 8,
+	OS_CPM      = 9,
+	OS_TOPS20   = 10, // pkzip 2.50 NTFS
+	OS_NTFS     = 11, // filesystem used by Windows NT
+	OS_QDOS     = 12, // SMS/QDOS
+	OS_Acorn    = 13, // Archimedes Acorn RISC OS
+	OS_VFAT     = 14, // filesystem used by Windows 95, NT
+	OS_MVS      = 15,
+	OS_BeOS     = 16, // hybrid POSIX/database filesystem
+	OS_Tandem   = 17,
+	OS_OS400    = 18,
+	OS_OSX      = 19 
+} HOSTOSTYPE;
+
+typedef byte VERSIONTYPE <read=read_VERSIONTYPE>;
+
+string read_VERSIONTYPE (local VERSIONTYPE &af) {
+	local string s = "";  
+	SPrintf (s, "%1.1f", (float)af / 10);  
+	return s;
+}
+
+// VERECORD gained two parameters: -1 keeps a member free (Tier B, the whole
+// legal set), a non-negative value pins it. The central directory repeats the
+// local header's version and host, which is the "central repeats local"
+// dependency; the local header draws them freely.
+typedef struct (int wantVer, int wantHost) {
+	// Tier B, valid_values = the 14 defined PKZIP feature levels,
+	// preferred_value [10,20,45] (carried three/three/two times).
+	if (wantVer < 0) {
+		VERSIONTYPE Version = { 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+		                        20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,
+		                        20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,
+		                        11, 11, 11, 11, 11, 11, 21, 21, 21, 21, 21, 21, 21, 21,
+		                        25, 27, 45, 46, 50, 51, 52, 61, 62, 63 };
+	} else {
+		local int evil_ver = SetEvilBit(IsParsing());
+		VERSIONTYPE Version = { (VERSIONTYPE)wantVer };
+		SetEvilBit(evil_ver);
+	}
+	// Tier B, valid_values = all 20 host identifiers, preferred [0,3,11,19].
+	// HostOS re-types deExternalAttributes (dependency), so emitting only
+	// OS_FAT would make the Unix st_mode path unreachable.
+	if (wantHost < 0) {
+		HOSTOSTYPE HostOS = { 0, 0, 3, 3, 11, 11, 19, 19,
+		                      1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18 };
+	} else {
+		local int evil_hos = SetEvilBit(IsParsing());
+		HOSTOSTYPE HostOS = { (HOSTOSTYPE)wantHost };
+		SetEvilBit(evil_hos);
+	}
+} VERECORD <read=read_VERECORD>;
+
+string read_VERECORD (local VERECORD &af) {
+	local string s = "";  
+	SPrintf (s, "Ver %1.1f, ", (float)af.Version / 10);  
+	s +=  EnumToString(  af.HostOS);
+	return s;
+}
+
+//enum used for compression format
+typedef enum <short> { 
+	COMP_STORED    		= 0,
+	COMP_SHRUNK    		= 1,
+	COMP_REDUCED1  		= 2,
+	COMP_REDUCED2  		= 3,
+	COMP_REDUCED3  		= 4,
+	COMP_REDUCED4  		= 5,
+	COMP_IMPLODED  		= 6,
+	COMP_TOKEN     		= 7,
+	COMP_DEFLATE   		= 8, // Deflate - standard ZIP codec, used from the start, also found in regular ZIP files
+	COMP_DEFLATE64 		= 9,
+	COMP_PKImploding 	= 10,
+	
+	COMP_BZip2			= 12, // BZIP2 - Newer than deflate, with better compression and slightly slower speed.
+	COMP_LZMA 			= 14, // LZMA - advanced ZIPX codec, taken from open source 7-zip format
+	COMP_Terse 			= 18,
+	COMP_Lz77 			= 19,
+	
+	COMP_Jpeg 			= 0x60, // Jpeg - Codec added by WinZip for specific support of jpeg images ( http://www.winzip.com/wz_jpg_comp.pdf )
+	COMP_WavPack		= 0x61, // WavPack - Codec for compressing specifically wav files. ( http://www.wavpack.com )
+	COMP_PPMd 			= 0x62, // PPMd - context modeling based codec, also featured in new ZIP standard. We use it in our Optimized method for text file compression. ( http://www.compression.ru/ds/ )
+	COMP_WzAES 			= 0x63  // WZAES encryption methods
+} COMPTYPE;
+
+typedef enum <ushort>{ 
+	FLAG_Encrypted             = 0x0001, //Bit 0: If set, indicates that the file is encrypted.
+	FLAG_CompressionFlagBit1   = 0x0002, 
+	FLAG_CompressionFlagBit2   = 0x0004,
+	FLAG_DescriptorUsedMask    = 0x0008,
+	FLAG_Reserved1             = 0x0010,
+	FLAG_Reserved2             = 0x0020,
+	FLAG_StrongEncrypted       = 0x0040, //Bit 6: Strong encryption
+	FLAG_CurrentlyUnused1      = 0x0080,
+	FLAG_CurrentlyUnused2      = 0x0100,
+	FLAG_CurrentlyUnused3      = 0x0200,
+	FLAG_CurrentlyUnused4      = 0x0400,
+	FLAG_Utf8                  = 0x0800, // Bit 11: filename and comment encoded using UTF-8
+	FLAG_ReservedPKWARE1       = 0x1000,
+	FLAG_CDEncrypted           = 0x2000, // Bit 13: Used when encrypting the Central Directory to indicate selected data values in the Local Header are masked to hide their actual values.
+	FLAG_ReservedPKWARE2       = 0x4000,
+	FLAG_ReservedPKWARE3       = 0x8000,
+
+} FLAGTYPE <read=read_FLAGTYPE>;
+
+string read_FLAGTYPE (local FLAGTYPE &af) {
+	local string s = "";
+	local int commaNeeded = 0;
+	local FLAGTYPE i = 1;
+
+	SPrintf (s, "%d: ", af);  
+	while (i < FLAG_ReservedPKWARE3) 
+	{
+		if (af & i)
+		{
+			if (commaNeeded) 
+			{ s += ", "; }
+			s +=  EnumToString(i);
+			commaNeeded = 1;
+		}
+		i = i << 1;
+	}
+	return s;
+}
+
+typedef enum <ushort>{ 
+	EH_Zip64 = 					0x0001,		//Zip64 extended information extra field
+	EH_AVInfo = 				0x0007,		//AV Info
+	EH_ExtLanguage = 			0x0008,		//Reserved for extended language encoding data (PFS)
+	EH_OS2 = 					0x0009,		//OS/2
+	EH_NTFS = 					0x000a,		//NTFS 
+	EH_OpenVMS = 				0x000c,		//OpenVMS
+	EH_UNIX = 					0x000d,		//UNIX
+	EH_fileStream = 			0x000e,		//Reserved for file stream and fork descriptors
+	EH_PatchDescriptor = 		0x000f,		//Patch Descriptor
+	EH_PKCS7X509 = 				0x0014,		//PKCS#7 Store for X.509 Certificates
+	EH_X509IDSignature = 		0x0015,		//X.509 Certificate ID and Signature for individual file
+	EH_X509IDCD = 				0x0016,		//X.509 Certificate ID for Central Directory
+	EH_StrongEncryption = 		0x0017,		//Strong Encryption Header
+	EH_RecordManagement = 		0x0018,		//Record Management Controls
+	EH_PKCS7List = 				0x0019,		//PKCS#7 Encryption Recipient Certificate List
+	EH_Attributes = 			0x0065,		//IBM S/390 (Z390), AS/400 (I400) attributes uncompressed
+	EH_ReservedAttributes = 	0x0066,		//Reserved for IBM S/390 (Z390), AS/400 (I400) attributes - compressed
+	EH_POSZIP4690 = 			0x4690,		//POSZIP 4690 (reserved) 
+	EH_Mac = 					0x07c8,		//Macintosh
+	EH_ZipItMac1 = 				0x2605,		//ZipIt Macintosh
+	EH_ZipItMac2 = 				0x2705,		//ZipIt Macintosh 1.3.5+
+	EH_ZipItMac3 = 				0x2805,		//ZipIt Macintosh 1.3.5+
+	EH_InfoZIPMac = 			0x334d,		//Info-ZIP Macintosh
+	EH_Acorn = 					0x4341,		//Acorn/SparkFS 
+	EH_WinNTSecurity = 			0x4453,		//Windows NT security descriptor (binary ACL)
+	EH_VM_CMS = 				0x4704,		//VM/CMS
+	EH_MVS = 					0x470f,		//MVS
+	EH_FWKCS = 					0x4b46,		//FWKCS MD5 (see below)
+	EH_OS2AccessList = 			0x4c41,		//OS/2 access control list (text ACL)
+	EH_InfoZIPOpenVMS = 		0x4d49,		//Info-ZIP OpenVMS
+	EH_Xceed = 					0x4f4c,		//Xceed original location extra field
+	EH_AOSVS = 					0x5356,		//AOS/VS (ACL)
+	EH_extTimestamp = 			0x5455,		//extended timestamp
+	EH_XceedUnicode = 			0x554e,		//Xceed unicode extra field
+	EH_InfoZIPUNIX = 			0x5855,		//Info-ZIP UNIX (original, also OS/2, NT, etc)
+	EH_InfoZIPUnicodeComment = 	0x6375,		//Info-ZIP Unicode Comment Extra Field
+	EH_BeOS = 					0x6542,		//BeOS/BeBox
+	EH_InfoZIPUnicodePath = 	0x7075,		//Info-ZIP Unicode Path Extra Field
+	EH_ASiUNIX = 				0x756e,		//ASi UNIX
+	EH_InfoZIPUNIXNew = 		0x7855,		//Info-ZIP UNIX (16-bit UID/GID info)
+	EH_InfoZIPUNIXNew3rd = 		0x7875,     //Info-ZIP UNIX 3rd generation (generic UID/GID, ...)
+	EH_WinGrowth = 				0xa220,		//Microsoft Open Packaging Growth Hint
+	EH_SMSQDOS = 				0xfd4a, 	//SMS/QDOS
+    EH_WzAES                =   0x9901,      //
+} HEADERFLAG;
+
+typedef enum <ushort>{ 
+    AlgID_DES       = 0x6601, //- DES
+    AlgID_RC2OLD    = 0x6602, //- RC2 (version needed to extract < 5.2)
+    AlgID_3DES168   = 0x6603, //- 3DES 168
+    AlgID_3DES112   = 0x6609, //- 3DES 112
+    AlgID_AES128    = 0x660E, //- AES 128 
+    AlgID_AES192    = 0x660F, //- AES 192 
+    AlgID_AES256    = 0x6610, //- AES 256 
+    AlgID_RC2       = 0x6702, //- RC2 (version needed to extract >= 5.2)
+    AlgID_Blowfish  = 0x6720, //- Blowfish
+    AlgID_Twofish   = 0x6721, //- Twofish
+    AlgID_RC4       = 0x6801, //- RC4
+    AlgID_Unknown   = 0xFFFF, //- Unknown algorithm
+} ALGFLAG;
+
+typedef enum <byte>{ 
+    AES128 = 0x01, 	//128-bit encryption key
+    AES192 = 0x02, 	//192-bit encryption key
+    AES256 = 0x03, 	//256-bit encryption key
+} AESMODE;
+
+typedef enum <ushort>{ 
+    pfPassword  = 0x0001, //- Password is required to decrypt
+    pfCertificates = 0x0002, //- Certificates only
+    pfPasswordCertificates = 0x0003, //- Password or certificate required to decrypt
+}   PRCFLAG;
+
+//------------------------------------------------
+// Generator state and shared helpers.
+//
+// Everything here is `local`: it costs no file bytes and no decision bytes,
+// and it evolves identically in both directions as far as the file's own
+// values allow. Nothing in this block constrains a field; it only records
+// what was emitted so that the Tier A cross-references (deHeaderOffset,
+// elDirectoryOffset, elDirectorySize, the entry counts, the per-entry CRC and
+// sizes, which all live LATER in the file than the bytes they describe) can be
+// computed from the bytes actually written.
+//------------------------------------------------
+
+// output_budget, scaled from the JSON's figures to MAX_FILE_SIZE (65536).
+local int64 BUDGET_LOCAL   = 24000;   // JSON: ~4 MB for the local-record region
+local int64 BUDGET_EXTRA   = 1024;    // JSON: ~4 KB of extra fields per entry
+local int64 BUDGET_COMMENT = 2048;    // the archive/entry comments: bulk free bytes
+local int64 FILE_ROOM      = 62000;   // the runtime's own ceiling, not a format rule
+
+local uint   g_rnd = 305419896;       // derived PRNG; stirred with every free field
+local int    g_nent = 0;              // local file records emitted so far
+local int64  g_localend = 0;          // where the local-record region ended
+local int64  g_dirpos = 0;            // ZIPENDLOCATOR.elDirectoryOffset
+local int64  g_dirsize = 0;           // ZIPENDLOCATOR.elDirectorySize
+local int64  g_dirneed = 0;           // bytes the central directory will need
+local int    g_phase = 0;             // 0 local records, 1 directory, 2 end records
+local int    g_idx = 0;               // central-directory cursor
+local int    g_sawsig = 0;            // a digital signature record was emitted
+local int    g_use64 = 0;             // this archive carries the Zip64 group
+local int64  g_z64pos = 0;            // where ZIP64ENDLOCATORRECORD starts
+local int    g_z64dn = 0;             // disk numbers shared by the three end records
+local int    g_z64sd = 0;
+
+// Per-entry record of what was written, read back by the central directory.
+local int64  g_off[384];              // deHeaderOffset
+local uint   g_ecrc[384];             // deCrc / ddCRC
+local uint   g_ecsz[384];             // deCompressedSize
+local uint   g_eusz[384];             // deUncompressedSize
+local ushort g_eflg[384];             // deFlags
+local short  g_emth[384];             // deCompression
+local int    g_ever[384];             // deVersionToExtract.Version
+local int    g_ehos[384];             // deVersionMadeBy.HostOS
+local int64  g_enpos[384];            // where the entry's file name was written
+local int    g_enlen[384];            // deFileNameLength
+local int    g_edir[384];             // the name ends in '/': a directory entry
+local int    g_ez64[384];             // the entry uses the 0xFFFFFFFF escape
+local uint   g_ecrcd[384];            // the CRC as the data descriptor carries it
+
+// This entry's plan (see the "free quantities" block in ZIPFILERECORD).
+local int    g_vk = 0;                // payload variant, see ZIPFILERECORD
+local int    g_src = 0;               // 0 free file bytes, 1 derived PRNG
+local int    g_enc = 0;               // wrap in the traditional PKWARE cipher
+local int64  g_clen = 0;              // this entry's content length
+local int64  g_blk1 = 0;              // stored-DEFLATE block lengths
+local int64  g_blk2 = 0;
+local int    g_nblk = 1;
+local uint   g_crcv = 0;              // CRC-32 of the content
+local int64  g_cpos = 0;              // where the free content bytes were reserved
+local int    g_shr = 0;               // leaves added since the last partial clear
+local int    g_esc = 0;               // a SHRUNK escape pair is in flight
+local int64  g_nhdr = 0;              // header bit-items still to push
+local int64  g_hi = 0;
+local int    g_term = 0;              // the end-of-block symbol has been pushed
+local int    g_matchok = 0;           // this variant can code an LZ77 match
+local int    g_mlen = 0;              // its match length (DEFLATE 3, IMPLODE 2)
+local int    g_bdl = 7;               // IMPLODE's uncoded distance low bits
+local uint   g_lastb = 0;             // the content byte a match repeats
+local uint   g_bb = 0;                // bit accumulator, LSB first
+local int    g_bn = 0;
+local char   g_cbuf[1];               // reserved content bytes (ReadBytes resizes)
+local char   g_nbuf[1];               // reserved name bytes
+local uint   g_eseed[384];            // the PRNG state this entry's extra-field
+local int    g_enrec[384];            // plan was drawn from, and how many records
+local int    g_nrec = 0;              // extra-field records planned for this entry
+local ushort g_eid[12];               // their efHeaderID
+local int    g_esz[12];               // their efDataSize
+local int    g_eunl = 0;              // EH_InfoZIPUnicodePath name length
+local int    g_ecert = 0;             // EH_StrongEncryption certificate length
+local int    g_salt = 0;              // WinZip AES salt length
+
+// The 44 extra-field identifiers of EXTRAFIELD.efHeaderID's Tier B set, and
+// the six the JSON marks preferred. Picked through a lookahead-free index so
+// the whole registry appears across a corpus.
+local ushort EH_ALL[] = { EH_Zip64, EH_AVInfo, EH_ExtLanguage, EH_OS2, EH_NTFS,
+	EH_OpenVMS, EH_UNIX, EH_fileStream, EH_PatchDescriptor, EH_PKCS7X509,
+	EH_X509IDSignature, EH_X509IDCD, EH_StrongEncryption, EH_RecordManagement,
+	EH_PKCS7List, EH_Attributes, EH_ReservedAttributes, EH_POSZIP4690, EH_Mac,
+	EH_ZipItMac1, EH_ZipItMac2, EH_ZipItMac3, EH_InfoZIPMac, EH_Acorn,
+	EH_WinNTSecurity, EH_VM_CMS, EH_MVS, EH_FWKCS, EH_OS2AccessList,
+	EH_InfoZIPOpenVMS, EH_Xceed, EH_AOSVS, EH_extTimestamp, EH_XceedUnicode,
+	EH_InfoZIPUNIX, EH_InfoZIPUnicodeComment, EH_BeOS, EH_InfoZIPUnicodePath,
+	EH_ASiUNIX, EH_InfoZIPUNIXNew, EH_InfoZIPUNIXNew3rd, EH_WinGrowth,
+	EH_SMSQDOS, EH_WzAES };
+local ushort EH_PREF[] = { EH_Zip64, EH_NTFS, EH_extTimestamp,
+	EH_InfoZIPUnicodePath, EH_InfoZIPUNIXNew3rd, EH_WzAES };
+
+// Derived PRNG. Seeded from this archive's own free bytes as they are read, so
+// the structural choices it makes vary with the decision string and AFL can
+// steer them, while costing no decision bytes of their own.
+uint nextrnd()
+{
+	local uint v = 0;
+	g_rnd = g_rnd * 1103515245 + 12345;
+	// A linear congruential state on its own has very short periods in its
+	// low bits, which biases every `% n` and `& n` draw below - whole
+	// extra-field identifiers never came up. The avalanche step fixes that.
+	v = g_rnd ^ (g_rnd >> 16);
+	v = v * 2246822519;
+	v = v ^ (v >> 13);
+	v = v * 3266489917;
+	return v ^ (v >> 16);
+}
+
+// CRC-32/ISO-HDLC one byte at a time: reflected polynomial 0xEDB88320,
+// init 0xFFFFFFFF, final XOR 0xFFFFFFFF. It is the entry CRC (over the
+// UNCOMPRESSED content, never over frData) and it is also the table lookup
+// the PKWARE stream cipher's key schedule needs.
+uint crc_step(uint crc, uint c)
+{
+	local int i = 0;
+	crc = crc ^ (c & 0xFF);
+	for (i = 0; i < 8; i++) {
+		if (crc & 1)
+			crc = (crc >> 1) ^ 0xEDB88320;
+		else
+			crc = crc >> 1;
+	}
+	return crc;
+}
+
+// DEFLATE and IMPLODE write Huffman codes most-significant bit first into a
+// least-significant-bit-first stream, so a code has to be reversed first.
+uint revbits(uint v, uint n)
+{
+	local uint r = 0;
+	local uint i = 0;
+	for (i = 0; i < n; i++)
+		r = (r << 1) | ((v >> i) & 1);
+	return r;
+}
+
+// Traditional PKWARE decryption keys (APPNOTE 6.1). init_keys("") leaves them
+// at their constants, which is what `unzip -P ''` derives.
+local uint K0 = 305419896;
+local uint K1 = 591751049;
+local uint K2 = 878082192;
+
+uint keys_init()
+{
+	K0 = 305419896;
+	K1 = 591751049;
+	K2 = 878082192;
+	return 0;
+}
+
+uint dec_byte()
+{
+	local uint t = (K2 & 0xFFFF) | 2;
+	return ((t * (t ^ 1)) >> 8) & 0xFF;
+}
+
+uint upd_keys(uint c)
+{
+	K0 = crc_step(K0, c);
+	K1 = (K1 + (K0 & 0xFF)) * 134775813 + 1;
+	K2 = crc_step(K2, (K1 >> 24) & 0xFF);
+	return c;
+}
+
+// One emitted byte of the data region: the identity unless this entry is
+// encrypted, in which case it is the ciphertext byte and the keys advance on
+// the plaintext. crypt.c's zencode, inverted.
+uint outb(uint v)
+{
+	local uint t = 0;
+	if (g_enc) {
+		t = dec_byte();
+		upd_keys(v & 0xFF);
+		return (v ^ t) & 0xFF;
+	}
+	return v & 0xFF;
+}
+
+// Two bytes of a little-endian field, in stream order, so the cipher stays in
+// step with the bytes the field actually writes.
+uint outw(uint v)
+{
+	local uint a = outb(v & 0xFF);
+	local uint b = outb((v >> 8) & 0xFF);
+	return a | (b << 8);
+}
+
+// The bit accumulator the four bit-packed payloads share. At most 9 bits are
+// pushed between flushes and a flush happens whenever 8 are available, so the
+// accumulator never holds more than 16 bits.
+uint pushbits(uint v, uint n)
+{
+	g_bb = g_bb | ((v & ((1 << n) - 1)) << g_bn);
+	g_bn += n;
+	return 0;
+}
+
+// The content byte at index i. For the free-byte payloads it is the byte
+// reserved in the file at g_cpos; for the bit-packed and encrypted ones the
+// content is not in the file at all, so it comes from the derived PRNG
+// (the JSON's content_is_free: true).
+uint cbyte(int64 i)
+{
+	if (g_src == 0) {
+		if (i < g_clen)
+			return g_cbuf[i] & 0xFF;
+		return 0;
+	}
+	return nextrnd() & 0xFF;
+}
+
+// The header bit-items of the two Huffman DEFLATE variants, pushed one at a
+// time so the accumulator stays inside 16 bits.
+//   variant 2: BFINAL=1, BTYPE=01 (fixed trees)                -> inflate_fixed
+//   variant 3: BFINAL=1, BTYPE=10, then a dynamic tree in which
+//              every literal is 9 bits and the end-of-block symbol is 1 bit
+//              (256*2^-9 + 2^-1 == 1, so the code is complete) -> inflate_dynamic
+uint pushhdr(int64 i)
+{
+	local int64 k = 0;
+	if (g_vk == 2) {
+		pushbits(1, 1);
+		pushbits(1, 2);
+		return 0;
+	}
+	if (i == 0) { pushbits(1, 1); pushbits(2, 2); return 0; }
+	if (i == 1) { pushbits(29, 5); return 0; }      // HLIT  = 29 -> 286 lit/len codes
+	if (i == 2) { pushbits(1, 5);  return 0; }      // HDIST = 1  -> 2 distance codes
+	if (i == 3) { pushbits(14, 4); return 0; }      // HCLEN = 14 -> 18 code-length codes
+	if (i < 22) {
+		// The code-length alphabet carries five symbols - 1, 9, 16, 17 and 18
+		// - at lengths 2, 2, 2, 3, 3 (3/4 + 2/8 == 1, a complete code), in
+		// RFC 1951's permuted order 16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
+		k = i - 4;
+		if (k == 0)                   pushbits(2, 3);   // symbol 16
+		else if (k == 1 || k == 2)    pushbits(3, 3);   // symbols 17 and 18
+		else if (k == 6)              pushbits(2, 3);   // symbol 9
+		else if (k == 17)             pushbits(2, 3);   // symbol 1
+		else                          pushbits(0, 3);
+		return 0;
+	}
+	// Canonical code-length codes: 1 -> 00, 9 -> 01, 16 -> 10, 17 -> 110, 18 -> 111
+	if (i == 22) { pushbits(revbits(1, 2), 2); return 0; }    // literal 0 is 9 bits
+	if (i < 66) {
+		// 255 more nines through the repeat code - inflate_dynamic's
+		// "repeat last length 3 to 6 times" arm
+		pushbits(revbits(2, 2), 2);
+		if (i < 65)
+			pushbits(3, 2);                         // 42 runs of six
+		else
+			pushbits(0, 2);                         // and one of three
+		return 0;
+	}
+	if (i == 66) { pushbits(revbits(0, 2), 2); return 0; }    // symbol 256: 1 bit
+	if (i == 67) {                                  // 10 zero lengths -> arm 17
+		pushbits(revbits(6, 3), 3);
+		pushbits(7, 3);
+		return 0;
+	}
+	if (i == 68) {                                  // 19 more zeros -> arm 18
+		pushbits(revbits(7, 3), 3);
+		pushbits(8, 7);
+		return 0;
+	}
+	pushbits(revbits(0, 2), 2);                     // the two distance lengths
+	return 0;
+}
+
+// One literal byte, in the current variant's code.
+uint pushlit(uint b)
+{
+	if (g_vk == 2) {                                 // RFC 1951 fixed literal tree
+		if (b < 144)
+			pushbits(revbits(0x30 + b, 8), 8);
+		else
+			pushbits(revbits(0x190 + b - 144, 9), 9);
+		return 0;
+	}
+	if (g_vk == 3) {                                 // canonical 9-bit code 256+b
+		pushbits(revbits(256 + b, 9), 9);
+		return 0;
+	}
+	if (g_vk == 4) {                                 // SHRUNK: 9-bit LZW code, LSB first
+		pushbits(b, 9);
+		return 0;
+	}
+	if (g_vk == 6) {                                 // IMPLODED with a literal tree:
+		pushbits(1, 1);                              // 256 codes of 8 bits, which
+		pushbits((~revbits(b, 8)) & 0xFF, 8);        // explode indexes by their
+		return 0;                                    // complement -> explode_lit
+	}
+	pushbits(1, 1);                                  // IMPLODED: literal flag, then
+	pushbits(b, 8);                                  // eight uncoded bits
+	return 0;
+}
+
+// One LZ77 match: the shortest length at distance 1, so it repeats the byte
+// just emitted. This is what walks the decoder into its copy loop and its
+// window handling, which a literal-only stream never reaches.
+//   variant 2 -> inflate_codes' length/distance arm (fixed tree: length
+//                symbol 257 is the 7-bit code 1, distance symbol 0 the 5-bit
+//                code 0; cplens[257-257] == 3, cpdist[0] == 1)
+//   variant 5 -> explode_nolit's copy loop (cplen2[0] == 2, cpdist[0] == 1;
+//                explode indexes its tables with the COMPLEMENT of the bits,
+//                so the all-ones code selects entry 0)
+uint pushmatch()
+{
+	if (g_vk == 2) {
+		pushbits(revbits(1, 7), 7);
+		pushbits(revbits(0, 5), 5);
+		return 0;
+	}
+	pushbits(0, 1);                                  // not a literal
+	pushbits(0, g_bdl);                              // distance low bits
+	pushbits(0x3F, 6);                               // distance tree entry 0
+	pushbits(0x3F, 6);                               // length tree entry 0
+	return 0;
+}
+
+// The end-of-stream symbol, where the variant has one. SHRUNK and IMPLODED
+// stop on end-of-input and on ucsize respectively, so they have none.
+uint pushterm()
+{
+	if (g_vk == 2) { pushbits(0, 7); return 0; }     // fixed EOB: code 0, 7 bits
+	if (g_vk == 3) { pushbits(0, 1); return 0; }     // dynamic EOB: code 0, 1 bit
+	return 0;
+}
+
+// Carried into EXTRAFIELD by the record that emits it: the 64-bit sizes the
+// Zip64 escape moved out of the header, and the CRC-32 of the entry's name.
+local uint64 g_z64u = 0;
+local uint64 g_z64c = 0;
+local uint   g_namecrc = 0;
+
+typedef struct (int wantID, int wantSize) {
+	local int64 ef_start = FTell();
+	// efHeaderID is Tier B (the 44-value registry above); efDataSize is Tier A,
+	// the byte count of the record payload that follows the 4-byte header, and
+	// the per-ID required values are dependencies (16 for Zip64, 5+name for the
+	// Unicode path, 4+subrecords for NTFS, 8+cert for strong encryption, 7 for
+	// WinZip AES).
+	local int evil_eid = SetEvilBit(IsParsing());
+	HEADERFLAG  efHeaderID = { (ushort)wantID };
+	ushort  efDataSize = { (ushort)wantSize };
+	SetEvilBit(evil_eid);
+
+	Printf("%d", efHeaderID);
+	switch (efHeaderID)
+	{
+	case EH_Zip64:
+		// Tier A calculated: the real 64-bit sizes. process.c:getZip64Data
+		// reads them in this order for whichever header fields carry 0xFFFFFFFF.
+		local int evil_z64 = SetEvilBit(IsParsing());
+		uint64 efOriginalSize = { g_z64u };
+		uint64 efCompressedSize = { g_z64c };
+		SetEvilBit(evil_z64);
+		break;
+	case EH_InfoZIPUnicodePath:
+		// extract.c / process.c: the Unicode path record. efVersion is Tier A
+		// fixed 1 (readers ignore any other version) and efNameCRC32 is Tier A
+		// calculated over the entry's file name, which was written just above.
+		local int evil_up = SetEvilBit(IsParsing());
+		byte efVersion = { 1 };
+		uint efNameCRC32 = { g_namecrc };
+		SetEvilBit(evil_up);
+		if(efDataSize > 0 )
+		    char efUnicodeName[efDataSize - 5];
+		break;
+    case EH_NTFS:
+        int Reserved;   //4 bytes    Reserved for future use
+	    local int len = efDataSize - 4;
+	    while (len > 0)
+        {
+			// Tag is Tier B with the single legal value 1; Size is Tier A and
+			// must be 24, three 8-byte FILETIMEs (dependency).
+			local int evil_nt = SetEvilBit(IsParsing());
+            ushort Tag = { 1 };        //2 bytes    NTFS attribute tag value #1
+            ushort Size = { 24 };      //2 bytes    Size of attribute #1, in bytes
+			SetEvilBit(evil_nt);
+            if (Tag == 0x001)
+            {
+                FILETIME Mtime;      //8 bytes    File last modification time
+                FILETIME Atime;      //8 bytes    File last access time
+                FILETIME Ctime;     //8 bytes    File creation time                
+            }
+            else
+                byte Data[Size]; //(var.)     Size1      Attribute #1 data
+    		len -= Size + 4;
+        }
+        break;
+    case EH_StrongEncryption:
+        ushort  Format;    //2 bytes  Format definition for this record
+        ALGFLAG AlgID;     //2 bytes  Encryption algorithm identifier
+        ushort  Bitlen;    //2 bytes  Bit length of encryption key
+        PRCFLAG Flags;     //2 bytes  Processing flags
+        if (efDataSize > 8)
+            byte    CertData[efDataSize - 8];  //TSize-8  Certificate decryption extra field data        
+        break;
+    case EH_WzAES:
+        ushort version;         //2 bytes   Integer version number specific to the zip vendor
+		// VendorID is Tier A fixed "AE"; Strength is Tier B {1,2,3} and sets the
+		// salt length, so it shifts every byte of the entry's data.
+		local int evil_ae = SetEvilBit(IsParsing());
+        char VendorID[2] = { "AE" };       //2 bytes 	2-character vendor ID
+		SetEvilBit(evil_ae);
+        AESMODE Strength = { 1, 1, 3, 3, 2 };       //1 bytes   Integer mode value indicating AES encryption strength
+        COMPTYPE deCompression = { 0, 0, 8, 8, 9, 1, 6, 12, 14, 99 }; //2 bytes The actual compression method used to compress the file
+        break;
+	case EH_OpenVMS:
+		// extract.c's EF_PKVMS arm CRC-32s the record body and computes the
+		// body length as ebLen - 4, which underflows into a 4 GB read for a
+		// shorter record (a genuine Info-ZIP 6.0 defect - it faults). The
+		// record is emitted at its defined shape instead, with the checksum
+		// right, so the arm's accepting path is the one reached.
+		local uint vms_saved = g_rnd;
+		local int64 vms_n = efDataSize - 4;
+		local uint vms_crc = 0xFFFFFFFF;
+		local int64 vms_i = 0;
+		if (vms_n < 0)
+			vms_n = 0;
+		while (vms_i < vms_n) {
+			vms_crc = crc_step(vms_crc, nextrnd() & 0xFF);
+			vms_i++;
+		}
+		vms_crc = vms_crc ^ 0xFFFFFFFF;
+		g_rnd = vms_saved;
+		local int evil_vms = SetEvilBit(IsParsing());
+		uint efDataCRC = { vms_crc };
+		vms_i = 0;
+		while (vms_i < vms_n) {
+			local ubyte vms_b = nextrnd() & 0xFF;
+			ubyte efVmsData = { vms_b };
+			vms_i++;
+		}
+		SetEvilBit(evil_vms);
+		break;
+	case EH_InfoZIPMac:
+	case EH_BeOS:
+		// extract.c reads these as compressed extra fields too, through a
+		// header of their own, and memextract copies the body into a buffer of
+		// the size declared in the record's first four bytes - without a bound
+		// check, so a size smaller than the body overruns it (another genuine
+		// Info-ZIP 6.0 defect: it faults). The size is therefore declared
+		// generously; the body's method byte is free, so the record reaches
+		// memextract's stored arm, its inflate arm and its
+		// unsupported-method arm in turn, and then the extra field's CRC check.
+		//   -> extract.c TestExtraField EF_MAC3 / EF_BEOS -> test_compr_eb
+		//      -> memextract -> UZinflate
+		local int evil_m3 = SetEvilBit(IsParsing());
+		uint  eaUncompressedSize = { (uint)efDataSize };
+		SetEvilBit(evil_m3);
+		if (efDataSize > 4)
+			char efData[ efDataSize - 4 ];
+		break;
+	case EH_OS2:
+	case EH_OS2AccessList:
+	case EH_WinNTSecurity:
+		// APPNOTE's compressed extra field, which Info-ZIP tests under -t:
+		//   [uncompressed size][NTSD version][method][CRC-32][stream]
+		// The method is taken from the declared length's parity so that both
+		// directions agree on the layout, and the stream is well formed for
+		// either value - STORED copies, DEFLATE inflates.
+		//   -> extract.c TestExtraField -> test_compr_eb -> memextract
+		//      -> UZinflate, and the extra field's own CRC-32 check
+		local int64 ea_base = 4;
+		if (efHeaderID == EH_WinNTSecurity)
+			ea_base = 5;
+		local int   ea_meth = 0;
+		if (efDataSize & 1)
+			ea_meth = 8;
+		local int64 ea_n = efDataSize - ea_base - 6;
+		if (ea_meth == 8)
+			ea_n -= 5;                       // one stored DEFLATE block header
+		if (ea_n < 0)
+			ea_n = 0;
+		local uint ea_saved = g_rnd;
+		local uint ea_crc = 0xFFFFFFFF;
+		local int64 ea_i = 0;
+		while (ea_i < ea_n) {
+			ea_crc = crc_step(ea_crc, nextrnd() & 0xFF);
+			ea_i++;
+		}
+		ea_crc = ea_crc ^ 0xFFFFFFFF;
+		g_rnd = ea_saved;
+		local uint   ea_un = ea_n;
+		local ushort ea_mw = ea_meth;
+		local ushort ea_ln = ea_n;
+		local ushort ea_nl = 0xFFFF - ea_n;
+		local int    ea_hasver = 0;
+		local int    ea_isdefl = 0;
+		if (ea_base == 5)
+			ea_hasver = 1;
+		if (ea_meth == 8)
+			ea_isdefl = 1;
+		local int evil_ea = SetEvilBit(IsParsing());
+		uint   eaUncompressedSize = { ea_un };
+		if (ea_hasver) {
+			byte eaVersion = { 0 };          // EB_NTSD_MAX_VER
+		}
+		ushort eaMethod = { ea_mw };
+		uint   eaCRC = { ea_crc };
+		if (ea_isdefl) {
+			ubyte  eaBhdr = { 1 };           // BFINAL, BTYPE=00
+			ushort eaLen  = { ea_ln };
+			ushort eaNlen = { ea_nl };
+		}
+		ea_i = 0;
+		while (ea_i < ea_n) {
+			local ubyte ea_b = nextrnd() & 0xFF;
+			ubyte eaData = { ea_b };
+			ea_i++;
+		}
+		SetEvilBit(evil_ea);
+		break;
+	default:
+		if(efDataSize > 0 )
+		    char efData[ efDataSize ];
+        break;
+	}
+	// The record must occupy exactly 4 + efDataSize bytes: the extra-field
+	// loops in both headers subtract that from a signed budget and require the
+	// records to sum exactly (TEMPLATE REQUIREMENT in the JSON).
+	local int64 ef_rem = efDataSize - (FTell() - ef_start - 4);
+	if (ef_rem > 0)
+		uchar efTail[ef_rem];
+} EXTRAFIELD <read=read_EXTRAFIELD>;
+
+string read_EXTRAFIELD (local EXTRAFIELD &af) 
+{
+	return EnumToString(af.efHeaderID);
+}
+
+// Unreferenced in the original and still unreferenced here: the 4-byte-length
+// variant of EXTRAFIELD, used only by the commented-out block inside
+// ZIP64ENDLOCATORRECORD. Every constraint that would apply to it is recorded
+// under EXTRAFIELD.* in the JSON.
+typedef struct {
+	HEADERFLAG  efHeaderID;
+	uint  efDataSize;
+
+	Printf("%d", efHeaderID);
+	switch (efHeaderID)
+	{
+	case EH_Zip64:
+		uint64 efOriginalSize;
+		uint64 efCompressedSize;
+		//uint64 efHeaderOffset;
+		//uint   efDiskNumberStart;
+		break;
+	case EH_InfoZIPUnicodePath:
+		byte efVersion;
+		uint efNameCRC32;
+		if(efDataSize > 0 )
+		    char efUnicodeName[efDataSize - 5];
+		break;
+	default:
+		if(efDataSize > 0 )
+		    char efData[ efDataSize ];
+        break;
+	}
+} EXTRA64FIELD;
+
+typedef enum <uint>{
+	FA_READONLY             = 0x00000001,  
+	FA_HIDDEN               = 0x00000002,  
+	FA_SYSTEM               = 0x00000004,  
+	FA_DIRECTORY            = 0x00000010,  
+	FA_ARCHIVE              = 0x00000020,  
+	FA_DEVICE               = 0x00000040,  
+	FA_NORMAL               = 0x00000080,  
+	FA_TEMPORARY            = 0x00000100,  
+	FA_SPARSE_FILE          = 0x00000200,  
+	FA_REPARSE_POINT        = 0x00000400,  
+	FA_COMPRESSED           = 0x00000800,  
+	FA_OFFLINE              = 0x00001000,  
+	FA_NOT_CONTENT_INDEXED  = 0x00002000,  
+	FA_ENCRYPTED            = 0x00004000,  
+	FA_VIRTUAL              = 0x00010000,  
+
+    kIFMT   =   0170000 << 16,     /* Unix file type mask */
+    
+    kIFDIR  =   0040000 << 16,     /* Unix directory */
+    kIFREG  =   0100000 << 16,     /* Unix regular file */
+    kIFSOCK =   0140000 << 16,     /* Unix socket (BSD, not SysV or Amiga) */
+    kIFLNK  =   0120000 << 16,     /* Unix symbolic link (not SysV, Amiga) */
+    kIFBLK  =   0060000 << 16,     /* Unix block special       (not Amiga) */
+    kIFCHR  =   0020000 << 16,     /* Unix character special   (not Amiga) */
+    kIFIFO  =   0010000 << 16,     /* Unix fifo    (BCC, not MSC or Amiga) */
+    
+    kISUID  =   04000 << 16,       /* Unix set user id on execution */
+    kISGID  =   02000 << 16,       /* Unix set group id on execution */
+    kISVTX  =   01000 << 16,       /* Unix directory permissions control */
+    kIRWXU  =   00700 << 16,       /* Unix read, write, execute: owner */
+    kIRUSR  =   00400 << 16,       /* Unix read permission: owner */
+    kIWUSR  =   00200 << 16,       /* Unix write permission: owner */
+    kIXUSR  =   00100 << 16,       /* Unix execute permission: owner */
+    kIRWXG  =   00070 << 16,       /* Unix read, write, execute: group */
+    kIRGRP  =   00040 << 16,       /* Unix read permission: group */
+    kIWGRP  =   00020 << 16,       /* Unix write permission: group */
+    kIXGRP  =   00010 << 16,       /* Unix execute permission: group */
+    kIRWXO  =   00007 << 16,       /* Unix read, write, execute: other */
+    kIROTH  =   00004 << 16,       /* Unix read permission: other */
+    kIWOTH  =   00002 << 16,       /* Unix write permission: other */
+    kIXOTH  =   00001 << 16        /* Unix execute permission: other */
+} FILEATTRIBUTE <read=read_FILEATTRIBUTE>;
+
+string read_FILEATTRIBUTE (local FILEATTRIBUTE &af) {
+	local string s = "";
+	local int commaNeeded = 0;
+	local FILEATTRIBUTE i = 1;
+
+	SPrintf (s, "0x%X: ", af);  
+	while (i < 	0xFFFFFF - 2) 
+	{
+		if (af & i)
+		{
+			if (commaNeeded) 
+			{ 
+                s += ", ";
+            }
+			s +=  EnumToString(i);
+			commaNeeded = 1;
+		}
+		i = i << 1;
+	}
+	return s;
+}
+
+// Defintes the Data descriptor
+// All three fields are Tier A calculated and carry the same numbers as the
+// entry's local header would have, which is why the template's branch requires
+// frCompressedSize to be exactly 0 before it fires.
+typedef struct (uint wcrc, uint wcsz, uint wusz) {
+	local int evil_dd = SetEvilBit(IsParsing());
+	SignatureTYPE ddSignature = { S_ZIPDATADESCR }; //0x08074b50
+	uint ddCRC = { wcrc } <format=hex>;
+	uint ddCompressedSize = { wcsz };
+	uint ddUncompressedSize = { wusz };
+	SetEvilBit(evil_dd);
+} ZIPDATADESCR;
+
+// Carried out of ZIPFILERECORD's streamed branch, where the real CRC and size
+// are only known once the data has been written.
+local uint  g_strcrc = 0;
+local uint  g_strlen = 0;
+local int64 g_ci = 0;
+local int64 g_crcpos = 0;      // where this entry's free content bytes landed
+local int64 g_crclen = 0;
+
+// Defines a file record
+typedef struct {
+	local int64 fr_pos = FTell();          // Tier A: ZIPDIRENTRY.deHeaderOffset
+	local int   fr_e = g_nent;
+	local int64 i = 0;
+	local int64 j = 0;
+	local int   k = 0;
+
+	// Header for the file
+	local int evil_frsig = SetEvilBit(IsParsing());
+	SignatureTYPE frSignature = { S_ZIPFILERECORD };    //0x04034b50
+	SetEvilBit(evil_frsig);
+	VERECORD frVersion(-1, -1);
+	// Tier B bitmask_constraint: valid_bits 0xFFFF, so every combination is
+	// legal. The set carries the sixteen named bits, zero, and the
+	// combinations the layout actually turns on - bit 0 with bit 6 is the
+	// strong-encryption header, bit 0 with bit 3 is an encrypted streamed
+	// entry, 0xF7F6 is the JSON's measured "most bits at once".
+	FLAGTYPE frFlags = { 0, 0, 0, 0, 0, 0, 0, 0,
+	                     0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080,
+	                     0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000, 0x8000,
+	                     0x0041, 0x0009, 0x0801, 0x0808, 0x0806, 0x2001, 0x0003, 0x0005,
+	                     0x0806, 0x0048, 0xF7F6, 0x0802 };
+	// Tier B enumerated_values: all nineteen methods the format defines,
+	// preferred_value [0,8] weighted by repetition. Methods 0, 1, 6, 8 and 9
+	// get a well-formed payload below; the rest reach the decoder's
+	// "unsupported compression method" arm, which is also a branch.
+	COMPTYPE frCompression = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	                           8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+	                           9, 9, 9, 9, 9, 1, 1, 1, 1, 1, 6, 6, 6, 6, 6,
+	                           2, 3, 4, 5, 7, 10, 12, 14, 18, 19, 0x60, 0x61, 0x62, 0x63 };
+	ushort  frFileTime;                     // Tier C
+	ushort  frFileDate;                     // Tier C
+
+	// ---- free quantities -------------------------------------------------
+	// How long this entry's content is, how long its name is and how many
+	// extra fields it carries are the archive's three structural freedoms.
+	// They are drawn here from this entry's own unconstrained fields, stirred
+	// into the derived PRNG, and the Tier A length fields below record the
+	// result exactly. Nothing is narrowed to make a payload fit.
+	g_rnd += frFileTime + (frFileDate << 9) + (frFlags << 3) + frCompression * 131
+	         + frVersion.Version + (frVersion.HostOS << 5);
+	local uint r1 = nextrnd();
+	local uint r2 = nextrnd();
+	local uint r3 = nextrnd();
+	local uint r4 = nextrnd();
+
+	// The one clamp applied to a free length, and it is the runtime's own
+	// MAX_FILE_SIZE, not a size-control decision: a file over the ceiling is
+	// written truncated and thrown away.
+	local int64 room = FILE_ROOM - FTell() - g_dirneed - 96;
+	if (room < 0)
+		room = 0;
+
+	// a trailing '/' marks a directory entry (dependency: it is what makes a
+	// reader treat the entry as a directory, there is no flag for it)
+	local int isdir = 0;
+	if ((r4 & 31) == 0)
+		isdir = 1;
+	// the Zip64 escape: 0xFFFFFFFF in both size fields with the real 64-bit
+	// values in an EH_Zip64 extra field (dependency)
+	local int ez64 = 0;
+	if (((r4 >> 9) & 31) == 0)
+		ez64 = 1;
+
+	local int64 nlen = 1 + (r3 % 24);
+	if ((r4 & 7) == 0)
+		nlen = 1 + (r3 % 120);
+	if (((r4 >> 3) & 63) == 0)
+		nlen = 1 + (r3 % 1000);
+	if (nlen > room)
+		nlen = room;
+
+	// ---- the extra-field plan --------------------------------------------
+	local int64 esum = 0;
+	local int   nrec = 0;
+	local int   want = (r3 >> 5) % 5;
+	g_eseed[fr_e] = g_rnd;             // so the directory record can repeat it
+	g_eunl = 1 + (r4 % 12);
+	g_ecert = (r4 >> 4) % 9;
+	if ((frFlags & FLAG_Encrypted) && (frCompression == COMP_WzAES)) {
+		// COMP_WzAES is a marker, not a method: the real codec moves into the
+		// WinZip AES extra field, and the template's AES branch reads Strength
+		// from the last record, so this entry carries exactly that one.
+		g_eid[0] = EH_WzAES;
+		g_esz[0] = 7;
+		nrec = 1;
+		esum = 11;
+	} else if (ez64) {
+		g_eid[0] = EH_Zip64;
+		g_esz[0] = 16;
+		nrec = 1;
+		esum = 20;
+	} else {
+		while (nrec < want && esum + 48 < BUDGET_EXTRA && esum + 48 + nlen < room) {
+			local uint x = nextrnd();
+			local ushort eid = EH_ALL[(x >> 4) % 44];
+			if ((x & 3) == 0)
+				eid = EH_PREF[(x >> 8) % 6];
+			local int esz = (x >> 10) % 25;
+			if (eid == EH_Zip64)                   esz = 16;
+			else if (eid == EH_InfoZIPUnicodePath) esz = 5 + g_eunl;
+			else if (eid == EH_NTFS)               esz = 32;
+			else if (eid == EH_StrongEncryption)   esz = 8 + g_ecert;
+			else if (eid == EH_WzAES)              esz = 7;
+			// the four Info-ZIP records process.c:ef_scan_for_izux walks, at
+			// their defined sizes; the payload bytes stay free (Tier C)
+			else if (eid == EH_extTimestamp)       esz = 13;  // flags + 3 times
+			else if (eid == EH_InfoZIPUNIX)        esz = 12;  // 2 times + uid/gid
+			else if (eid == EH_InfoZIPUNIXNew)     esz = 4;   // uid + gid
+			else if (eid == EH_InfoZIPUNIXNew3rd)  esz = 7;   // version + uid/gid
+			// a compressed extra field: header, then six bytes of compression
+			// header, then the stream -> extract.c:test_compr_eb
+			else if (eid == EH_OS2 || eid == EH_OS2AccessList) esz = 15 + (esz % 13);
+			else if (eid == EH_WinNTSecurity)      esz = 16 + (esz % 13);
+			else if (eid == EH_BeOS)               esz = 12 + (esz % 13);
+			else if (eid == EH_InfoZIPMac)         esz = 21 + (esz % 13);
+			else if (eid == EH_OpenVMS)            esz = 5 + (esz % 13);
+			g_eid[nrec] = eid;
+			g_esz[nrec] = esz;
+			esum += 4 + esz;
+			nrec++;
+		}
+	}
+	g_enrec[fr_e] = nrec;
+
+	// ---- the payload plan ------------------------------------------------
+	// variant 0 raw bytes, 1 stored DEFLATE blocks, 2 fixed-Huffman DEFLATE,
+	// 3 dynamic-Huffman DEFLATE, 4 SHRUNK LZW literals, 5 IMPLODED literals.
+	g_enc = 0;
+	g_vk = 0;
+	g_src = 0;
+	g_nblk = 1;
+	local int strongenc = 0;
+	local int aesenc = 0;
+	local int streamed = 0;
+	if ((frFlags & FLAG_Encrypted) && (frFlags & FLAG_StrongEncrypted))
+		strongenc = 1;
+	else if ((frFlags & FLAG_Encrypted) && (frCompression == COMP_WzAES))
+		aesenc = 1;
+	else if (frFlags & FLAG_Encrypted)
+		g_enc = 1;
+	if (strongenc || aesenc)
+		ez64 = 0;
+
+	if (frCompression == COMP_DEFLATE || frCompression == COMP_DEFLATE64) {
+		g_vk = 1 + (r2 % 3);
+	} else if (frCompression == COMP_SHRUNK) {
+		g_vk = 4;
+	} else if (frCompression == COMP_IMPLODED) {
+		// Flag bit 2 picks the variant explode() builds: set, it reads a
+		// 256-code literal tree and decodes literals through it (minimum
+		// match length 3); clear, literals are uncoded (minimum 2). Both are
+		// emitted, which is the dependency this flag bit carries.
+		if (frFlags & FLAG_CompressionFlagBit2)
+			g_vk = 6;
+		else
+			g_vk = 5;
+	}
+	if (g_vk >= 2 || g_enc)
+		g_src = 1;
+	// Which variants can code a match, and how long the shortest one is.
+	// SHRUNK's repeats would need LZW table entries, and the dynamic tree
+	// below carries no length symbol, so those two stay literal-only.
+	g_matchok = 0;
+	g_mlen = 0;
+	g_bdl = 6;
+	if (frFlags & FLAG_CompressionFlagBit1)
+		g_bdl = 7;                             // 8K dictionary, not 4K
+	if (g_vk == 2) {
+		g_matchok = 1;
+		g_mlen = 3;                            // cplens[257-257]
+	} else if (g_vk == 5) {
+		g_matchok = 1;
+		g_mlen = 2;                            // cplen2[0], no literal tree
+	} else if (g_vk == 6) {
+		g_matchok = 1;
+		g_mlen = 3;                            // cplen3[0], with a literal tree
+	}
+	// the streamed form: frCompressedSize exactly 0 with flag bit 3, which is
+	// what makes the template's FindFirst(S_ZIPDATADESCR) branch fire
+	if ((frFlags & FLAG_DescriptorUsedMask) && frCompression == COMP_STORED
+	    && !g_enc && !strongenc && !ez64 && (r2 & 1))
+		streamed = 1;
+
+	local int64 clen = r1 % 17;
+	if ((r2 & 7) == 0)
+		clen = r1 % 257;
+	if (((r2 >> 3) & 15) == 0)
+		clen = r1 % 4097;
+	if (((r2 >> 7) & 31) == 0)
+		clen = r1 % 20000;
+	if (isdir && (r1 & 3))
+		clen = 0;
+	if (ez64 || streamed)
+		clen = 0;
+	// The clamp is on what the PAYLOAD will need, not on the content length:
+	// the bit-packed variants spend nine bits per byte and the imploded one
+	// carries ten bytes of trees as well, so a content that fits would still
+	// produce a payload over the runtime's ceiling.
+	local int64 avail = room - nlen - esum - 128;
+	if (g_vk >= 2)
+		avail = avail * 8 / 10;
+	if (avail < 0)
+		avail = 0;
+	if (clen > avail)
+		clen = avail;
+	if (g_vk == 1 && clen >= 2 && ((r3 >> 11) & 7) == 0) {
+		g_nblk = 2;                            // two stored blocks: inflate()
+		g_src = 1;                             // loops once per block
+	}
+	g_clen = clen;
+	g_blk1 = clen;
+	g_blk2 = 0;
+	if (g_nblk == 2) {
+		g_blk1 = clen / 2;
+		g_blk2 = clen - g_blk1;
+	}
+
+	// ---- the payload size and the content's CRC-32 -----------------------
+	// The payload is computed from the content and the three size fields and
+	// the CRC are computed from the payload - never the other way round.
+	local int64 datapos = fr_pos + 30 + nlen + esum;
+	g_crcpos = 0;
+	g_crclen = 0;
+	local int64 bits = 0;
+	local int64 csz = 0;
+	local int64 usz = clen;
+	local uint  crcv = 0xFFFFFFFF;
+	local uint  saved = g_rnd;
+	g_cpos = datapos;
+	if (g_enc)
+		g_cpos += 12;
+	if (g_vk == 1)
+		g_cpos += 5;
+	// For the free-byte payloads the content does not exist yet - the format
+	// puts frCrc sixteen bytes BEFORE it - so a placeholder goes in now and
+	// the real CRC is backpatched from the bytes written (see the end of this
+	// record). For the bit-packed and encrypted payloads the content comes
+	// from the derived PRNG, so the same draw is replayed here to get both the
+	// CRC and the exact payload length before a single byte is written.
+	if (clen > 0 && g_src == 1) {
+		// The content is a stream of items: a literal, or a match repeating
+		// the byte before it. Both passes walk the same items from the same
+		// PRNG state, so the CRC and the payload length computed here are
+		// exactly what the emitter will write.
+		i = 0;
+		j = 0;
+		while (i < clen) {
+			if (g_matchok && i >= 1 && i + g_mlen <= clen && (nextrnd() & 3) == 0) {
+				local int64 mi = 0;
+				while (mi < g_mlen) {
+					crcv = crc_step(crcv, j);
+					mi++;
+				}
+				i += g_mlen;
+				if (g_vk == 2)
+					bits += 12;                // length symbol + distance symbol
+				else
+					bits += 13 + g_bdl;        // flag + low bits + two codes
+			} else {
+				j = nextrnd() & 0xFF;
+				crcv = crc_step(crcv, j);
+				i++;
+				if (g_vk == 2) {
+					if (j < 144)
+						bits += 8;             // RFC 1951 fixed literal costs
+					else
+						bits += 9;
+				} else if (g_vk >= 5)
+					bits += 9;                 // flag bit plus eight code bits
+			}
+		}
+		g_rnd = saved;                         // the emit pass repeats the draw
+	}
+	crcv = crcv ^ 0xFFFFFFFF;
+	if (g_src == 0)
+		crcv = 0;                              // backpatched below
+	if (g_vk == 0)
+		csz = clen;
+	else if (g_vk == 1)
+		csz = 5 * g_nblk + clen;
+	else if (g_vk == 2)
+		csz = (3 + bits + 7 + 7) / 8;
+	else if (g_vk == 3)
+		csz = (268 + 9 * clen + 7) / 8;        // 267 header bits + items + EOB
+	else if (g_vk == 4) {
+		bits = 9 * clen;
+		if (clen > 1)
+			bits += 18 * ((clen - 1) / 7000);  // partial-clear escapes
+		csz = (bits + 7) / 8;
+	} else if (g_vk == 5)
+		csz = 10 + (bits + 7) / 8;             // two Shannon-Fano trees
+	else
+		csz = 27 + (bits + 7) / 8;             // three of them
+	if (g_enc)
+		csz += 12;                             // the encryption header
+	if (aesenc)
+		csz += 28;                             // verifier + auth code + max salt
+	if (strongenc)
+		csz += 42;                             // IV + key validation block
+	g_z64u = (uint64)usz;
+	g_z64c = (uint64)csz;
+
+	// ---- the Tier A header fields ----------------------------------------
+	local int evil_frhdr = SetEvilBit(IsParsing());
+	uint     frCrc     = { streamed ? 0 : crcv } <format=hex>;
+	uint     frCompressedSize   = { ez64 ? 0xFFFFFFFF : (uint)csz };
+	uint     frUncompressedSize = { ez64 ? 0xFFFFFFFF : (uint)usz };
+	ushort   frFileNameLength   = { (ushort)nlen };
+	ushort   frExtraFieldLength = { (ushort)esum };
+	SetEvilBit(evil_frhdr);
+	g_enlen[fr_e] = frFileNameLength;
+	g_enpos[fr_e] = FTell();
+	if( frFileNameLength > 0 )
+	{
+		// Tier C: the path. Free bytes, free length - '../x', an absolute
+		// path, a thousand-character path and a trailing-slash directory
+		// marker all occur, and each reaches a different part of a reader's
+		// name handling.
+		local int64 nres = frFileNameLength;
+		if (isdir && nres > 0)
+			nres = nres - 1;
+		if (nres > 0)
+			ReadBytes(g_nbuf, g_enpos[fr_e], nres);
+		if (isdir) {
+			local ubyte slashv[] = { 47 };
+			local int evil_sl = SetEvilBit(IsParsing());
+			ReadUByte(g_enpos[fr_e] + frFileNameLength - 1, slashv);
+			SetEvilBit(evil_sl);
+		}
+		char     frFileName[ frFileNameLength ];
+		g_namecrc = Checksum(CHECKSUM_CRC32, g_enpos[fr_e], frFileNameLength);
+	}
+	
+	// The extra-field records draw from the PRNG for their own payloads, so
+	// the state is restored afterwards: the payload below replays the draw the
+	// pre-pass made for it, and that replay has to start where it left off.
+	local uint pre_ex = g_rnd;
+	local int len = frExtraFieldLength;
+	while (len > 0)
+	{
+		EXTRAFIELD frExtraField(g_eid[k & 7], g_esz[k & 7]);
+		len -= frExtraField.efDataSize + 4;
+		k++;
+	}
+	g_rnd = pre_ex;
+	// Compressed data
+	SetBackColor( cNone );
+
+    if ((frFlags & FLAG_Encrypted) && ( frFlags & FLAG_StrongEncrypted))
+    {
+        struct
+        {
+			// The strong-encryption header. IVSize, Size, ErdSize, VSize and
+			// VCRC32 are Tier A calculated; the rest is Tier C.
+			local int evil_se = SetEvilBit(IsParsing());
+            ushort  IVSize = { 8 };
+			SetEvilBit(evil_se);
+            byte    IVData[IVSize];
+			local int evil_se2 = SetEvilBit(IsParsing());
+            uint    Size = { 28 };
+			SetEvilBit(evil_se2);
+            ushort  Format;
+            ALGFLAG AlgID;
+            ushort  BitLen;
+            ushort  Flags;
+			local int evil_se3 = SetEvilBit(IsParsing());
+            ushort  ErdSize = { 4 };
+			SetEvilBit(evil_se3);
+            byte    ErdData[ErdSize];
+            uint    Reserved;
+			local int evil_se4 = SetEvilBit(IsParsing());
+            ushort  VSize = { 8 };
+			SetEvilBit(evil_se4);
+            byte    VData[VSize - 4];
+			local int evil_se5 = SetEvilBit(IsParsing());
+            uint    VCRC32 = { Checksum(CHECKSUM_CRC32, FTell() - VSize + 4, VSize - 4) };
+			SetEvilBit(evil_se5);
+        } StrongEncryptedHeader;
+		local int64 sdlen = frCompressedSize - StrongEncryptedHeader.IVSize - StrongEncryptedHeader.Size - 6;
+		if (sdlen < 0 || sdlen > FILE_ROOM - FTell())
+			sdlen = 0;
+		if (sdlen > 0)
+			char    frData[ sdlen ];
+    }
+    else if ((frFlags & FLAG_Encrypted) && ( frCompression == COMP_WzAES ))
+    {
+        local int lenSalt = 0;
+        if (frExtraFieldLength > 0 && frExtraField.efHeaderID == EH_WzAES)
+        {
+            switch (frExtraField.Strength)
+            {
+            case AES128: 
+                lenSalt = 8;
+                break;
+            case AES192: 
+                lenSalt = 12;
+                break;
+            case AES256: 
+                lenSalt = 16;
+                break;
+            }
+        }
+        uchar   SaltValue[lenSalt];
+		// Tier A calculated in the AE-x spec (the last two bytes of the
+		// PBKDF2 output); nothing in the file determines it, so it is left as
+		// a free two bytes with the layout exact.
+        ushort  PassVerification;
+		local int64 aeslen = frCompressedSize - 12 - lenSalt;
+		if (aeslen < 0 || aeslen > FILE_ROOM - FTell())
+			aeslen = 0;
+		if (aeslen > 0)
+			uchar   frData[ aeslen ];
+		uchar   AuthenticationCode[ 10];
+    }
+	else if( (frCompressedSize > 0) && (frCompressedSize < 0xFFFFFFFF))
+    {
+		local int64 dstart = FTell();
+		keys_init();
+		g_ci = 0;
+		if (g_enc) {
+			// The traditional PKWARE encryption header: eleven free bytes and
+			// then the CRC's high byte, the whole thing under the stream
+			// cipher keyed by the empty password. crypt.c's testkey() checks
+			// exactly that byte, so `unzip -P ''` decrypts the entry.
+			local int evil_eh = SetEvilBit(IsParsing());
+			local uint savedh = g_rnd;
+			i = 0;
+			while (i < 12 && FTell() - dstart < frCompressedSize) {
+				local uint hv = nextrnd() & 0xFF;
+				if (i == 11) {
+					hv = (frCrc >> 24) & 0xFF;
+					if (frFlags & FLAG_DescriptorUsedMask)
+						hv = (frFileTime >> 8) & 0xFF;
+				}
+				ubyte zEncHdr = { (ubyte)outb(hv) };
+				i++;
+			}
+			g_rnd = savedh;            // the content replay resumes where the
+			SetEvilBit(evil_eh);       // pre-pass left off
+		}
+		if (g_vk == 0 && g_src == 0) {
+			// COMP_STORED - the payload IS the content, byte for byte, and
+			// frCrc covers these same bytes. Also every method this decoder
+			// cannot decompress: the bytes are opaque either way and the entry
+			// reaches the unsupported-method arm.
+			local int64 rawlen = frCompressedSize - (FTell() - dstart);
+			g_crcpos = FTell();
+			g_crclen = rawlen;
+			if (rawlen > 0)
+				uchar    frData[ rawlen ];
+		} else if (g_vk == 0) {
+			local int evil_d0 = SetEvilBit(IsParsing());
+			while (FTell() - dstart < frCompressedSize) {
+				uchar zData = { (uchar)outb(cbyte(g_ci)) };
+				g_ci++;
+			}
+			SetEvilBit(evil_d0);
+		} else if (g_vk == 1) {
+			// COMP_DEFLATE / COMP_DEFLATE64 as stored DEFLATE blocks: a RAW
+			// RFC 1951 stream with no RFC 1950 zlib header and no trailing
+			// Adler-32, which is what ZIP wants and what a plain zlib compress
+			// call does NOT produce.  -> inflate_stored
+			local int blk = 0;
+			while (blk < g_nblk && FTell() - dstart < frCompressedSize) {
+				local int64 bl = g_blk1;
+				local int   fin = 1;
+				if (blk == 1)
+					bl = g_blk2;
+				if (blk + 1 < g_nblk)
+					fin = 0;
+				local int evil_zb = SetEvilBit(IsParsing());
+				ubyte  zBhdr = { (ubyte)outb(fin) };          // BFINAL, BTYPE=00
+				ushort zLen  = { (ushort)outw(bl & 0xFFFF) };
+				ushort zNlen = { (ushort)outw(0xFFFF - (bl & 0xFFFF)) };
+				SetEvilBit(evil_zb);
+				local int64 take = zLen;
+				if (g_enc)
+					take = bl;
+				if (take > frCompressedSize - (FTell() - dstart))
+					take = frCompressedSize - (FTell() - dstart);
+				if (take > 0) {
+					if (g_src == 0) {
+						g_crcpos = FTell();
+						g_crclen = take;
+						uchar zRaw[take];
+					} else {
+						local int evil_zr = SetEvilBit(IsParsing());
+						j = 0;
+						while (j < take) {
+							uchar zRawC = { (uchar)outb(cbyte(g_ci)) };
+							g_ci++;
+							j++;
+						}
+						SetEvilBit(evil_zr);
+					}
+				}
+				blk++;
+			}
+		} else {
+			// The bit-packed payloads. The emitted byte count is exactly what
+			// frCompressedSize declares, so one loop serves both directions;
+			// bits are pulled from the content as they are needed.
+			g_bb = 0;
+			g_bn = 0;
+			g_hi = 0;
+			g_term = 0;
+			g_esc = 0;
+			g_shr = 0;
+			g_nhdr = 0;
+			if (g_vk == 2)
+				g_nhdr = 1;
+			if (g_vk == 3)
+				g_nhdr = 71;
+			if (g_vk == 5 || g_vk == 6) {
+				// COMP_IMPLODED: a length tree and a distance tree, each 64
+				// codes of 6 bits (64 * 2^-6 == 1, a complete code), written
+				// in get_tree()'s run-length form as four "16 codes of 6 bits"
+				// pairs.  -> explode -> get_tree -> huft_build -> explode_nolit
+				// For variant 6 a literal tree of 256 codes of 8 bits
+				// (256 * 2^-8 == 1) comes first, in the same run-length form.
+				local int evil_tr = SetEvilBit(IsParsing());
+				local int64 ntree = 10;
+				local int64 tbase = 0;
+				if (g_vk == 6) {
+					ntree = 27;
+					tbase = 17;
+				}
+				i = 0;
+				while (i < ntree && FTell() - dstart < frCompressedSize) {
+					local uint tv = 0xF5;
+					if (g_vk == 6 && i == 0)
+						tv = 15;                    // 16 pairs follow
+					else if (g_vk == 6 && i < 17)
+						tv = 0xF7;                  // 16 codes of 8 bits each
+					else if (i == tbase || i == tbase + 5)
+						tv = 3;                     // 4 pairs follow
+					ubyte zTree = { (ubyte)outb(tv) };
+					i++;
+				}
+				SetEvilBit(evil_tr);
+			}
+			local int evil_zc = SetEvilBit(IsParsing());
+			while (FTell() - dstart < frCompressedSize) {
+				while (g_bn < 8) {
+					if (g_hi < g_nhdr) {
+						pushhdr(g_hi);
+						g_hi++;
+					} else if (g_esc == 2) {
+						pushbits(2, 9);        // the second half of 256,2
+						g_esc = 0;
+						g_shr = 0;
+					} else if (g_ci < g_clen) {
+						if (g_vk == 4 && g_ci > 0 && g_shr >= 7000) {
+							pushbits(256, 9);  // BOGUSCODE, then 2: partial clear
+							g_esc = 2;         // -> unshrink -> partial_clear
+						} else if (g_matchok && g_ci >= 1 && g_ci + g_mlen <= g_clen
+						           && (nextrnd() & 3) == 0) {
+							pushmatch();
+							g_ci += g_mlen;
+						} else {
+							pushlit(cbyte(g_ci));
+							if (g_vk == 4 && g_ci > 0)
+								g_shr++;
+							g_ci++;
+						}
+					} else if (!g_term) {
+						pushterm();
+						g_term = 1;
+					} else
+						pushbits(0, 8);
+				}
+				ubyte zCode = { (ubyte)outb(g_bb & 0xFF) };
+				g_bb = g_bb >> 8;
+				g_bn -= 8;
+			}
+			SetEvilBit(evil_zc);
+		}
+		local int64 drem = frCompressedSize - (FTell() - dstart);
+		if (drem > 0)
+			uchar zPad[drem];
+    }
+    else if (frCompressedSize == 0 && (frFlags & FLAG_DescriptorUsedMask))
+    {
+		// If bit 3 (0x08) of the flags field is set, then the CRC-32 and file sizes were not known when the header was written.
+		// Instead there is an additional header ZIPDATADESCR appended after the compressed data.
+		// We look for the next signature of the appended header here. 
+        local int64 posCurrent = FTell();
+		local int evil_ff = SetEvilBit(IsParsing());
+        local int64 posNext =  FindFirst(S_ZIPDATADESCR,true,false,false,0.0,1,posCurrent);
+		SetEvilBit(evil_ff);
+        if (posNext >= posCurrent) 
+        {
+			if (posNext > posCurrent)
+				uchar frData[posNext - posCurrent];
+			g_strlen = (uint)(posNext - posCurrent);
+			g_strcrc = Checksum(CHECKSUM_CRC32, posCurrent, posNext - posCurrent);
+
+    		SetBackColor( cLtGreen );
+		    ZIPDATADESCR dataDescr(g_strcrc, g_strlen, g_strlen);
+        }
+    }
+
+	// ---- frCrc, now that the content exists ------------------------------
+	// Tier A calculated over the UNCOMPRESSED content. For COMP_STORED the
+	// payload IS that content and for the stored-DEFLATE form it is the
+	// block's literal bytes, so the checksum is taken over exactly those
+	// bytes and written back into the field the format placed ahead of them.
+	if (g_src == 0 && !streamed && g_crclen > 0) {
+		local int64 fr_end = FTell();
+		local uint crcb = Checksum(CHECKSUM_CRC32, g_crcpos, g_crclen);
+		FSkip(fr_pos + 14 - fr_end);
+		local int evil_crcb = SetEvilBit(IsParsing());
+		uint     frCrc     = { crcb } <format=hex>;
+		SetEvilBit(evil_crcb);
+		FSkip(fr_end - FTell());
+	}
+
+	// ---- what the central directory will repeat --------------------------
+	g_off[fr_e] = fr_pos;
+	g_ecrc[fr_e] = frCrc;
+	g_ecsz[fr_e] = frCompressedSize;
+	g_eusz[fr_e] = frUncompressedSize;
+	g_eflg[fr_e] = frFlags;
+	g_emth[fr_e] = frCompression;
+	g_ever[fr_e] = frVersion.Version;
+	g_ehos[fr_e] = frVersion.HostOS;
+	g_edir[fr_e] = isdir;
+	g_ez64[fr_e] = ez64;
+	if (streamed) {
+		g_ecrc[fr_e] = g_strcrc;
+		g_ecsz[fr_e] = g_strlen;
+		g_eusz[fr_e] = g_strlen;
+	}
+
+} ZIPFILERECORD <read=ReadZIPFILERECORD, write=WriteZIPFILERECORD>;
+
+// Defines an entry in the directory table
+// One per local file record, in the same order, repeating that record's
+// fields (the "central directory repeats the local header" dependency) and
+// carrying the offset back to it - the one cross-reference every reader
+// enforces.
+typedef struct (int e) {
+	local int64 de_pos = FTell();
+	local int   k = 0;
+	local int   evil_desig = SetEvilBit(IsParsing());
+	SignatureTYPE deSignature = { S_ZIPDIRENTRY };     //0x02014b50
+	SetEvilBit(evil_desig);
+	// "made by" is the writer's own version and host and gates nothing, so it
+	// stays free; it is the host here that decides how deExternalAttributes is
+	// read (-> mapattr()). "to extract" repeats the local header's.
+	VERECORD deVersionMadeBy(-1, -1);
+	VERECORD deVersionToExtract(g_ever[e], g_ehos[e]);
+	local int evil_de = SetEvilBit(IsParsing());
+	FLAGTYPE deFlags = { g_eflg[e] };
+	COMPTYPE deCompression = { g_emth[e] };
+	SetEvilBit(evil_de);
+	ushort  deFileTime;                     // Tier C
+	ushort  deFileDate;                     // Tier C
+
+	// ---- free quantities for this entry's directory record ---------------
+	g_rnd += deFileTime + (deFileDate << 9) + e;
+	local uint q1 = nextrnd();
+	local uint q2 = nextrnd();
+	local int64 room = FILE_ROOM - FTell() - 128;
+	if (room < 0)
+		room = 0;
+	local int64 esum = 0;
+	local int   nrec = 0;
+	local int   want = q2 % 4;
+	g_eunl = 1 + (q1 % 12);
+	g_ecert = (q1 >> 4) % 9;
+	if (!g_ez64[e] && g_enrec[e] > 0 && (q2 & 3)) {
+		// Three times in four the directory repeats the local header's extra
+		// fields exactly, by replaying the plan from the PRNG state it was
+		// drawn from. Info-ZIP's TestExtraField scans the CENTRAL buffer using
+		// the LOCAL header's length, so it is agreeing lengths that let it
+		// reach each record type's handler.
+		g_rnd = g_eseed[e];
+		want = g_enrec[e];
+		while (nrec < want) {
+			local uint y = nextrnd();
+			local ushort yid = EH_ALL[(y >> 4) % 44];
+			if ((y & 3) == 0)
+				yid = EH_PREF[(y >> 8) % 6];
+			local int ysz = (y >> 10) % 25;
+			if (yid == EH_Zip64)                   ysz = 16;
+			else if (yid == EH_InfoZIPUnicodePath) ysz = 5 + g_eunl;
+			else if (yid == EH_NTFS)               ysz = 32;
+			else if (yid == EH_StrongEncryption)   ysz = 8 + g_ecert;
+			else if (yid == EH_WzAES)              ysz = 7;
+			else if (yid == EH_extTimestamp)       ysz = 13;
+			else if (yid == EH_InfoZIPUNIX)        ysz = 12;
+			else if (yid == EH_InfoZIPUNIXNew)     ysz = 4;
+			else if (yid == EH_InfoZIPUNIXNew3rd)  ysz = 7;
+			else if (yid == EH_OS2 || yid == EH_OS2AccessList) ysz = 15 + (ysz % 13);
+			else if (yid == EH_WinNTSecurity)      ysz = 16 + (ysz % 13);
+			else if (yid == EH_BeOS)               ysz = 12 + (ysz % 13);
+			else if (yid == EH_InfoZIPMac)         ysz = 21 + (ysz % 13);
+			else if (yid == EH_OpenVMS)            ysz = 5 + (ysz % 13);
+			g_eid[nrec] = yid;
+			g_esz[nrec] = ysz;
+			esum += 4 + ysz;
+			nrec++;
+		}
+	} else if (g_ez64[e]) {
+		// the entry escaped its sizes, so the directory record must carry the
+		// 64-bit values too (process.c:getZip64Data)
+		g_eid[0] = EH_Zip64;
+		g_esz[0] = 16;
+		nrec = 1;
+		esum = 20;
+	} else {
+		while (nrec < want && esum + 48 < BUDGET_EXTRA && esum + 48 < room) {
+			local uint x = nextrnd();
+			local ushort eid = EH_ALL[(x >> 4) % 44];
+			if ((x & 3) == 0)
+				eid = EH_PREF[(x >> 8) % 6];
+			local int esz = (x >> 10) % 25;
+			if (eid == EH_Zip64)                   esz = 16;
+			else if (eid == EH_InfoZIPUnicodePath) esz = 5 + g_eunl;
+			else if (eid == EH_NTFS)               esz = 32;
+			else if (eid == EH_StrongEncryption)   esz = 8 + g_ecert;
+			else if (eid == EH_WzAES)              esz = 7;
+			// the four Info-ZIP records process.c:ef_scan_for_izux walks, at
+			// their defined sizes; the payload bytes stay free (Tier C)
+			else if (eid == EH_extTimestamp)       esz = 13;  // flags + 3 times
+			else if (eid == EH_InfoZIPUNIX)        esz = 12;  // 2 times + uid/gid
+			else if (eid == EH_InfoZIPUNIXNew)     esz = 4;   // uid + gid
+			else if (eid == EH_InfoZIPUNIXNew3rd)  esz = 7;   // version + uid/gid
+			// a compressed extra field: header, then six bytes of compression
+			// header, then the stream -> extract.c:test_compr_eb
+			else if (eid == EH_OS2 || eid == EH_OS2AccessList) esz = 15 + (esz % 13);
+			else if (eid == EH_WinNTSecurity)      esz = 16 + (esz % 13);
+			else if (eid == EH_BeOS)               esz = 12 + (esz % 13);
+			else if (eid == EH_InfoZIPMac)         esz = 21 + (esz % 13);
+			else if (eid == EH_OpenVMS)            esz = 5 + (esz % 13);
+			g_eid[nrec] = eid;
+			g_esz[nrec] = esz;
+			esum += 4 + esz;
+			nrec++;
+		}
+	}
+	// Tier C: free text that no reader parses, and with the archive comment
+	// the place bulk bytes belong - which is why the budget lives on the
+	// repeating structures and not on any content field.
+	local int64 clen = q1 % 9;
+	if ((q2 & 7) == 0)
+		clen = q1 % 300;
+	if (((q2 >> 3) & 15) == 0)
+		clen = q1 % BUDGET_COMMENT;
+	if (clen > room - esum - g_enlen[e])
+		clen = room - esum - g_enlen[e];
+	if (clen < 0)
+		clen = 0;
+
+	local int evil_de2 = SetEvilBit(IsParsing());
+	uint     deCrc     = { g_ecrc[e] } <format=hex>;
+	uint     deCompressedSize = { g_ecsz[e] };
+	uint     deUncompressedSize = { g_eusz[e] };
+	ushort   deFileNameLength = { (ushort)g_enlen[e] };
+	ushort   deExtraFieldLength = { (ushort)esum };
+	ushort   deFileCommentLength = { (ushort)clen };
+	SetEvilBit(evil_de2);
+	ushort   deDiskNumberStart;             // Tier C
+	// Tier B bitmask: bit 0 is "text file", which is the only way to reach
+	// Info-ZIP's line-ending translation; bit 2 is the record-control bit.
+	ushort   deInternalAttributes = { 0, 0, 0, 1, 1, 4, 5 };
+	// Tier B enumerated_values, and a dependency on the host: a Unix host
+	// makes the high word an st_mode (kIFREG / kIFDIR / kIFLNK select the
+	// type), a DOS or Windows host makes the low word a FILE_ATTRIBUTE_ mask.
+	if (deVersionMadeBy.HostOS == OS_Unix || deVersionMadeBy.HostOS == OS_OSX) {
+		if (g_edir[e]) {
+			FILEATTRIBUTE deExternalAttributes = { kIFDIR, kIFDIR | kIRWXU,
+				kIFDIR | kIRWXU | kIRGRP | kIXGRP, kIFDIR | kISUID, kIFDIR | kISVTX };
+		} else {
+			FILEATTRIBUTE deExternalAttributes = { kIFREG, kIFREG | kIRUSR | kIWUSR,
+				kIFREG | kIRWXU, kIFLNK, kIFLNK | kIRWXU, kIFSOCK, kIFBLK, kIFCHR,
+				kIFIFO, kIFMT, kISUID, kISGID, kISVTX, kIRWXG, kIRWXO };
+		}
+	} else if (deVersionMadeBy.HostOS == OS_FAT || deVersionMadeBy.HostOS == OS_NTFS
+	           || deVersionMadeBy.HostOS == OS_VFAT || deVersionMadeBy.HostOS == OS_HPFS) {
+		if (g_edir[e]) {
+			FILEATTRIBUTE deExternalAttributes = { FA_DIRECTORY,
+				FA_DIRECTORY | FA_ARCHIVE, FA_DIRECTORY | FA_HIDDEN | FA_SYSTEM };
+		} else {
+			FILEATTRIBUTE deExternalAttributes = { FA_READONLY, FA_HIDDEN, FA_SYSTEM,
+				FA_ARCHIVE, FA_DEVICE, FA_NORMAL, FA_TEMPORARY, FA_SPARSE_FILE,
+				FA_REPARSE_POINT, FA_COMPRESSED, FA_OFFLINE, FA_NOT_CONTENT_INDEXED,
+				FA_ENCRYPTED, FA_VIRTUAL, FA_READONLY | FA_ARCHIVE };
+		}
+	} else {
+		// every other host: the whole mined set of the enum above
+		FILEATTRIBUTE deExternalAttributes;
+	}
+	local int evil_de3 = SetEvilBit(IsParsing());
+	uint     deHeaderOffset = { g_ez64[e] ? (uint)0xFFFFFFFF : (uint)g_off[e] };
+	SetEvilBit(evil_de3);
+	if( deFileNameLength > 0 )
+	{
+		if (deFileNameLength == g_enlen[e] && g_enlen[e] > 0) {
+			// byte-for-byte the local header's name, read back out of the
+			// bytes the local record reserved
+			local char nmb[4];
+			ReadBytes(nmb, g_enpos[e], deFileNameLength);
+			local int evil_dn = SetEvilBit(IsParsing());
+			char     deFileName[ deFileNameLength ] = { nmb };
+			SetEvilBit(evil_dn);
+		} else {
+			// the lengths disagree, which only a file this template did not
+			// write can do: take the name as it stands
+			char     deFileName[ deFileNameLength ];
+		}
+	}
+	local int len = deExtraFieldLength;
+	while (len > 0)
+	{
+		EXTRAFIELD deExtraField(g_eid[k & 7], g_esz[k & 7]);
+		len -= deExtraField.efDataSize + 4;
+		k++;
+	}
+	if( deFileCommentLength > 0 )
+		uchar    deFileComment[ deFileCommentLength ];   // Tier C
+} ZIPDIRENTRY <read=ReadZIPDIRENTRY>;
+
+// Defines the digital signature
+// Written after the last directory entry; none of the four readers measured
+// verifies the data, they skip the record by its length.
+typedef struct {
+	local int evil_ds = SetEvilBit(IsParsing());
+	SignatureTYPE dsSignature = { S_ZIPDIGITALSIG };    //0x05054b50
+	SetEvilBit(evil_ds);
+	local uint s1 = nextrnd();
+	local int64 slen = s1 % 24;
+	if ((s1 & 7) == 0)
+		slen = s1 % 600;
+	if (FTell() + slen > FILE_ROOM - 128)
+		slen = 0;
+	local int evil_ds2 = SetEvilBit(IsParsing());
+	ushort   dsDataLength = { (ushort)slen };
+	SetEvilBit(evil_ds2);
+	if( dsDataLength > 0 )
+		uchar 	dsData[ dsDataLength ];                 // Tier C
+} ZIPDIGITALSIG;
+
+// Zip64 end of central directory record
+// Emitted only together with its locator and only when the ordinary end
+// record carries an escape value, because that is the one case Info-ZIP
+// consults it (process.c:find_ecrec64) - and the one case in which the bytes
+// between the directory and the end record are not counted as a prepended
+// stub.
+typedef struct {
+	local int64 z64_pos = FTell();
+	// The three end records have to agree on the disk numbers or find_ecrec64
+	// rejects the group. The free value is the ORDINARY end record's, read
+	// ahead of itself here; these two copies record it.
+	g_z64dn = ReadUShort(z64_pos + 80);
+	g_z64sd = ReadUShort(z64_pos + 82);
+	local int evil_z64s = SetEvilBit(IsParsing());
+	SignatureTYPE elr64Signature = { S_ZIP64ENDLOCATORRECORD }; //0x06064b50
+		// Tier A: the byte count of everything after this field. 44 is the
+		// fixed part, and the template's progressive thresholds make 44 the
+		// only well-formed value.
+		int64       elr64DirectoryRecordSize = { 44 };
+	SetEvilBit(evil_z64s);
+	if (elr64DirectoryRecordSize > 1)
+		VERECORD    elr64VersionMadeBy(-1, -1);
+	if (elr64DirectoryRecordSize > 2)
+		VERECORD    elr64VersionToExtract(45, -1);
+	local int evil_z64a = SetEvilBit(IsParsing());
+	if (elr64DirectoryRecordSize > 4)
+		uint        el64DiskNumber = { (uint)g_z64dn };
+	if (elr64DirectoryRecordSize > 8)
+		uint        el64StartDiskNumber = { (uint)g_z64sd };
+	if (elr64DirectoryRecordSize > 12)
+		int64       el64EntriesOnDisk = { (int64)g_nent };
+	if (elr64DirectoryRecordSize > 20)
+		int64       el64EntriesInDirectory = { (int64)g_nent };
+	if (elr64DirectoryRecordSize > 28)
+		int64       el64DirectorySize = { g_dirsize };
+	if (elr64DirectoryRecordSize > 36)
+		int64       el64DirectoryOffset = { g_dirpos };
+	SetEvilBit(evil_z64a);
+	if (elr64DirectoryRecordSize > 44)
+	{
+        char DataSect [elr64DirectoryRecordSize - 44];
+//	    local int len = elr64DirectoryRecordSize - 44;
+//	    while (len > 0)
+//	    {
+//		    EXTRA64FIELD frExtraField;
+//		    len -= frExtraField.efDataSize + 4;
+//	    }
+
+    }
+} ZIP64ENDLOCATORRECORD;
+
+//Zip64 end of central directory locator
+typedef struct {
+	local int evil_zl = SetEvilBit(IsParsing());
+	SignatureTYPE elSignature = { S_ZIP64ENDLOCATOR };    //0x07064b50
+	// the disk holding the Zip64 end record: must match that record's own
+	// number_this_disk
+	uint     elStartDiskNumber = { (uint)g_z64dn };
+	// Tier A: the absolute offset of the 'PK\x06\x06' signature
+	int64    elDirectoryOffset = { g_z64pos };
+	// TEMPLATE MISNAMING (JSON): APPNOTE 4.3.15's third field is the TOTAL
+	// NUMBER OF DISKS, not an entry count, and it is 1-based while every
+	// other disk field is 0-based - so it is the end record's disk plus one.
+	uint     elEntriesInDirectory = { (uint)(g_z64dn + 1) };
+	SetEvilBit(evil_zl);
+}  ZIP64ENDLOCATOR;
+
+// Defines the end of central directory locator
+// The last record in the file, followed only by its own comment: readers find
+// it by scanning backwards from the end.
+typedef struct {
+	local int evil_els = SetEvilBit(IsParsing());
+	SignatureTYPE elSignature = { S_ZIPENDLOCATOR };    //0x06054b50
+	SetEvilBit(evil_els);
+	// Tier C, both of them. Measured not a hard gate - half the readers
+	// complain and half do not - and pinning them to 0 would delete the
+	// split-archive branch from all of them (process.c's MaybePakBug arm).
+	ushort   elDiskNumber;
+	ushort   elStartDiskNumber;
+	local uint e1 = nextrnd();
+	local int64 clen = e1 % 9;
+	if ((e1 & 7) == 0)
+		clen = e1 % 400;
+	if (((e1 >> 4) & 15) == 0)
+		clen = e1 % BUDGET_COMMENT;
+	if (FTell() + clen > FILE_ROOM)
+		clen = 0;
+	// Tier A calculated, all five. 0xFFFF / 0xFFFFFFFF are the Zip64 escapes
+	// and move the real value into the Zip64 end record (dependency).
+	local int evil_el = SetEvilBit(IsParsing());
+	ushort   elEntriesOnDisk = { g_use64 ? (ushort)0xFFFF : (ushort)g_nent };
+	ushort   elEntriesInDirectory = { g_use64 ? (ushort)0xFFFF : (ushort)g_nent };
+	// The size and the offset keep their true values even in the Zip64 group:
+	// escaping them as well leaves a reader that does not implement Zip64 with
+	// no way to find the directory at all, whereas escaping the counts reaches
+	// both the Zip64 end record and the reader's count-mismatch arm.
+	uint     elDirectorySize = { (uint)g_dirsize };
+	uint     elDirectoryOffset = { (uint)g_dirpos };
+	ushort   elCommentLength = { (ushort)clen };
+	SetEvilBit(evil_el);
+	if( elCommentLength > 0 )
+		char elComment[ elCommentLength ];              // Tier C
+} ZIPENDLOCATOR;
+
+//--------------------------------------------
+
+// Custom read functions that allows the name of the
+//  of the file to appear in the Template Results.
+
+string ReadZIPFILERECORD( ZIPFILERECORD &file )
+{
+	if( exists( file.frFileName ) )
+		return file.frFileName;
+	else
+		return "";
+}
+
+string ReadZIPDIRENTRY( ZIPDIRENTRY &entry )
+{
+	if( exists( entry.deFileName ) )
+		return entry.deFileName;
+	else
+		return "";
+}
+
+// Custom write function that allows changing
+//  the name of the file - note that the file
+//  name size cannot be increased
+
+void WriteZIPFILERECORD( ZIPFILERECORD &file, string s )
+{
+	local int len = Strlen( s );
+	if( exists( file.frFileName ) )
+	{
+		Strncpy( file.frFileName, s, file.frFileNameLength );
+		if( len < file.frFileNameLength )
+		file.frFileName[len] = 0; //null terminate        
+	}
+}
+
+//--------------------------------------------
+
+// Per-call-site lookahead sets must win over ffcompile's mined globals.
+const local uint   ReadUIntInitValues[0];
+const local ushort ReadUShortInitValues[0];
+const local ubyte  ReadUByteInitValues[0];
+const local char   ReadBytesInitValues[0];
+
+// Define the file
+local uint tag;
+LittleEndian(); 
+
+// The format's three regions in their fixed order, as a state machine over
+// the record signatures (structure: ordering / first_element / last_element).
+// The possible set is what makes the generator walk it legally and what lets
+// the parse follow a real archive's own order; ZIPENDLOCATOR is weighted so
+// most archives end plainly rather than carrying the optional records.
+local uint poss_tag[] = { S_ZIPFILERECORD };
+local int ti = 0;
+for (ti = 0; ti < 23; ti++)
+	poss_tag += S_ZIPFILERECORD;
+poss_tag += S_ZIPENDLOCATOR;
+local int done = 0;
+while( !done )
+{
+	// Read a tag
+	local int evil_tag = SetEvilBit(IsParsing());
+	tag = ReadUInt( FTell(), poss_tag );
+	SetEvilBit(evil_tag);
+
+	// Read data depending upon tag - should start with 'PK'.
+	// Note that when duplicate variables are defined, they
+	// are made into an array (see 'Using Templates and Structs'
+	// in the help file).
+	if( tag == S_ZIPFILERECORD )
+	{
+		SetBackColor( cLtGray );
+		ZIPFILERECORD record;
+		if (record.frExtraFieldLength > 0 && record.frExtraField.efHeaderID == EH_Zip64)
+		{
+			//Printf("%Lu", record.frExtraField.efCompressedSize);
+			FSkip(record.frExtraField.efCompressedSize);
+		}
+		if (g_nent == 0) {
+			// cardinality: from here the set decides whether another entry
+			// follows, so the entry count is geometric with a mean of four
+			poss_tag -= S_ZIPENDLOCATOR;
+			poss_tag -= S_ZIPFILERECORD;
+			poss_tag += S_ZIPFILERECORD;
+			poss_tag += S_ZIPFILERECORD;
+			poss_tag += S_ZIPFILERECORD;
+			poss_tag += S_ZIPFILERECORD;
+			poss_tag += S_ZIPDIRENTRY;
+		}
+		g_nent++;
+		g_dirneed += 46 + g_enlen[g_nent - 1] + 24;
+		// output_budget: once the local-record region has had its share, the
+		// only legal next record is the directory. No length and no count was
+		// capped to get here - the generator simply stops adding entries.
+		if (FTell() > BUDGET_LOCAL || FTell() + g_dirneed > FILE_ROOM - 256 || g_nent >= 380)
+			poss_tag -= S_ZIPFILERECORD;
+	}
+	else if( tag == S_ZIPDATADESCR )
+	{
+		SetBackColor( cLtGreen );
+		ZIPDATADESCR dataDescr(g_strcrc, g_strlen, g_strlen);
+	}
+	else if( tag == S_ZIPDIRENTRY )
+	{
+		SetBackColor( cLtPurple );
+		if (g_phase == 0) {
+			g_phase = 1;
+			g_dirpos = FTell();
+			poss_tag -= S_ZIPFILERECORD;
+		}
+		ZIPDIRENTRY dirEntry(g_idx < g_nent ? g_idx : 0);
+		g_idx++;
+		if (g_idx >= g_nent) {
+			g_dirsize = FTell() - g_dirpos;
+			poss_tag -= S_ZIPDIRENTRY;
+			poss_tag += S_ZIPDIGITALSIG;
+			poss_tag += S_ZIP64ENDLOCATORRECORD;
+			for (ti = 0; ti < 18; ti++)
+				poss_tag += S_ZIPENDLOCATOR;
+			g_phase = 2;
+		}
+	}
+	else if( tag == S_ZIPDIGITALSIG )
+	{
+		SetBackColor( cLtBlue );
+		ZIPDIGITALSIG digitalSig;
+		// elDirectorySize covers the ZIPDIRENTRY records only (the JSON's
+		// algorithm), so this record is bytes a reader did not expect: it
+		// reaches Info-ZIP's extra-bytes arm, which recompensates the entry
+		// offsets on the first local header and then reads the archive.
+		poss_tag -= S_ZIPDIGITALSIG;
+	}
+	else if( tag == S_ZIP64ENDLOCATORRECORD )
+	{
+		SetBackColor( cYellow );
+		g_z64pos = FTell();
+		g_use64 = 1;
+		ZIP64ENDLOCATORRECORD end64Locator;
+		// the locator must come immediately after the record it points at
+		poss_tag -= S_ZIPDIGITALSIG;
+		poss_tag -= S_ZIP64ENDLOCATORRECORD;
+		poss_tag -= S_ZIPENDLOCATOR;
+		poss_tag += S_ZIP64ENDLOCATOR;
+	}
+	else if( tag == S_ZIP64ENDLOCATOR )
+	{
+		SetBackColor( cDkYellow );
+		ZIP64ENDLOCATOR end64Locator;
+		poss_tag -= S_ZIP64ENDLOCATOR;
+		poss_tag += S_ZIPENDLOCATOR;
+	}
+	else if( tag == S_ZIPENDLOCATOR )
+	{
+		SetBackColor( cLtYellow );
+		if (g_phase == 0)
+			g_dirpos = FTell();          // the empty archive: no entries at all
+		ZIPENDLOCATOR endLocator;
+		done = 1;
+	}
+	else
+	{
+		Warning( "Unknown ZIP tag encountered. Template stopped." );
+		return -1;
+	}
+}

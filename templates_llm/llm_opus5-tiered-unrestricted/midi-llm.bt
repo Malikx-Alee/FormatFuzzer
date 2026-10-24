@@ -1,0 +1,1348 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: MIDI.bt
+//   Authors: Jack Andersen
+//   Version: 1.2
+//   Purpose: General MIDI sound file template. Complete with
+//            delta-time and BPM evaluation into local variables.
+//  Category: Audio
+// File Mask: *.mid
+//  ID Bytes: 4D 54 68 64 //MThd
+//   History:
+//   1.2   2016-05-17 J Andersen: Correctly interpret unset status-bit as repeat message.
+//   1.1   2016-02-12 SweetScape Software: Updated header for repository submission.
+//   1.0   J Andersen: Initial release.
+//------------------------------------------------
+//
+// REWRITE NOTE -- generative rewrite driven by
+//   llm_learned_specification/opus5-tiered/llm_reterived_constraints_midi-llm_opus5-tiered.json
+//
+// TIER DISCIPLINE
+//   Tier A fields carry their exact value or their complete legal set inside a
+//   SetEvilBit(IsParsing()) guard.  IsParsing() is false while generating, so no Tier A
+//   field ever takes FormatFuzzer's 1/128 out-of-set "evil" value; it is true while
+//   parsing, which is the only thing that lets a pinned field accept a real file's own
+//   byte (a literal SetEvilBit(false) makes the template reject every real file).
+//   Tier B (meta_event.m_type) carries its complete valid_values set, weighted by
+//   preferred_value and NOT guarded, so the rejection paths stay reachable.
+//   Tier C fields are declared bare: no value set, no <min=>, no <max=>.  There is not
+//   one min/max attribute in this file.
+//
+// PLAN-THEN-EMIT
+//   MidiTrack's loop is driven by m_seclen, so a generator cannot know when to stop
+//   unless it either plans the whole track up front or writes the length afterwards.
+//   This template does the latter: m_seclen is emitted as a placeholder, the event
+//   stream runs under the output_budget, and the length is then backpatched to the
+//   exact byte count (MidiTrack.m_seclen, calculated_value / structure rule 8).  That
+//   leaves every event free to be whatever FormatFuzzer's own decision stream draws --
+//   the status byte picks one of 243 legal values and the template's own nine-way
+//   if/else chain emits the matching body with the matching byte count, so nothing has
+//   to be pinned to a precomputed layout.
+//
+// WHAT IS STEERED, AND WHY
+//   Three narrowings exist, each a format rule recorded in the JSON, not a convenience:
+//     * the first message of a track gets an explicit status byte (structure rule 5,
+//       dependency 3: running status has nothing to continue from);
+//     * the message after an FF/F0/F7 event gets an explicit status byte (dependency 4,
+//       structure rule 9: system and meta messages cancel running status);
+//     * the last message of a track is FF 2F 00 (structure rule 6).
+//   Everything else -- the event type, the channel, the delta time, every data byte,
+//   every payload length, the track count, the timebase -- is a free draw.
+//
+// OUTPUT BUDGET
+//   structure rule 3 budgets the whole file and structure rule 4 each track's event
+//   stream.  Both are running byte totals, scaled from the JSON's 256 KB to this
+//   runtime's MAX_FILE_SIZE of 65536.  A second counter estimates FormatFuzzer's
+//   MAX_RAND_SIZE consumption (131072 bytes of decisions), because a MIDI event spends
+//   several decisions per file byte and a corpus of 60 KB files would exhaust it.
+//   Neither counter ever caps a delta time, a payload length, an event count or the
+//   track count -- the generator simply stops adding events and closes the track.
+//
+// THE 24-BIT TEMPO FIELD
+//   meta_event.m_usecPerQuarterNote is a 24-bit bitfield inside a uint.  With padded
+//   bitfields (the default) the four-byte unit stays pending, so FTell() reports a
+//   position three bytes short until the next ordinary write flushes it.  The original's
+//   compensating FSeek at line 208 makes the next field land correctly anyway, but every
+//   FTell()-derived position in between is wrong.  The generator therefore forces the
+//   flush with one throwaway byte that the next field immediately overwrites; the file
+//   layout is identical and FTell() names a real position again.
+//
+// INDEPENDENCE
+//   Written from templates_originals/midi-orig.bt and the tiered constraints JSON only.
+//------------------------------------------------
+
+BigEndian();
+
+// Per-call-site lookahead sets must win over ffcompile's auto-mined global values.
+const local byte ReadByteInitValues[0];
+const local ushort ReadUShortInitValues[0];
+
+//------------------------------------------------
+// Value sets.  Every one of these is a complete legal set for the field it serves;
+// none of them narrows anything the JSON left free.
+//------------------------------------------------
+
+// A MIDI data byte: bit 7 CLEAR, the seven value bits free (note_*.m_note,
+// note_*.m_velocity, controller_event.*, program_event.m_program,
+// channel_pressure_event.m_pressure, pitch_bend_event.*, all bitmask_constraint).
+// Doubles as the terminating byte of a variable-length quantity (DeltaTime.t3).
+local byte g_data7[128];
+
+// A variable-length-quantity byte with the continuation bit SET: bit 7 set, the seven
+// value bits free (DeltaTime.t0-t2, bitmask_constraint).
+local byte g_cont7[128];
+
+// MidiMessage.m_status: the complete 243-value legal set -- 0x00-0x7F running status,
+// 0x80-0xEF channel voice, plus 0xF0, 0xF7 and 0xFF -- followed by extra copies of the
+// preferred_value members and of the two System Exclusive statuses.  Duplicates are a
+// weighting, not a filter: all 243 values are present.  The 13 excluded_values
+// (0xF1-0xF6, 0xF8-0xFE) are left out because they are System Common / Real-Time
+// messages that a Standard MIDI File may not contain and that line 236 would route to
+// sysex_event, which reads a length prefix they do not have.
+local byte g_stall[704];
+
+// The 115 explicit status bytes (0x80-0xEF, 0xF0, 0xF7, 0xFF): the legal set at a point
+// where running status is not available.
+local byte g_stexp[115];
+
+// meta_event.m_flatsSharps: the fifteen accidental counts, -7 flats to 7 sharps.
+local byte g_keysf[15];
+// meta_event.m_majorMinor: major and minor.
+local byte g_keymi[2];
+
+// Scratch one-element set, used to pin a single byte through a lookahead reservation.
+local byte g_b1[1];
+
+//------------------------------------------------
+// Generator state
+//------------------------------------------------
+
+// Plan RNG.  Seeded from the file's own timebase draw and then stirred by every delta
+// time the generator emits, so the plan is a function of FormatFuzzer's decision stream
+// and AFL+FFMut mutations reshape it.
+local uint g_rnd = 2463534242;
+
+// Variable-length-quantity plan for the next DeltaTime.
+local int   g_vlq_exact = 0;    // 1 = emit g_vlqb[] exactly, 0 = free value bits
+local int   g_vlq_n     = 1;    // byte count, 1..4
+local ubyte g_vlqb[4];
+
+// Per-file plan.
+local int   g_hdrfill  = 0;      // surplus header bytes (diversity axis MidiHeader.m_seclen)
+local int   g_trail    = 0;      // trailing bytes after the last track (structure rule 12)
+local int   g_stop_pct = 40;     // per-track chance of being the file's last track
+local int   g_notracks = 0;      // emit the zero-track file the JSON records as legal
+local int64 g_filecap  = 48000;  // output_budget, structure rule 3
+local int64 g_randcap  = 112000; // MAX_RAND_SIZE guard, see REWRITE NOTE
+local int64 g_randused = 0;
+
+// Per-track plan.
+local int64 g_trackcap = 0;      // output_budget, structure rule 4
+local int64 g_prevpos  = 0;
+local int   g_evcap    = 24000;
+local int   g_evi      = 0;
+local int   g_need_status = 1;   // structure rule 5, dependency 4
+local int   g_force_eot   = 0;   // structure rule 6
+local int   g_cheap       = 0;   // the message just emitted was a known-value payload
+
+// Per-event System Exclusive plan.
+local uchar g_sxb[272];
+local int   g_sx_n   = 0;
+local int   g_sx_mk  = 0;        // which payload shape, for the report
+local int   g_gs_ah  = 0x40;
+local int   g_gs_am  = 0x10;
+local int   g_gs_al  = 0x00;
+local int   g_gs_nd  = 1;
+
+//------------------------------------------------
+// Helpers
+//------------------------------------------------
+
+uint nextrnd()
+{
+    g_rnd = g_rnd * 1103515245 + 12345;
+    g_rnd = g_rnd ^ (g_rnd >> 13);
+    g_rnd = g_rnd * 2654435761;
+    return g_rnd >> 7;
+}
+
+int rnd(int n)
+{
+    if (n <= 1)
+        return 0;
+    return (int)(nextrnd() % (uint)n);
+}
+
+void midi_init()
+{
+    local int i = 0;
+    local int k = 0;
+
+    for (i = 0; i < 128; i++) {
+        g_data7[i] = (byte)i;
+        g_cont7[i] = (byte)(128 + i);
+    }
+
+    k = 0;
+    for (i = 0x80; i <= 0xEF; i++) { g_stexp[k] = (byte)i; k = k + 1; }
+    g_stexp[k] = (byte)0xF0; k = k + 1;
+    g_stexp[k] = (byte)0xF7; k = k + 1;
+    g_stexp[k] = (byte)0xFF; k = k + 1;
+
+    // the complete legal set first, so every one of the 243 values is reachable
+    k = 0;
+    for (i = 0x00; i <= 0x7F; i++) { g_stall[k] = (byte)i; k = k + 1; }
+    for (i = 0x80; i <= 0xEF; i++) { g_stall[k] = (byte)i; k = k + 1; }
+    g_stall[k] = (byte)0xF0; k = k + 1;
+    g_stall[k] = (byte)0xF7; k = k + 1;
+    g_stall[k] = (byte)0xFF; k = k + 1;
+    // ... then the preferred_value weighting.  0xF0 and 0xFF are weighted up because a
+    // System Exclusive or meta payload is where this format's decoder code actually is.
+    for (i = 0; i < 90;  i++) { g_stall[k] = (byte)0xF0; k = k + 1; }
+    for (i = 0; i < 110; i++) { g_stall[k] = (byte)0xFF; k = k + 1; }
+    for (i = 0; i < 20;  i++) { g_stall[k] = (byte)0xF7; k = k + 1; }
+    for (i = 0; i < 64;  i++) { g_stall[k] = (byte)(0x90 + (i & 0x0F)); k = k + 1; }
+    for (i = 0; i < 32;  i++) { g_stall[k] = (byte)(0x80 + (i & 0x0F)); k = k + 1; }
+    for (i = 0; i < 32;  i++) { g_stall[k] = (byte)(0xB0 + (i & 0x0F)); k = k + 1; }
+    for (i = 0; i < 16;  i++) { g_stall[k] = (byte)(0xC0 + (i & 0x0F)); k = k + 1; }
+    for (i = 0; i < 16;  i++) { g_stall[k] = (byte)(0xD0 + (i & 0x0F)); k = k + 1; }
+    for (i = 0; i < 16;  i++) { g_stall[k] = (byte)(0xE0 + (i & 0x0F)); k = k + 1; }
+    for (i = 0; i < 16;  i++) { g_stall[k] = (byte)(0xA0 + (i & 0x0F)); k = k + 1; }
+    for (i = k; i < 704; i++) { g_stall[i] = (byte)(i & 0x7F); }
+
+    for (i = 0; i < 15; i++) g_keysf[i] = (byte)(i - 7);
+    g_keymi[0] = (byte)0;
+    g_keymi[1] = (byte)1;
+}
+
+// Minimal byte count of a variable-length quantity.
+int vlq_bytes(int64 v)
+{
+    if (v < 128)
+        return 1;
+    if (v < 16384)
+        return 2;
+    if (v < 2097152)
+        return 3;
+    return 4;
+}
+
+// Plan the next DeltaTime as a free quantity of exactly n bytes: the continuation bits
+// are forced so the quantity terminates on the n-th byte, and the seven value bits of
+// every byte are drawn freely.
+void vlq_free(int n)
+{
+    g_vlq_exact = 0;
+    g_vlq_n = n;
+    if (g_vlq_n < 1) g_vlq_n = 1;
+    if (g_vlq_n > 4) g_vlq_n = 4;
+}
+
+// Plan the next DeltaTime as the exact value v written in n bytes.  n above the minimal
+// length produces the non-canonical encoding the JSON records as legal and worth
+// emitting (80 00 for zero), which drives the decoder's multi-byte accumulation loop.
+void vlq_exact(int64 v, int n)
+{
+    local int i = 0;
+    local int64 t = v;
+    g_vlq_exact = 1;
+    g_vlq_n = n;
+    if (g_vlq_n < vlq_bytes(v)) g_vlq_n = vlq_bytes(v);
+    if (g_vlq_n > 4) g_vlq_n = 4;
+    g_vlqb[g_vlq_n - 1] = (ubyte)(t & 0x7f);
+    for (i = g_vlq_n - 2; i >= 0; i--) {
+        t = t >> 7;
+        g_vlqb[i] = (ubyte)((t & 0x7f) | 0x80);
+    }
+}
+
+// Generate side only: reserve this quantity's bytes so the continuation bit of each one
+// agrees with the byte count the plan chose (DeltaTime.t0-t3, bitmask_constraint).  The
+// reservation is what the bare t0..t3 declarations then pick up, so the declarations
+// themselves stay exactly as the original wrote them.
+void vlq_reserve()
+{
+    local int64 p = 0;
+    local int i = 0;
+    local int ev = 0;
+    if (IsParsing())
+        return;
+    ev = SetEvilBit(0);
+    p = FTell();
+    if (g_vlq_exact) {
+        for (i = 0; i < g_vlq_n; i++) {
+            g_b1[0] = (byte)g_vlqb[i];
+            ReadByte(p + i, g_b1);
+        }
+    } else {
+        for (i = 0; i < g_vlq_n - 1; i++)
+            ReadByte(p + i, g_cont7);
+        ReadByte(p + g_vlq_n - 1, g_data7);
+    }
+    SetEvilBit(ev);
+    g_randused = g_randused + 3 * g_vlq_n;
+}
+
+// Generate side only: steer the status byte when a format rule requires it.
+//   structure rule 6  -- the track's last message is the end-of-track meta event
+//   structure rule 5  -- the first message of a track carries an explicit status
+//   dependency 4      -- the message after FF/F0/F7 carries an explicit status
+// With neither rule in force nothing is reserved and the declaration draws from the
+// complete 243-value set.
+void status_reserve()
+{
+    local int ev = 0;
+    if (IsParsing())
+        return;
+    ev = SetEvilBit(0);
+    if (g_force_eot) {
+        g_b1[0] = (byte)0xFF;
+        ReadByte(FTell(), g_b1);
+    } else if (g_need_status) {
+        ReadByte(FTell(), g_stexp);
+    }
+    SetEvilBit(ev);
+    g_randused = g_randused + 3;
+}
+
+// Generate side only: force meta_event.m_type to END_OF_TRACK on the closing message.
+void metatype_reserve()
+{
+    local int ev = 0;
+    if (IsParsing())
+        return;
+    if (!g_force_eot)
+        return;
+    ev = SetEvilBit(0);
+    g_b1[0] = (byte)0x2F;
+    ReadByte(FTell(), g_b1);
+    SetEvilBit(ev);
+    g_randused = g_randused + 3;
+}
+
+//------------------------------------------------
+// meta_event.m_length -- dependencies 8 to 15
+//------------------------------------------------
+// The fixed-layout meta types have a specification-mandated payload length and the
+// template's per-type branches emit exactly that many bytes, so the length is computed.
+// The nine text types and the undefined types carry a free-length payload, so the
+// length itself is a free draw; only the ENCODING is chosen, and the wide encodings are
+// used for small values so the decoder's multi-byte accumulation loop runs without a
+// payload the output budget cannot afford.
+void meta_len_plan(int t)
+{
+    local int64 room = g_filecap - FTell() - 24;
+    local int k = 0;
+    local int64 v = 0;
+
+    if (t == 0x00)      vlq_exact(2, 1 + rnd(3));   // dependency 13: sequence number
+    else if (t == 0x20) vlq_exact(1, 1 + rnd(3));   // dependency 14: channel prefix
+    else if (t == 0x21) vlq_exact(1, 1 + rnd(3));   // dependency 14: port number
+    else if (t == 0x2F) vlq_exact(0, 1 + rnd(3));   // dependency 8:  end of track
+    else if (t == 0x51) vlq_exact(3, 1 + rnd(3));   // dependency 9:  tempo
+    else if (t == 0x54) vlq_exact(5, 1 + rnd(3));   // dependency 10: SMPTE offset
+    else if (t == 0x58) vlq_exact(4, 1 + rnd(3));   // dependency 11: time signature
+    else if (t == 0x59) vlq_exact(2, 1 + rnd(3));   // dependency 12: key signature
+    else {
+        // dependency 15 and the m_data catch-all: free length
+        if (room < 200) {
+            vlq_exact(rnd(12), 1);
+            return;
+        }
+        k = rnd(10);
+        if (k < 4) {
+            vlq_free(1);                            // free value, 0..127
+        } else if (k < 6 && room > 16600) {
+            vlq_free(2);                            // free value, 0..16383
+        } else if (k == 6 && room > 300) {
+            vlq_free(1);
+        } else {
+            v = (int64)rnd(90);
+            vlq_exact(v, 2 + rnd(3));               // redundant 2-, 3- or 4-byte encoding
+        }
+    }
+}
+
+//------------------------------------------------
+// sysex_event.m_message -- payload_wellformedness
+//------------------------------------------------
+// Every byte of a System Exclusive payload has bit 7 clear and the message ends with
+// the 0xF7 End Of Exclusive terminator; a single byte with bit 7 set makes one of the
+// two measured parsers refuse the whole file.  Each builder below writes a complete,
+// correctly framed message of a real System Exclusive dialect into g_sxb and records
+// its exact length in g_sx_n, from which sysex_event.m_length is then computed -- never
+// the reverse.  The inner data bytes are content_is_free, so they are drawn freely.
+
+// Roland GS "Data Set" (DT1).  41 10 42 12 <addr> <data...> <checksum> F7.
+// The checksum is a real calculated_value: the low seven bits of the two's complement
+// of the sum of the address and data bytes.  Get it wrong and the GS parser returns
+// before touching the address switch.
+void sx_gs(int ah, int am, int al, int nd)
+{
+    local int i = 0;
+    local int ck = 0;
+    local int d = 0;
+    g_sxb[0] = (uchar)0x41;         // Roland manufacturer id
+    g_sxb[1] = (uchar)0x10;         // device id
+    g_sxb[2] = (uchar)0x42;         // GS model id
+    g_sxb[3] = (uchar)0x12;         // Data Set command
+    g_sxb[4] = (uchar)ah;
+    g_sxb[5] = (uchar)am;
+    g_sxb[6] = (uchar)al;
+    ck = (ah & 0x7f) + (am & 0x7f) + (al & 0x7f);
+    for (i = 0; i < nd; i++) {
+        d = (int)(nextrnd() & 0x7f);
+        g_sxb[7 + i] = (uchar)d;
+        ck = ck + d;
+    }
+    g_sxb[7 + nd] = (uchar)((128 - (ck & 0x7f)) & 0x7f);
+    g_sxb[8 + nd] = (uchar)0xF7;
+    g_sx_n = 9 + nd;
+}
+
+// Roland SC display message.  41 10 45 12 10 <00|01> 00 <text...> <checksum> F7.
+// sub 0x00 is the Text Insert and sub 0x01 the LCD bitmap message; both gates require
+// the zero byte at offset 6 and a total length above nine, and both then hand the bytes
+// from offset 7 to the decoder's string-table machinery.
+void sx_sc(int sub, int nb)
+{
+    local int i = 0;
+    local int ck = 0;
+    local int d = 0;
+    g_sxb[0] = (uchar)0x41;         // Roland manufacturer id
+    g_sxb[1] = (uchar)0x10;         // device id
+    g_sxb[2] = (uchar)0x45;         // SC model id
+    g_sxb[3] = (uchar)0x12;         // Data Set command
+    g_sxb[4] = (uchar)0x10;
+    g_sxb[5] = (uchar)sub;
+    g_sxb[6] = (uchar)0x00;
+    ck = 0x10 + sub;
+    for (i = 0; i < nb; i++) {
+        d = 0x20 + (int)(nextrnd() % 95);
+        g_sxb[7 + i] = (uchar)d;
+        ck = ck + d;
+    }
+    g_sxb[7 + nb] = (uchar)((128 - (ck & 0x7f)) & 0x7f);
+    g_sxb[8 + nb] = (uchar)0xF7;
+    g_sx_n = 9 + nb;
+}
+
+// Yamaha XG Parameter Change.  43 1n 4C <addr high> <addr mid> <addr low> <body...> F7.
+// No checksum.  The XG parsers walk the body one byte at a time, incrementing an entry
+// number from the low address byte, so one long body sweeps a whole parameter block.
+void sx_xg(int dev, int ah, int am, int al, int nb)
+{
+    local int i = 0;
+    g_sxb[0] = (uchar)0x43;             // Yamaha manufacturer id
+    g_sxb[1] = (uchar)(0x10 | (dev & 0x0F));
+    g_sxb[2] = (uchar)0x4C;             // XG model id
+    g_sxb[3] = (uchar)ah;
+    g_sxb[4] = (uchar)am;
+    g_sxb[5] = (uchar)al;
+    for (i = 0; i < nb; i++)
+        g_sxb[6 + i] = (uchar)(nextrnd() & 0x7f);
+    g_sxb[6 + nb] = (uchar)0xF7;
+    g_sx_n = 7 + nb;
+}
+
+// Yamaha XG Bulk Dump.  43 0n 4C <count hi> <count lo> <addr> <body...> <checksum> F7.
+// The bulk-dump form puts the address three bytes further in than a parameter change
+// does, which is a separate branch in every XG block.
+void sx_xgbulk(int dev, int clo, int ah, int am, int al, int nb)
+{
+    local int i = 0;
+    local int ck = 0;
+    local int d = 0;
+    g_sxb[0] = (uchar)0x43;
+    g_sxb[1] = (uchar)(dev & 0x0F);
+    g_sxb[2] = (uchar)0x4C;
+    g_sxb[3] = (uchar)0x00;
+    g_sxb[4] = (uchar)clo;
+    g_sxb[5] = (uchar)ah;
+    g_sxb[6] = (uchar)am;
+    g_sxb[7] = (uchar)al;
+    ck = clo + ah + am + al;
+    for (i = 0; i < nb; i++) {
+        d = (int)(nextrnd() & 0x7f);
+        g_sxb[8 + i] = (uchar)d;
+        ck = ck + d;
+    }
+    g_sxb[8 + nb] = (uchar)((128 - (ck & 0x7f)) & 0x7f);
+    g_sxb[9 + nb] = (uchar)0xF7;
+    g_sx_n = 10 + nb;
+}
+
+// Universal Non-Real Time (7E) / Real Time (7F) message.
+// 7E|7F <device> <sub-id 1> <sub-id 2> <data...> F7.
+void sx_univ(int rt, int dev, int s1, int s2, int nb)
+{
+    local int i = 0;
+    g_sxb[0] = (uchar)rt;
+    g_sxb[1] = (uchar)dev;
+    g_sxb[2] = (uchar)s1;
+    g_sxb[3] = (uchar)s2;
+    for (i = 0; i < nb; i++)
+        g_sxb[4 + i] = (uchar)(nextrnd() & 0x7f);
+    g_sxb[4 + nb] = (uchar)0xF7;
+    g_sx_n = 5 + nb;
+}
+
+// Universal Real Time Global Parameter Control, reverb (slot 01 01) or chorus (01 02).
+// 7F <dev> 04 05 <slot path> 01 <01|02> <parameter, value> ... F7.
+void sx_gpc(int which, int npair)
+{
+    local int i = 0;
+    g_sxb[0] = (uchar)0x7F;
+    g_sxb[1] = (uchar)0x7F;
+    g_sxb[2] = (uchar)0x04;
+    g_sxb[3] = (uchar)0x05;
+    g_sxb[4] = (uchar)0x01;             // slot path length
+    g_sxb[5] = (uchar)0x01;             // parameter id width
+    g_sxb[6] = (uchar)0x01;             // value width
+    g_sxb[7] = (uchar)0x01;             // slot path: effects
+    g_sxb[8] = (uchar)which;            // 01 = reverb, 02 = chorus
+    for (i = 0; i < npair; i++) {
+        g_sxb[9 + 2 * i] = (uchar)(i & 0x07);
+        g_sxb[10 + 2 * i] = (uchar)(nextrnd() & 0x7f);
+    }
+    g_sxb[9 + 2 * npair] = (uchar)0xF7;
+    g_sx_n = 10 + 2 * npair;
+}
+
+// A manufacturer's own message with no published meaning: a one-byte or three-byte
+// manufacturer id, free seven-bit data, 0xF7.  This is the generic payload that every
+// parser skips, and the shape the specification's own example (an Identity Request) has.
+void sx_generic(int three, int nb, int term)
+{
+    local int i = 0;
+    local int k = 0;
+    if (three) {
+        g_sxb[0] = (uchar)0x00;         // three-byte manufacturer id introducer
+        g_sxb[1] = (uchar)(nextrnd() & 0x7f);
+        g_sxb[2] = (uchar)(nextrnd() & 0x7f);
+        k = 3;
+    } else {
+        g_sxb[0] = (uchar)(1 + (int)(nextrnd() % 0x7c));
+        g_sxb[1] = (uchar)0x7F;         // device id: all devices
+        k = 2;
+    }
+    for (i = 0; i < nb; i++) {
+        g_sxb[k] = (uchar)(nextrnd() & 0x7f);
+        k = k + 1;
+    }
+    if (term) {
+        g_sxb[k] = (uchar)0xF7;         // End Of Exclusive
+        k = k + 1;
+    }
+    g_sx_n = k;
+}
+
+// Pick a Roland GS address.  Each family below is a different switch in the GS parser;
+// the sub-address selects a different case inside it.
+void plan_gs_addr()
+{
+    local int f = rnd(16);
+    local int part = rnd(16);
+    // the address high nibble doubles as the block number in the drum-setup and user
+    // instrument families; it is kept below 8 so the address byte stays a seven-bit
+    // data byte, which every byte of a System Exclusive payload must be
+    local int blk = rnd(8);
+    g_gs_nd = 1;
+    if (f == 0) {                                   // part parameters
+        g_gs_ah = 0x40; g_gs_am = 0x10 | part; g_gs_al = rnd(0x41);
+        if (g_gs_al == 0x40) g_gs_nd = 12;          // scale tuning: twelve semitones
+        if (g_gs_al == 0x00) g_gs_nd = 2;           // tone number: bank then program
+    } else if (f == 1 || f == 2) {                  // controller routing
+        g_gs_ah = 0x40; g_gs_am = 0x20 | part; g_gs_al = rnd(0x5B);
+    } else if (f == 3) {                            // reverb, chorus and delay
+        g_gs_ah = 0x40; g_gs_am = 0x01; g_gs_al = 0x30 + rnd(0x2B);
+    } else if (f == 4) {                            // equaliser
+        g_gs_ah = 0x40; g_gs_am = 0x02; g_gs_al = rnd(4);
+    } else if (f == 5) {                            // insertion effect
+        g_gs_ah = 0x40; g_gs_am = 0x03; g_gs_al = rnd(0x20);
+    } else if (f == 6) {                            // tone map and effect on/off
+        g_gs_ah = 0x40; g_gs_am = 0x40 | part; g_gs_al = rnd(0x23);
+    } else if (f == 7) {                            // drum setup
+        g_gs_ah = 0x41; g_gs_am = (blk << 4) | (1 + rnd(9)); g_gs_al = rnd(128);
+    } else if (f == 8) {                            // user instrument
+        g_gs_ah = 0x20; g_gs_am = (blk << 4) | rnd(3); g_gs_al = rnd(128);
+    } else if (f == 9) {                            // user drumset
+        g_gs_ah = 0x21; g_gs_am = (blk << 4) | (1 + rnd(12)); g_gs_al = rnd(128);
+    } else if (f == 10) {                           // system: channel message receive port
+        g_gs_ah = 0x00; g_gs_am = 0x01; g_gs_al = rnd(32);
+    } else if (f == 11) {                           // double module mode
+        g_gs_ah = 0x50 + rnd(2); g_gs_am = 0x10 | part; g_gs_al = rnd(0x41);
+    } else if (f == 12) {                           // GS reset
+        g_gs_ah = 0x40; g_gs_am = 0x00; g_gs_al = 0x7F;
+    } else if (f == 13) {                           // master tune / volume / key shift
+        g_gs_ah = 0x40; g_gs_am = 0x00;
+        g_gs_al = 0x00;
+        if (rnd(2)) g_gs_al = 0x04;
+        if (g_gs_al == 0x00) g_gs_nd = 4;           // master tune is four nibbles
+    } else if (f == 14) {                           // voice reserve: sixteen parts
+        g_gs_ah = 0x40; g_gs_am = 0x01; g_gs_al = 0x10; g_gs_nd = 17;
+    } else {                                        // changing effects macro block
+        g_gs_ah = 0x40; g_gs_am = 0x01; g_gs_al = 0x30 + rnd(16);
+    }
+    if (g_gs_nd == 1 && rnd(4) == 0)
+        g_gs_nd = 2 + rnd(6);
+}
+
+// Choose the System Exclusive payload for this event and set m_length from it.
+void plan_sysex()
+{
+    local int64 room = g_filecap - FTell() - 24;
+    local int k = 0;
+    local int nb = 0;
+    local int64 sn = 0;
+    local int snn = 0;
+    if (IsParsing())
+        return;
+
+    k = rnd(100);
+    if (room < 32) {
+        // no room for a framed message: an empty payload is legal and exercises the
+        // zero-length path (diversity axis sysex_event.m_length)
+        g_sx_n = 0;
+        g_sx_mk = 99;
+        vlq_exact(0, 1);
+        g_cheap = 1;
+        return;
+    }
+
+    if (k < 26) {                                   // Roland GS Data Set
+        plan_gs_addr();
+        if (9 + g_gs_nd > room) g_gs_nd = 1;
+        sx_gs(g_gs_ah, g_gs_am, g_gs_al, g_gs_nd);
+        g_sx_mk = 0;
+    } else if (k < 30 && room > 48) {               // Roland SC text / LCD message
+        nb = 3 + rnd(34);
+        if (9 + nb > room) nb = 3;
+        sx_sc(rnd(2), nb);
+        g_sx_mk = 1;
+    } else if (k < 38 && room > 140) {              // XG Multi Part sweep
+        sx_xg(rnd(16), 0x08, rnd(16), 0, 100 + rnd(28));
+        g_sx_mk = 2;
+    } else if (k < 44 && room > 120) {              // XG Drum Setup sweep
+        sx_xg(rnd(16), 0x30 + rnd(16), rnd(128), 0, 98 + rnd(8));
+        g_sx_mk = 3;
+    } else if (k < 50) {                            // XG Effect 1
+        nb = 46 + rnd(6);
+        if (7 + nb > room) nb = 3;
+        sx_xg(rnd(16), 0x02, 0x01, 0, nb);
+        g_sx_mk = 4;
+    } else if (k < 53) {                            // XG Multi EQ
+        nb = 20 + rnd(12);
+        if (7 + nb > room) nb = 3;
+        sx_xg(rnd(16), 0x02, 0x40, 0, nb);
+        g_sx_mk = 5;
+    } else if (k < 57) {                            // XG Effect 2
+        nb = 20 + rnd(24);
+        if (7 + nb > room) nb = 3;
+        sx_xg(rnd(16), 0x03, rnd(0x40), 0, nb);
+        g_sx_mk = 6;
+    } else if (k < 60) {                            // XG System On
+        sx_xg(rnd(16), 0x00, 0x00, 0x7E, 1);
+        g_sx_mk = 7;
+    } else if (k < 62) {                            // XG Master Tune
+        sx_xg(rnd(16), 0x00, 0x00, 0x00, 6);
+        g_sx_mk = 8;
+    } else if (k < 66 && room > 140) {              // XG Bulk Dump
+        nb = 90 + rnd(30);
+        sx_xgbulk(rnd(16), 0x29, 0x08, rnd(16), 0, nb);
+        g_sx_mk = 9;
+    } else if (k < 70) {                            // GM / GM2 System On and Off
+        sx_univ(0x7E, 0x7F, 0x09, 1 + rnd(3), 0);
+        g_sx_mk = 10;
+    } else if (k < 74) {                            // Universal master volume
+        sx_univ(0x7F, 0x7F, 0x04, 0x01, 2);
+        g_sx_mk = 11;
+    } else if (k < 78) {                            // GM2 master fine / coarse tune
+        sx_univ(0x7F, 0x7F, 0x04, 0x03 + rnd(2), 2);
+        g_sx_mk = 12;
+    } else if (k < 82) {                            // Global Parameter Control
+        sx_gpc(1 + rnd(2), 1 + rnd(6));
+        g_sx_mk = 13;
+    } else if (k < 86) {                            // MIDI Tuning Standard
+        nb = rnd(12);
+        k = rnd(4);
+        if (k == 0) sx_univ(0x7E, 0x7F, 0x08, 0x01, nb);
+        else if (k == 1) sx_univ(0x7E, 0x7F, 0x08, 0x02, nb);
+        else if (k == 2) sx_univ(0x7E, 0x7F, 0x08, 0x0B, nb);
+        else sx_univ(0x7E, 0x7F, 0x08, 0x0C, nb);
+        g_sx_mk = 14;
+    } else if (k < 90) {                            // sample dump, file dump, handshaking
+        k = rnd(10);
+        if (k < 5) sx_univ(0x7E, 0x7F, 1 + k, rnd(128), rnd(8));
+        else sx_univ(0x7E, 0x7F, 0x7B + (k - 5), rnd(128), rnd(4));
+        g_sx_mk = 15;
+    } else if (k < 93) {                            // Universal with a specific device id
+        sx_univ(0x7E + rnd(2), rnd(127), 1 + rnd(9), rnd(128), rnd(10));
+        g_sx_mk = 16;
+    } else {                                        // a manufacturer's own message
+        nb = rnd(40);
+        if (7 + nb > room) nb = 1;
+        sx_generic(rnd(3) == 0, nb, rnd(8) != 0);
+        g_sx_mk = 17;
+    }
+
+    if (g_sx_n > 268) g_sx_n = 268;
+    sn = g_sx_n;
+    snn = vlq_bytes(sn);
+    snn = snn + rnd(2);
+    vlq_exact(sn, snn);
+    g_cheap = 1;
+}
+
+// Copy the planned payload out as a byte string of exactly m_length.total bytes.
+string sysex_body(int64 n)
+{
+    local uchar out[n];
+    local int i = 0;
+    for (i = 0; i < n; i++) {
+        if (i < 272)
+            out[i] = g_sxb[i];
+        else
+            out[i] = (uchar)0;
+    }
+    local string s = out;
+    return s;
+}
+
+//------------------------------------------------
+// File- and track-level planning
+//------------------------------------------------
+
+// The delta time is a free quantity: only its ENCODED LENGTH is chosen here, so that
+// one-, two-, three- and four-byte encodings all occur and a decoder's accumulation loop
+// runs once per continuation byte.  The seven value bits of every byte stay free, which
+// is what keeps DeltaTime.t0 the unconstrained diversity axis the JSON records.
+void dt_plan()
+{
+    local int k = 0;
+    if (IsParsing())
+        return;
+    k = rnd(100);
+    if (k < 62)      vlq_free(1);
+    else if (k < 85) vlq_free(2);
+    else if (k < 96) vlq_free(3);
+    else             vlq_free(4);
+}
+
+void file_plan()
+{
+    local uint seed = 0;
+    if (IsParsing())
+        return;
+
+    // Seed the plan from the file's own timebase draw.  ReadUShort reserves bytes 12-13
+    // without constraining them, and the bare MidiHeader.m_tickdiv declaration at that
+    // offset picks the reserved bytes up, so the timebase is still an unconstrained draw
+    // from FormatFuzzer's own distribution -- it is only made three fields earlier.
+    seed = (uint)ReadUShort(12);
+    g_rnd = g_rnd ^ seed;
+    g_rnd = g_rnd + 0x9e3779b9;
+    nextrnd();
+
+    // diversity axis MidiHeader.m_seclen: a header longer than six bytes is forward
+    // compatible and real parsers skip the surplus, which is a branch a conforming
+    // six-byte header never reaches.  The surplus bytes are emitted, so m_seclen stays
+    // an exact calculated_value.  This is the one plan decision that has to be taken
+    // before the header is written, because m_seclen counts it.
+    g_hdrfill = 0;
+    if ((seed % 7) == 0)
+        g_hdrfill = 1 + (int)(seed % 37);
+}
+
+// Called once the header has been emitted, so it can stir in m_format's own draw as
+// well as the timebase: the output budget (structure rule 3), the per-track chance of
+// being the last track, and the zero-track file.
+void tracks_plan(int fmt, int tdiv)
+{
+    local int k = 0;
+    if (IsParsing())
+        return;
+    g_rnd = g_rnd * 31 + (uint)fmt;
+    g_rnd = g_rnd * 31 + (uint)tdiv;
+    nextrnd();
+
+    // output_budget, structure rule 3: the whole-file byte budget, drawn broadly so the
+    // corpus spans sizes rather than clustering at one.
+    k = rnd(100);
+    if (k < 10)      g_filecap = 40 + (int64)rnd(400);
+    else if (k < 32) g_filecap = 400 + (int64)rnd(2600);
+    else if (k < 60) g_filecap = 3000 + (int64)rnd(9000);
+    else if (k < 85) g_filecap = 12000 + (int64)rnd(20000);
+    else             g_filecap = 32000 + (int64)rnd(28000);
+
+    // dependency 1 is advisory: the specification wants one track in a format 0 file,
+    // but both measured parsers accept several, and the JSON records that as worth
+    // emitting because it drives the multi-track merge under a format that claims not to
+    // need it.  The count below is therefore drawn independently of m_format.
+    // The track count is a geometric draw: after each track the generator asks again
+    // whether to add another, and that question is answered from the plan RNG that every
+    // delta time of the track just emitted has stirred.  So the count follows
+    // FormatFuzzer's own decision stream rather than a per-file constant, and it is
+    // bounded only by the output budget.
+    k = rnd(100);
+    if (k < 42)      g_stop_pct = 70;
+    else if (k < 74) g_stop_pct = 30;
+    else if (k < 92) g_stop_pct = 8;
+    else             g_stop_pct = 1;
+    g_notracks = 0;
+    if (rnd(26) == 0)
+        g_notracks = 1;                             // the zero-track path
+}
+
+// structure rules 1 and 3: at least one track, then as many as the output budget and the
+// plan allow.
+int track_more(int nt)
+{
+    if (nt >= 4000)
+        return 0;                                   // the runtime's own array ceiling
+    if (FTell() + 12 > g_filecap)
+        return 0;
+    if (g_randused >= g_randcap)
+        return 0;
+    if (nt == 0) {
+        if (g_notracks)
+            return 0;
+        return 1;
+    }
+    if (rnd(100) < g_stop_pct)
+        return 0;
+    return 1;
+}
+
+void track_begin()
+{
+    local int64 room = 0;
+    local int64 want = 0;
+    local int k = 0;
+    local int div = 1;
+    g_evi = 0;
+    g_force_eot = 0;
+    g_need_status = 1;                              // structure rule 5
+    g_cheap = 0;
+    g_prevpos = FTell();
+
+    // output_budget, structure rule 4: a per-track byte budget, taken as a share of the
+    // file budget still unspent so that a file the plan wants many tracks in gets short
+    // tracks rather than running out of budget after the first.  A track may also be
+    // empty, which the JSON records as legal and worth emitting.
+    room = g_filecap - FTell();
+    if (room < 0) room = 0;
+    div = 1;
+    if (g_stop_pct <= 1)       div = 20 + rnd(220);
+    else if (g_stop_pct <= 8)  div = 4 + rnd(40);
+    else if (g_stop_pct <= 30) div = 1 + rnd(8);
+    else                       div = 1 + rnd(3);
+    want = room / div;
+    k = rnd(100);
+    if (k < 8)       want = 0;
+    else if (k < 22) want = (int64)(4 + rnd(120));
+    if (want > room) want = room;
+    g_trackcap = FTell() + want;
+}
+
+int track_next()
+{
+    local int64 now = FTell();
+    local int64 grew = now - g_prevpos;
+    g_prevpos = now;
+    g_evi = g_evi + 1;
+
+    // estimate the decision-stream cost of the message just emitted
+    if (g_cheap) {
+        g_randused = g_randused + 34;
+        g_cheap = 0;
+    } else {
+        g_randused = g_randused + 14 + 2 * grew;
+    }
+
+    // the closing end-of-track event has just been emitted
+    if (g_force_eot)
+        return 0;
+
+    // dependency 4 / structure rule 9: a meta or System Exclusive event cancels running
+    // status, so the next message must carry its own status byte.
+    g_need_status = 0;
+    if (lastStatus == -1)
+        g_need_status = 1;
+    if ((lastStatus & 0xf0) == 0xF0)
+        g_need_status = 1;
+
+    if (now >= g_trackcap || now >= g_filecap || g_evi >= g_evcap
+        || g_randused >= g_randcap) {
+        g_force_eot = 1;                            // structure rule 6
+        g_need_status = 1;
+        return 1;
+    }
+    return 1;
+}
+
+midi_init();
+
+//------------------------------------------------
+
+struct MidiHeader
+{
+    // Tier A fixed_value: the file's magic number.  Both measured parsers refuse
+    // anything else before reading a further byte.
+    local int evil_hm = SetEvilBit(IsParsing());
+    char m_magic[4] = { "MThd" } <format = hex>;
+    SetEvilBit(evil_hm);
+
+    // Tier A calculated_value: the header chunk body length.  Six for a conforming
+    // header, and 6 + g_hdrfill when the forward-compatibility filler below is emitted.
+    local int evil_hl = SetEvilBit(IsParsing());
+    uint m_seclen = { (uint)(6 + g_hdrfill) };
+    SetEvilBit(evil_hl);
+
+    // Tier A enumerated_values: exactly three formats.  One of the two measured parsers
+    // refuses anything above 2, and each value selects a different track-interpretation
+    // model, so all three are emitted -- format 1 merges tracks against a shared
+    // timebase and format 2 plays them as independent sequential patterns.
+    local int evil_hf = SetEvilBit(IsParsing());
+    enum <short>
+    {
+        MIDI_SINGLE = 0,
+        MIDI_MULTIPLE = 1,
+        MIDI_PATTERN = 2
+    } m_format = { MIDI_SINGLE, MIDI_SINGLE, MIDI_SINGLE,
+                   MIDI_MULTIPLE, MIDI_MULTIPLE, MIDI_MULTIPLE,
+                   MIDI_PATTERN, MIDI_PATTERN };
+    SetEvilBit(evil_hf);
+
+    // dependency 0: the declared count must equal the number of MTrk chunks emitted.
+    // Generating, this is a placeholder: the JSON's own generation note on structure
+    // rule 3 says to stop adding tracks when the budget is spent and then write
+    // m_ntracks to match what was emitted, which is what the backpatch below does.
+    local int evil_hn = SetEvilBit(IsParsing());
+    short m_ntracks = { 1 };
+    SetEvilBit(evil_hn);
+
+    // Tier C: the timebase.  BARE.  Its sign switches the whole file between musical
+    // ticks and SMPTE frames and subframes (dependency 2: a negative value counts delta
+    // times in SMPTE subframes and makes META_TEMPO irrelevant), and both halves of the
+    // signed range are reachable only by leaving it alone.
+    short m_tickdiv;
+
+    // diversity axis MidiHeader.m_seclen: the surplus header bytes a parser skips.
+    if (IsParsing() == 0 && g_hdrfill > 0) {
+        char m_hdrExtra[g_hdrfill];
+    } else if (IsParsing() && m_seclen > 6 && m_seclen <= 1024) {
+        char m_hdrExtra[m_seclen - 6];
+    }
+};
+
+struct DeltaTime
+{
+    local uint total = 0;
+    // Tier A bitmask_constraint, DeltaTime.t0-t3.  Bit 7 of each byte is the structural
+    // continuation flag (dependency 17: t1 exists only when t0 has bit 7 set, and the
+    // same chain relates t1 to t2 and t2 to t3) and bit 7 of the last byte must be
+    // clear, because the struct declares only four bytes and a fifth would be read by a
+    // real parser and lost by this template (structure rule 10).  The generator reserves the quantity's bytes with the right
+    // continuation bits and free value bits; t0..t3 themselves stay bare, exactly as
+    // the original declared them, and the parse direction is untouched.
+    vlq_reserve();
+    char t0;
+    total += t0 & 0x7f;
+    if (!(t0 & 0x80))
+        break;
+
+    total <<= 7;
+    char t1;
+    total += t1 & 0x7f;
+    if (!(t1 & 0x80))
+        break;
+
+    total <<= 7;
+    char t2;
+    total += t2 & 0x7f;
+    if (!(t2 & 0x80))
+        break;
+
+    total <<= 7;
+    char t3;
+    total += t3 & 0x7f;
+    if (!(t3 & 0x80))
+        break;
+};
+
+local char lastStatus = 0;
+
+struct MidiMessage
+{
+    dt_plan();
+    DeltaTime m_dtime;
+    // stir the plan RNG with the delta time, a genuine free draw, so the generator's
+    // own choices follow FormatFuzzer's decision stream rather than a per-file seed
+    g_rnd = g_rnd * 1664525 + m_dtime.total + 1013904223;
+
+    // Tier A enumerated_values: the complete 243-value legal set, weighted by
+    // preferred_value.  status_reserve() applies the three format rules that restrict it
+    // (structure rules 5 and 6, dependency 4) and nothing else.
+    local int evil_ms = SetEvilBit(IsParsing());
+    status_reserve();
+    char m_status <values=g_stall>;
+    SetEvilBit(evil_ms);
+    if (m_status & 0x80)
+        lastStatus = m_status;
+    else
+        FSeek(FTell()-1);
+
+    local char m_channel = lastStatus & 0xf;
+    // structure rule 11 and dependencies 5, 6, 7 and 16: the status byte's high nibble
+    // selects exactly one of the nine bodies below, with two data bytes, one data byte,
+    // a meta type and length, or a System Exclusive length and payload.  The template's
+    // own chain already implements that, which is why the status byte can be a free draw
+    // from the complete legal set: whatever it picks, the matching body follows.
+    if ((lastStatus & 0xf0) == 0x80)
+    {
+        struct
+        {
+            // Tier A bitmask_constraint: a MIDI data byte has bit 7 clear.  All 128
+            // values below that are free and all of them matter.
+            local int evil_d = SetEvilBit(IsParsing());
+            char m_note <values=g_data7>;
+            char m_velocity <values=g_data7>;
+            SetEvilBit(evil_d);
+        } note_off_event;
+    }
+    else if ((lastStatus & 0xf0) == 0x90)
+    {
+        struct
+        {
+            // velocity 0 is treated as a note off by every synthesiser, which is a
+            // distinct branch no non-zero velocity reaches
+            local int evil_d = SetEvilBit(IsParsing());
+            char m_note <values=g_data7>;
+            char m_velocity <values=g_data7>;
+            SetEvilBit(evil_d);
+        } note_on_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xA0)
+    {
+        struct
+        {
+            local int evil_d = SetEvilBit(IsParsing());
+            char m_note <values=g_data7>;
+            char m_pressure <values=g_data7>;
+            SetEvilBit(evil_d);
+        } note_pressure_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xB0)
+    {
+        struct
+        {
+            // controller numbers 120-127 are Channel Mode messages -- All Sound Off,
+            // All Notes Off, Omni and Mono/Poly -- which drive completely different code
+            // from a continuous controller, so the whole span is emitted
+            local int evil_d = SetEvilBit(IsParsing());
+            char m_controller <values=g_data7>;
+            char m_value <values=g_data7>;
+            SetEvilBit(evil_d);
+        } controller_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xC0)
+    {
+        struct
+        {
+            // dependency 6: program change carries exactly ONE data byte
+            local int evil_d = SetEvilBit(IsParsing());
+            char m_program <values=g_data7>;
+            SetEvilBit(evil_d);
+        } program_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xD0)
+    {
+        struct
+        {
+            // dependency 6: channel pressure carries exactly ONE data byte
+            local int evil_d = SetEvilBit(IsParsing());
+            char m_pressure <values=g_data7>;
+            SetEvilBit(evil_d);
+        } channel_pressure_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xE0)
+    {
+        struct
+        {
+            local int evil_d = SetEvilBit(IsParsing());
+            char m_lsb <values=g_data7>;
+            char m_msb <values=g_data7>;
+            SetEvilBit(evil_d);
+        } pitch_bend_event;
+    }
+    else if (lastStatus == -1)
+    {
+        struct
+        {
+            // Tier B: the complete set of eighteen defined meta types, weighted by
+            // preferred_value, plus the undefined types the JSON records as legal -- they
+            // are the reason the m_data catch-all branch exists and they are what a
+            // parser's skip-by-length path handles.  Deliberately NOT guarded against
+            // the evil bit: this is not a gate, so the out-of-set values are free
+            // coverage.  metatype_reserve() forces END_OF_TRACK on the track's last
+            // message (structure rule 6) and does nothing otherwise.
+            metatype_reserve();
+            enum <char>
+            {
+                META_SEQUENCE_NUM = 0,
+                META_TEXT = 1,
+                META_COPYRIGHT = 2,
+                META_SEQUENCE_NAME = 3,
+                META_INSTRUMENT_NAME = 4,
+                META_LYRIC = 5,
+                META_MARKER = 6,
+                META_CUE_POINT = 7,
+                META_PROGRAM_NAME = 8,
+                META_DEVICE_NAME = 9,
+                META_MIDI_CHANNEL_PREFIX = 0x20,
+                META_MIDI_PORT = 0x21,
+                META_END_OF_TRACK = 0x2f,
+                META_TEMPO = 0x51,
+                META_SMPTE_OFFSET = 0x54,
+                META_TIME_SIGNATURE = 0x58,
+                META_KEY_SIGNATURE = 0x59,
+                META_SEQUENCER_EVENT = 0x7f
+            } m_type = { META_SEQUENCE_NUM, META_TEXT, META_TEXT, META_COPYRIGHT,
+                         META_SEQUENCE_NAME, META_SEQUENCE_NAME, META_INSTRUMENT_NAME,
+                         META_LYRIC, META_LYRIC, META_MARKER, META_MARKER,
+                         META_CUE_POINT, META_PROGRAM_NAME, META_DEVICE_NAME,
+                         META_MIDI_CHANNEL_PREFIX, META_MIDI_PORT,
+                         META_END_OF_TRACK,
+                         META_TEMPO, META_TEMPO, META_SMPTE_OFFSET,
+                         META_TIME_SIGNATURE, META_TIME_SIGNATURE,
+                         META_KEY_SIGNATURE, META_KEY_SIGNATURE,
+                         META_SEQUENCER_EVENT,
+                         0x0a, 0x1f, 0x30, 0x50, 0x60, 0x7e };
+            // Tier A calculated_value: dependencies 8 to 15 fix the payload length of
+            // every defined type, and leave it free for the text types and the
+            // undefined ones.
+            meta_len_plan(m_type);
+            DeltaTime m_length;
+            if (m_type == META_SEQUENCE_NUM)
+            {
+                short m_seqNum;
+            }
+            else if (m_type == META_TEXT)
+            {
+                char m_text[m_length.total];
+            }
+            else if (m_type == META_COPYRIGHT)
+            {
+                char m_copyright[m_length.total];
+            }
+            else if (m_type == META_SEQUENCE_NAME)
+            {
+                char m_name[m_length.total];
+            }
+            else if (m_type == META_INSTRUMENT_NAME)
+            {
+                char m_name[m_length.total];
+            }
+            else if (m_type == META_LYRIC)
+            {
+                char m_lyric[m_length.total];
+            }
+            else if (m_type == META_MARKER)
+            {
+                char m_marker[m_length.total];
+            }
+            else if (m_type == META_CUE_POINT)
+            {
+                char m_cuePoint[m_length.total];
+            }
+            else if (m_type == META_PROGRAM_NAME)
+            {
+                char m_programName[m_length.total];
+            }
+            else if (m_type == META_DEVICE_NAME)
+            {
+                char m_deviceName[m_length.total];
+            }
+            else if (m_type == META_MIDI_CHANNEL_PREFIX)
+            {
+                char m_channelPrefix;
+            }
+            else if (m_type == META_MIDI_PORT)
+            {
+                char m_port;
+            }
+            else if (m_type == META_END_OF_TRACK)
+            {
+            }
+            else if (m_type == META_TEMPO)
+            {
+                // Tier C: the tempo.  BARE.  It multiplies through every delta time in
+                // the file and the whole 24-bit span was measured free.
+                local int64 _tp = FTell();
+                uint m_usecPerQuarterNote : 24;
+                // local uint m_bpm = 60000000 / m_usecPerQuarterNote;
+                // see REWRITE NOTE: the 24-bit field leaves a four-byte padded unit
+                // pending, so FTell() still reports _tp and the original's compensating
+                // seek at line 208 only works because the NEXT ordinary write closes the
+                // unit for it.  Parsing keeps exactly that behaviour.  Generating closes
+                // the unit here instead, with one throwaway byte the next field
+                // overwrites, so that every later FTell() -- the chunk-length backpatch
+                // and every lookahead reservation -- names a real file position.  The
+                // flush must happen BEFORE the seek: the padding write covers the whole
+                // four-byte unit, and at _tp-1 that unit overlaps the length field's
+                // last byte, which is reserved, and a bitfield may not touch a reserved
+                // byte.
+                if (IsParsing()) {
+                    FSeek(FTell() - 1);
+                } else {
+                    local int evil_tf = SetEvilBit(IsParsing());
+                    uchar m_tempoFlush = { 0 };
+                    SetEvilBit(evil_tf);
+                    FSeek(_tp + 3);
+                }
+            }
+            else if (m_type == META_SMPTE_OFFSET)
+            {
+                char m_hours;
+                char m_mins;
+                char m_secs;
+                char m_fps;
+                char m_fracFrames;
+            }
+            else if (m_type == META_TIME_SIGNATURE)
+            {
+                char m_numerator;
+                char m_denominator;
+                char m_clocksPerClick;
+                char m_32ndPer4th;
+            }
+            else if (m_type == META_KEY_SIGNATURE)
+            {
+                // Tier A enumerated_values: fifteen accidental counts and two modes.
+                // One of the measured parsers refuses the file outright outside those.
+                local int evil_ks = SetEvilBit(IsParsing());
+                char m_flatsSharps <values=g_keysf>;
+                char m_majorMinor <values=g_keymi>;
+                SetEvilBit(evil_ks);
+            }
+            else
+            {
+                char m_data[m_length.total];
+            }
+        } meta_event;
+    }
+    else if ((lastStatus & 0xf0) == 0xF0)
+    {
+        struct
+        {
+            // Tier A payload_wellformedness: plan the System Exclusive payload first,
+            // then set its length from the bytes planned -- never the reverse.
+            plan_sysex();
+            DeltaTime m_length;
+            if (IsParsing() || m_length.total == 0)
+            {
+                char m_message[m_length.total];
+            }
+            else
+            {
+                local string sxp[1];
+                sxp[0] = sysex_body(m_length.total);
+                local int evil_sx = SetEvilBit(IsParsing());
+                char m_message[m_length.total] = { sxp[0] };
+                SetEvilBit(evil_sx);
+            }
+        } sysex_event;
+    }
+};
+
+struct MidiTrack
+{
+    // Tier A fixed_value: the track chunk identifier.  A parser that does not find it
+    // abandons the track.
+    local int evil_tm = SetEvilBit(IsParsing());
+    char m_magic[4] = { "MTrk" } <format = hex>;
+    SetEvilBit(evil_tm);
+
+    // Tier A calculated_value / structure rule 8: the exact byte count of the event
+    // stream.  Emitted as a placeholder and backpatched after the loop, because the
+    // loop below is driven by this very field: it subtracts each message's size from an
+    // unsigned counter and tests for exactly zero, so an inexact value underflows and
+    // runs away.
+    local int64 _lenpos = FTell();
+    local int evil_tl = SetEvilBit(IsParsing());
+    uint m_seclen = { 0 };
+    SetEvilBit(evil_tl);
+
+    local int64 _bodypos = FTell();
+    local uint remaining = m_seclen;
+    if (IsParsing() == 0) {
+        track_begin();
+        remaining = 1;
+    }
+    while (remaining) {
+        MidiMessage message;
+        if (IsParsing())
+            remaining -= sizeof(message);
+        else
+            remaining = track_next();
+    }
+    if (IsParsing() == 0) {
+        local int64 _endpos = FTell();
+        FSeek(_lenpos);
+        local int evil_bp = SetEvilBit(IsParsing());
+        uint m_seclen = { (uint)(_endpos - _bodypos) };
+        SetEvilBit(evil_bp);
+        FSeek(_endpos);
+    }
+};
+
+file_plan();
+
+struct
+{
+    MidiHeader header;
+    // Tier C: the track chunks.  Their count is header.m_ntracks (dependency 0) and
+    // their total size is bounded by the output budget, never by capping either field.
+    if (IsParsing()) {
+        MidiTrack tracks[header.m_ntracks] <optimize=false>;
+    } else {
+        tracks_plan(header.m_format, header.m_tickdiv);
+        local int _nt = 0;
+        local int _go = 1;
+        while (_go) {
+            if (track_more(_nt)) {
+                MidiTrack tracks;
+                _nt = _nt + 1;
+            } else {
+                _go = 0;
+            }
+        }
+        // dependency 0: write the declared count from the chunks actually emitted
+        local int64 _ep = FTell();
+        FSeek(10);
+        local int evil_nt = SetEvilBit(IsParsing());
+        short m_ntracks = { (short)_nt };
+        SetEvilBit(evil_nt);
+        FSeek(_ep);
+        // structure rule 12: bytes after the last track are not part of the format, but
+        // both measured parsers ignore them, so they are a legitimate source of variety.
+        g_trail = 0;
+        if (rnd(9) == 0)
+            g_trail = 1 + rnd(24);
+        if (_ep + g_trail > g_filecap)
+            g_trail = 0;
+        if (g_trail > 0) {
+            char garbage[g_trail];
+        }
+    }
+    // the parse direction consumes whatever follows the last track, which the original
+    // left unread
+    if (IsParsing()) {
+        local int64 _rest = FileSize() - FTell();
+        if (_rest > 0) {
+            char garbage[_rest];
+        }
+    }
+} file;

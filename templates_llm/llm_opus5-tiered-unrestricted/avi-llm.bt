@@ -1,0 +1,2615 @@
+//------------------------------------------------
+//--- 010 Editor v1.2 Binary Template
+//
+//      File: AVI.bt
+//   Authors: Blaine Lefebvre [bl], Elias Bachaalany [eb]
+//   Version: 1.2
+//   Purpose: Parse an AVI movie file.
+//  Category: Video
+// File Mask: *.avi
+//  ID Bytes: 52 49 46 46 [+4] 41 56 49 20 //RIFF????AVI 
+//   History: 
+//   1.2   2016-01-27 SweetScape: Updated header for repository submission, added coloring for header.
+//   1.1   2006-10-02 eb: Added BITMAPINFO and WAVEFORMATEX proper strfHEADER recognition,
+//                      Fixed 'idx1' parsing.
+//   1.0   bl: Initial release.
+//
+//   --- Rewritten as a GENERATIVE FormatFuzzer specification -------------------
+//   Every struct, field name, field order and dispatch of the 010 original is
+//   kept.  What is added is (a) the value sets the tiered constraint set calls
+//   for, (b) the chunk-length arithmetic that turns the passive parser into a
+//   generator, and (c) one well-formed payload emitter per codec variant, which
+//   is where all of a video decoder's coverage lives.
+//
+//   Tier A fields are pinned inside a SetEvilBit(IsParsing()) guard: identical
+//   to SetEvilBit(false) while generating, but it leaves a real file's own value
+//   reachable while parsing, which is what keeps the parse direction working.
+//   Tier B fields carry their complete valid_values set, with preferred values
+//   repeated inside the set because file_string()/file_integer() draw uniformly
+//   from the vector - repetition IS the preferred/possible weighting.
+//   Tier C fields are declared bare: no value set, no <min=>, no <max=>.
+//------------------------------------------------
+
+LittleEndian();
+
+/* ===========================================================================
+ * Output budget (structure[].output_budget).
+ *
+ * The constraint set budgets the movi list to about 4 MB.  FormatFuzzer's
+ * engine caps a generated file at MAX_FILE_SIZE = 65536 and the decision
+ * stream at MAX_RAND_SIZE = 131072, so 4 MB is unreachable by the engine
+ * rather than by choice.  FILE_BUDGET is the engine's ceiling with room for
+ * the trailing index; DEC_BUDGET is the decision-stream ceiling, which binds
+ * first for the reference-bitstream codecs because those are emitted byte by
+ * byte (2 decision bytes each) where pixel data is emitted as a string
+ * (1 decision byte each).
+ *
+ * NOTHING below bounds a dimension, a depth, a codec, a channel count, a
+ * sample rate or a frame count directly.  The budget is spent by the movi
+ * list's own length, which is the format's own free size axis.
+ * =========================================================================== */
+const uint32 FILE_BUDGET = 58000;
+const uint32 DEC_BUDGET  = 104000;
+const uint32 JUNK_BUDGET = 20000;    /* JUNKHEADER.data is the designated filler */
+const uint32 HDRL_BUDGET = 12000;    /* one strl list per stream, ~76 bytes each */
+
+/* running totals - see each use site */
+local uint32 file_used = 0;
+local uint32 dec_used  = 0;
+local uint32 junk_used = 0;
+local uint32 hdrl_used = 0;
+
+/* ===========================================================================
+ * Geometry and size arithmetic.
+ *
+ * Every one of these takes its inputs as PARAMETERS, never as fields, so that
+ * ffcompile's value miner - which installs the literals of any
+ * `field == literal` comparison as that field's global known_values - cannot
+ * reach biWidth, biHeight, biBitCount, biCompression, nChannels,
+ * wBitsPerSample or wFormatTag through them.  Those are the diversity axes.
+ * =========================================================================== */
+
+/* ceil(a/d) for positive a, d */
+int64 CeilDiv(int64 a, int64 d)
+{
+    if (d <= 0)
+        return 0;
+    return (a + d - 1) / d;
+}
+
+/* BITMAPINFOHEADER.biHeight is declared uint32 by the original, but Windows
+ * defines it as a signed LONG and a negative value means top-down row order
+ * (TEMPLATE SIGNEDNESS, recorded on the constraint).  Recover the magnitude. */
+int64 AbsHeight(uint32 h)
+{
+    local int64 v = h;
+    if (v > 2147483647)
+        v = 4294967296 - v;
+    return v;
+}
+
+/* Row stride of an uncompressed DIB: padded to a 4-byte boundary exactly as in
+ * a standalone BMP.  ((biWidth * biBitCount + 31) / 32) * 4 */
+int64 RowBytes(int64 w, int64 bits)
+{
+    if (w <= 0 || bits <= 0 || w > 2000000 || bits > 32)
+        return 0;
+    return ((w * bits + 31) / 32) * 4;
+}
+
+/* The exact byte count a BI_RGB / BI_BITFIELDS frame must carry.  This is the
+ * product of the three free geometry fields and is the constraint set's
+ * central rule: the payload is computed from the geometry, never the other
+ * way round.  0 means "not expressible", which the caller turns into a choice
+ * of codec, never into a smaller dimension. */
+int64 RawBytes(uint32 w, uint32 h, uint16 bits)
+{
+    local int64 rb = RowBytes(w, bits);
+    local int64 hh = AbsHeight(h);
+    if (rb <= 0 || hh <= 0 || rb > 4000000 || hh > 4000000)
+        return 0;
+    return rb * hh;
+}
+
+/* A bound on every geometry-derived payload this template can emit: the widest
+ * raw fourcc below is 4 bytes per pixel. */
+int64 GeoBound(uint32 w, uint32 h)
+{
+    local int64 ww = w;
+    local int64 hh = AbsHeight(h);
+    if (ww <= 0 || hh <= 0 || ww > 4000000 || hh > 4000000)
+        return 0;
+    if (ww * hh > 200000000)
+        return 0;
+    return 4 * ww * hh + 64;
+}
+
+/* msvideo1 and MJPG both cost O(w*h) but with a small constant: four bytes per
+ * 4x4 block, and two entropy bits per 8x8 block respectively. */
+int64 BlockBound(uint32 w, uint32 h)
+{
+    local int64 ww = w;
+    local int64 hh = AbsHeight(h);
+    if (ww <= 0 || hh <= 0 || ww > 4000000 || hh > 4000000)
+        return 0;
+    if (ww * hh > 200000000)
+        return 0;
+    return 4 * CeilDiv(ww, 4) * CeilDiv(hh, 4) + 64;
+}
+
+uint32 Cap(uint32 want, uint32 room)
+{
+    if (want > room)
+        return room;
+    return want;
+}
+
+/* ===========================================================================
+ * BITMAPINFOHEADER.biCompression -> payload emitter.
+ *
+ * The constraint set records biCompression as the single highest-leverage
+ * field in AVI (eight decoders from one DWORD) with completeness "partial",
+ * and says an unlisted fourcc is still legal to emit.  The dispatch below is
+ * what gives every value in the set a payload the decoder will accept:
+ *
+ *   kind 1  BI_RGB / BI_BITFIELDS   exact ((w*bpp+31)/32)*4*|h| DIB rows
+ *   kind 2  BI_RLE8 / BI_RLE4       a real Microsoft RLE stream
+ *   kind 3  MJPG / mjpg             a complete JPEG, sized from the geometry
+ *   kind 4  MSVC / CRAM             Microsoft Video 1, four bytes per 4x4 block
+ *   kind 5  cvid                    a Cinepak frame header with zero strips
+ *   kind 6  raw fourcc              exact av_image_get_buffer_size() product
+ *   kind 7  reference bitstream     one real frame for the codec (ref_pool)
+ *   kind 0  anything else           free bytes - the no-decoder path
+ * =========================================================================== */
+
+/* The fourccs the measured target maps to AV_CODEC_ID_RAWVIDEO, with the exact
+ * byte count each pixel format needs.  Each one is a DIFFERENT pix_fmt, and so
+ * a different input path through the scaler that feeds the output encoder -
+ * which is where libswscale's coverage comes from.  Every formula below was
+ * verified against the measured target at 16x16, 7x5 and 20x9. */
+int64 RawTagBytes(uint32 comp, int64 w, int64 h)
+{
+    if (w <= 0 || h <= 0 || w > 100000 || h > 100000)
+        return 0;
+    switch (comp)
+    {
+        /* yuv420p */
+        case 0x30323449: /* I420 */
+        case 0x56555949: /* IYUV */
+        case 0x32315659: /* YV12 */
+        case 0x3032344A: /* J420 - yuvj420p */
+            return w * h + 2 * CeilDiv(w, 2) * CeilDiv(h, 2);
+        /* nv12 / nv21 - same byte count, different plane layout */
+        case 0x3231564E: /* NV12 */
+        case 0x3132564E: /* NV21 */
+            return w * h + 2 * CeilDiv(w, 2) * CeilDiv(h, 2);
+        /* yuv422p */
+        case 0x42323459: /* Y42B */
+        case 0x32323450: /* P422 */
+        case 0x32323449: /* I422 */
+        case 0x3232344A: /* J422 - yuvj422p */
+        case 0x36315659: /* YV16 */
+            return w * h + 2 * CeilDiv(w, 2) * h;
+        /* yuv410p */
+        case 0x39565559: /* YUV9 */
+        case 0x30313449: /* I410 */
+            return w * h + 2 * CeilDiv(w, 4) * CeilDiv(h, 4);
+        /* yuv411p */
+        case 0x42313459: /* Y41B */
+        case 0x31313449: /* I411 */
+            return w * h + 2 * CeilDiv(w, 4) * h;
+        /* yuv440p */
+        case 0x30343449: /* I440 */
+        case 0x3034344A: /* J440 - yuvj440p */
+            return w * h + 2 * w * CeilDiv(h, 2);
+        /* yuv444p */
+        case 0x34343449: /* I444 */
+        case 0x3434344A: /* J444 - yuvj444p */
+        case 0x34325659: /* YV24 */
+            return 3 * w * h;
+        /* yuva420p / yuva422p - the alpha plane adds a full w*h */
+        case 0x41303449: /* I40A */
+            return 2 * w * h + 2 * CeilDiv(w, 2) * CeilDiv(h, 2);
+        case 0x41323449: /* I42A */
+            return 2 * w * h + 2 * CeilDiv(w, 2) * h;
+        /* gray8 and pal8 - one byte per pixel, no row padding */
+        case 0x30303859: /* Y800 */
+        case 0x20203859: /* "Y8  " */
+        case 0x59455247: /* GREY */
+        case 0x32424752: /* RGB2 - pal8 */
+            return w * h;
+        /* two bytes per pixel, packed */
+        case 0x32595559: /* YUY2  - yuyv422  */
+        case 0x59565955: /* UYVY  - uyvy422  */
+        case 0x35315652: /* RV15  - rgb555le */
+        case 0x36315652: /* RV16  - rgb565le */
+            return 2 * w * h;
+        /* three bytes per pixel */
+        case 0x34325652: /* RV24 - rgb24 */
+            return 3 * w * h;
+        /* four bytes per pixel */
+        case 0x41424752: /* RGBA */
+        case 0x41524742: /* BGRA */
+        case 0x52474241: /* ABGR */
+        case 0x56555941: /* AYUV - vuya */
+        case 0x32335652: /* RV32 */
+            return 4 * w * h;
+        /* cljr is not rawvideo, but its frame is a fixed-rate one byte per
+         * pixel of packed YUV and every byte value is legal, so its payload is
+         * a product of the free geometry exactly as a raw format's is. */
+        case 0x524A4C43: /* CLJR */
+            return w * h;
+    }
+    return 0;
+}
+
+/* Index into ref_pool for a video fourcc, or -1.  Several fourccs share one
+ * bitstream where they share a decoder: the five MPEG-4 Part 2 tags all take
+ * the same Simple-Profile I-VOP, and both H.264 tags the same Annex-B IDR. */
+int VidRef(uint32 comp)
+{
+    switch (comp)
+    {
+        case 0x44495658: /* XVID */
+        case 0x58564944: /* DIVX */
+        case 0x30355844: /* DX50 */
+        case 0x34504D46: /* FMP4 */
+        case 0x5634504D: /* MP4V */  return 0;   /* mpeg4videodec  */
+        case 0x34363248: /* H264 */
+        case 0x34363268: /* h264 */  return 1;   /* h264dec        */
+        case 0x3167706D: /* mpg1 */  return 2;   /* mpeg12dec v1   */
+        case 0x3267706D: /* mpg2 */  return 3;   /* mpeg12dec v2   */
+        case 0x3234504D: /* MP42 */  return 4;   /* msmpeg4v2      */
+        case 0x3334504D: /* MP43 */  return 5;   /* msmpeg4v3      */
+        case 0x31564D57: /* WMV1 */  return 6;   /* msmpeg4v1/wmv1 */
+        case 0x32564D57: /* WMV2 */  return 7;   /* wmv2dec        */
+        case 0x33363248: /* H263 */  return 8;   /* h263dec        */
+        case 0x31564C46: /* FLV1 */  return 9;   /* flvdec         */
+        case 0x534C4A4D: /* MJLS */  return 10;  /* jpeglsdec      */
+        case 0x474E504D: /* MPNG */  return 11;  /* pngdec         */
+        case 0x20616774: /* "tga " */ return 12; /* targa          */
+        case 0x31717673: /* svq1 */  return 13;  /* svq1dec        */
+        case 0x56424D5A: /* ZMBV */  return 14;  /* zmbv           */
+        case 0x574F4E53: /* SNOW */  return 15;  /* snowdec        */
+        case 0x31565341: /* ASV1 */  return 16;  /* asvdec v1      */
+        case 0x32565341: /* ASV2 */  return 17;  /* asvdec v2      */
+        case 0x30385056: /* VP80 */
+        case 0x20385056: /* "VP8 " */ return 19; /* vp8            */
+        case 0x30395056: /* VP90 */  return 20;  /* vp9            */
+    }
+    return -1;
+}
+
+/* Index into ref_pool for an audio format tag, or -1. */
+int AudRef(uint16 tag)
+{
+    switch (tag)
+    {
+        case 0x00FF: return 21;   /* aacdec                                  */
+        case 0x0050: return 22;   /* mpegaudiodec layer II                   */
+        case 0x0055: return 23;   /* mpegaudiodec layer III                  */
+        case 0x2000: return 24;   /* ac3dec                                  */
+        case 0xFFFE: return 25;   /* WAVE_FORMAT_EXTENSIBLE carrying E-AC-3   */
+        case 0x0160: return 26;   /* wmadec v1                               */
+        case 0x0161: return 27;   /* wmadec v2                               */
+        case 0xF1AC: return 28;   /* flacdec                                 */
+        case 0xA109: return 29;   /* speexdec                                */
+    }
+    return -1;
+}
+
+int VidKind(uint32 comp)
+{
+    if (comp == 0 || comp == 3)
+        return 1;                                   /* BI_RGB / BI_BITFIELDS */
+    if (comp == 1 || comp == 2)
+        return 2;                                   /* BI_RLE8 / BI_RLE4     */
+    if (comp == 0x47504A4D || comp == 0x67706A6D)
+        return 3;                                   /* MJPG / mjpg           */
+    if (comp == 0x4356534D || comp == 0x4D415243)
+        return 4;                                   /* MSVC / CRAM           */
+    if (comp == 0x64697663)
+        return 5;                                   /* cvid                  */
+    if (VidRef(comp) >= 0)
+        return 7;
+    if (RawTagBytes(comp, 16, 16) > 0)
+        return 6;
+    return 0;
+}
+
+int AudKind(uint16 tag)
+{
+    if (tag == 0x0002)
+        return 2;                                   /* adpcm_ms block        */
+    if (tag == 0x0011)
+        return 3;                                   /* adpcm_ima_wav block   */
+    if (AudRef(tag) >= 0)
+        return 4;                                   /* reference bitstream   */
+    return 1;                                       /* free bytes * blockalign */
+}
+
+/* WAVEFORMATEX.nBlockAlign, Tier A calculated_value: "nChannels *
+ * wBitsPerSample / 8 for PCM; the codec's fixed frame size for the
+ * block-oriented formats such as ADPCM and GSM".  Measured, GSM 6.10 with a
+ * block align that did not match its codec was refused outright, so the
+ * block codecs get their own size.  nChannels and wBitsPerSample stay bare -
+ * this reads them, it does not constrain them. */
+uint32 AudBlock(uint16 tag, uint16 ch, uint16 bps, uint32 refba)
+{
+    if (refba > 0)
+        return refba;                               /* the reference frame's own block */
+    if (tag == 0x0002 || tag == 0x0011)
+        return 256;                                 /* one ADPCM block                 */
+    if (tag == 0x0031 || tag == 0x0040 || tag == 0x0045)
+        return 65;                                  /* GSM 6.10 / G.726                */
+    if (tag == 0x0022)
+        return 32;                                  /* DSP TrueSpeech                  */
+    if (tag == 0x0020 || tag == 0x028F || tag == 0x0200 || tag == 0x0006 || tag == 0x0007)
+        return 1;                                   /* byte-oriented, no block         */
+    local uint32 b = bps / 8;
+    local uint32 c = ch;
+    if (b == 0)
+        b = 1;
+    if (c == 0)
+        c = 1;
+    if (b * c > 65535)
+        return 65535;                               /* the field is a WORD             */
+    return b * c;
+}
+
+/* The codec-specific extradata length a format tag needs, which is what
+ * WAVEFORMATEX.cbSize (Tier A) must state.  Dependency: WAVE_FORMAT_EXTENSIBLE
+ * requires 22 bytes - valid bits, a channel mask and a format GUID. */
+uint32 AudExtra(uint16 tag, uint32 reflen)
+{
+    if (tag == 0xFFFE)
+        return 22;
+    if (reflen > 0)
+        return reflen;
+    if (tag == 0x0002)
+        return 32;                                  /* wSamplesPerBlock + 7 coef pairs */
+    if (tag == 0x0011)
+        return 2;                                   /* wSamplesPerBlock                */
+    if (tag == 0x0031 || tag == 0x0022 || tag == 0x0040)
+        return 2;
+    return 0;
+}
+
+/* ===========================================================================
+ * BITMAPINFOHEADER.biCompression - Tier B, enumerated_values, completeness
+ * "partial".  All 29 values the constraint set lists are present, plus
+ * 18 further registered fourccs that each reach a decoder the listed set
+ * leaves unreachable and 30 further rawvideo fourccs that each select a
+ * different pixel format, and so a different conversion path in the scaler
+ * that feeds the output encoder.  preferred_value [0, 1, 2, MJPG, MSVC, cvid]
+ * is expressed by repeating those values inside the set, because the engine
+ * draws uniformly from the vector.
+ *
+ * Three sets, not one.  A BI_RGB or raw-fourcc frame is an exact product of
+ * the three FREE geometry fields, so for a geometry whose product does not fit
+ * in the engine's 64 KB file the value is simply unsatisfiable: dependency 3
+ * then has no legal payload.  The alternative to choosing a codec whose frame
+ * IS expressible would be clamping biWidth, biHeight or biBitCount, which is
+ * the one mistake the whole strategy exists to prevent.  Every value still
+ * appears in part of the corpus, because the geometry that excludes it is
+ * itself free.  comp_all is used when the product fits, comp_mid when only the
+ * O(w*h/16) codecs fit, comp_fix when neither does.
+ * =========================================================================== */
+local uint32 comp_all[] = {
+    0, 0, 0, 0, 0, 0, 1, 1,
+    1, 2, 2, 2, 3, 1196444237, 1196444237, 1196444237,
+    1735420525, 1129730893, 1129730893, 1129730893, 1296126531, 1684633187, 1684633187, 1684633187,
+    1145656920, 1482049860, 808802372, 877677894, 1446269005, 875967048, 875967080, 842225225,
+    825513545, 808801865, 540561494, 808996950, 1431914056, 827737670, 1196575829, 844715353,
+    1498831189, 808596553, 842094169, 1094862674, 828862573, 845639789, 842289229, 859066445,
+    827739479, 844516695, 859189832, 827739206, 1397508685, 1196314701, 543254388, 829519475,
+    1447185754, 1464815187, 827740993, 844518209, 1380600899, 809062486, 1448433993, 808596554,
+    1110586457, 842150992, 842150985, 842150986, 909203033, 961959257, 808531017, 1110520921,
+    825308233, 808727625, 808727626, 875836489, 875836490, 875714137, 1093678153, 1093809225,
+    808466521, 538982489, 1497715271, 843204434, 842094158, 825382478, 892425810, 909203026,
+    875714130, 842225234, 1095911234, 1380401729
+};
+
+local uint32 comp_mid[] = {
+    1, 1, 1, 2, 2, 2, 1196444237, 1196444237,
+    1196444237, 1735420525, 1129730893, 1129730893, 1129730893, 1296126531, 1684633187, 1684633187,
+    1684633187, 1145656920, 1482049860, 808802372, 877677894, 1446269005, 875967048, 875967080,
+    842225225, 825513545, 808801865, 540561494, 808996950, 1431914056, 827737670, 1196575829,
+    828862573, 845639789, 842289229, 859066445, 827739479, 844516695, 859189832, 827739206,
+    1397508685, 1196314701, 543254388, 829519475, 1447185754, 1464815187, 827740993, 844518209,
+    1380600899, 809062486
+};
+
+local uint32 comp_fix[] = {
+    1, 1, 1, 2, 2, 2, 1684633187, 1684633187,
+    1684633187, 1145656920, 1482049860, 808802372, 877677894, 1446269005, 875967048, 875967080,
+    842225225, 825513545, 808801865, 540561494, 808996950, 1431914056, 827737670, 1196575829,
+    828862573, 845639789, 842289229, 859066445, 827739479, 844516695, 859189832, 827739206,
+    1397508685, 1196314701, 543254388, 829519475, 1447185754, 1464815187, 827740993, 844518209,
+    1380600899, 809062486
+};
+
+
+/* BITMAPINFOHEADER.biBitCount - Tier B, exhaustive, preferred [8,16,24,32].
+ * Measured, 1/4/8 give pal8, 16 rgb555le, 24 bgr24, 32 bgra - four different
+ * pixel unpacking paths and four different scaler input formats.  0 is legal
+ * when biCompression names a codec that carries its own depth and 2 is the
+ * Windows CE variant; both stay in the set. */
+local uint16 bitcount_values[] = {
+    0, 1, 2, 4, 8, 8, 8, 16, 16, 16, 24, 24, 24, 32, 32, 32
+};
+
+
+/* WAVEFORMATEX.wFormatTag - Tier B, exhaustive for the WAVE_FORMAT catalogue,
+ * preferred [1,2,3,6,7,17,85].  Measured, seven distinct audio decoders come
+ * out of this one WORD.  The 7 added tags each name a further decoder the
+ * listed set leaves unreachable (AAC, WMA v1, G.722, FLAC, Speex, Creative
+ * ADPCM, Duck DK4 ADPCM).  Tags with no decoder in the target are kept: the
+ * container still parses them and ff_get_wav_header still runs. */
+local uint16 wformat_values[] = {
+    0, 1, 1, 1, 1, 2, 2, 2, 3, 3,
+    3, 6, 6, 6, 7, 7, 7, 16, 17, 17,
+    17, 32, 34, 49, 50, 64, 69, 80, 85, 85,
+    85, 105, 112, 353, 354, 355, 8192, 8193, 65534, 65535,
+    255, 352, 655, 61868, 41225, 512, 98
+};
+
+
+/* MainAVIHeader.dwFlags - Tier B, bitmask_constraint, valid_bits 0x00030934.
+ * AVIF_HASINDEX 0x10, AVIF_MUSTUSEINDEX 0x20, AVIF_ISINTERLEAVED 0x100,
+ * AVIF_TRUSTCKTYPE 0x800, AVIF_WASCAPTUREFILE 0x10000, AVIF_COPYRIGHTED
+ * 0x20000.  Measured never a gate, so single bits, combinations, the full
+ * union and all-bits-set are all emitted - AVIF_MUSTUSEINDEX in particular
+ * changes a strict reader's whole strategy. */
+local uint32 mainflags_values[] = {
+    0, 16, 16, 32, 48, 48, 256, 272, 2048, 2064, 65536, 131072,
+    304, 2096, 65552, 131088, 196608, 198961, 4294967295, 2352
+};
+
+/* AVIStreamHeader.dwFlags - Tier B, bitmask_constraint, valid_bits 0x00010001.
+ * AVISF_DISABLED 0x1, AVISF_VIDEO_PALCHANGES 0x10000 - the second is what
+ * makes a "##pc" palette-change chunk in the movi list meaningful, so it
+ * pairs with genericblock.id below. */
+local uint32 strflags_values[] = {
+    0, 0, 0, 1, 65536, 65536, 65537, 4294967295
+};
+
+/* AVIINDEXENTRY.dwFlags - Tier B, bitmask_constraint, valid_bits 0x00100011.
+ * AVIIF_LIST 0x1, AVIIF_KEYFRAME 0x10, AVIIF_NO_TIME 0x100000.  A file whose
+ * entries all lack AVIIF_KEYFRAME forces a reader down its non-seekable path,
+ * so 0 stays in the set. */
+local uint32 idxflags_values[] = {
+    16, 16, 16, 0, 1, 17, 1048576, 1048593, 4294967295
+};
+
+/* ===========================================================================
+ * Per-stream record, filled as each strl list is emitted and read back by the
+ * movi list.  MainAVIHeader.dwStreams is NOT this count - that field is Tier C
+ * and stays bare; measured, ffmpeg ignores it entirely and counts the strl
+ * lists it actually finds, so the real stream count is a free structural
+ * choice and this is just how the generator remembers it.
+ * =========================================================================== */
+local uint32 n_str     = 0;
+local uint32 want_str  = 1;
+local uint32 st_type[0];     /* 1 = vids, 2 = auds, 3 = txts/mids           */
+local uint32 st_kind[0];     /* payload emitter: VidKind() / AudKind()       */
+local uint32 st_comp[0];     /* biCompression or wFormatTag                  */
+local uint32 st_w[0];
+local uint32 st_h[0];
+local uint32 st_bits[0];
+local uint32 st_ba[0];       /* nBlockAlign, for the audio payload unit      */
+local uint32 st_ch[0];       /* nChannels, for the ADPCM block header        */
+local uint32 st_ref[0];      /* ref_pool index, or 0                         */
+local uint32 st_pal[0];      /* 1 when AVISF_VIDEO_PALCHANGES is set         */
+local uint32 cur_strh_flags = 0;  /* AVIStreamHeader.dwFlags of the strl being emitted */
+
+/* chunk-tree bookkeeping - every length field is computed from the bytes
+ * actually emitted, working outwards (structure rule "requires"). */
+local int64  pos_root_len = 0;
+local int64  pos_hdrl_len = 0;
+local int64  hdrl_body    = 0;
+local int64  hdrl_end     = 0;
+local int64  movi_type    = 0;
+local uint32 have_hdrl    = 0;
+local uint32 have_movi    = 0;
+local uint32 have_idx     = 0;
+local uint32 want_list    = 0;
+local uint32 n_idx        = 0;
+local uint32 idx_off[0];
+local uint32 idx_len[0];
+local double eof_p        = 0.01;
+local char   nheader[4];
+
+/* The space one media chunk may occupy.  This is the engine's file ceiling,
+ * not a bound on any field - see the note on comp_all/comp_mid/comp_fix. */
+local uint32 frame_room = 44000;
+
+/* genericblock.id - Tier C, and dependency 14: "the two leading digits are the
+ * zero-based index of the stream the chunk belongs to, and the two-character
+ * suffix must match that stream's type - db or dc for vids, wb for auds, pc
+ * for a palette change".  Derived from the stream index, never fixed, so a
+ * two-stream file routes its chunks to the right streams; and the suffix is a
+ * SET, not a value, so "db", "dc", "wb", "pc" and "tx" all occur. */
+local string cid_db[] = { "00db","01db","02db","03db","04db","05db","06db","07db" };
+local string cid_dc[] = { "00dc","01dc","02dc","03dc","04dc","05dc","06dc","07dc" };
+local string cid_wb[] = { "00wb","01wb","02wb","03wb","04wb","05wb","06wb","07wb" };
+local string cid_pc[] = { "00pc","01pc","02pc","03pc","04pc","05pc","06pc","07pc" };
+local string cid_tx[] = { "00tx","01tx","02tx","03tx","04tx","05tx","06tx","07tx" };
+
+/* ===========================================================================
+ * Payload length arithmetic.  Each of these mirrors exactly what the matching
+ * emitter below writes, because genericblock.datalen is declared BEFORE the
+ * payload and has to state the length up front.
+ * =========================================================================== */
+
+/* Microsoft RLE: how many complete rows fit, and the resulting byte count.
+ * Per row: ceil(w/255) [count][index] pairs then [00][00] end-of-line; the
+ * stream closes with [00][01] end-of-bitmap.  An RLE frame that stops early is
+ * still a valid frame - the decoder simply leaves the rest of the picture
+ * untouched - so this is well-formed for ANY geometry, which is why BI_RLE8
+ * and BI_RLE4 stay in comp_fix. */
+int64 MsrleRows(int64 w, int64 h, int64 room)
+{
+    if (w <= 0 || h <= 0)
+        return 0;
+    local int64 per = 2 * CeilDiv(w, 255) + 2;
+    local int64 maxr = (room - 2) / per;
+    if (maxr < 0)
+        maxr = 0;
+    if (maxr > h)
+        maxr = h;
+    if (maxr > 4096)
+        maxr = 4096;
+    return maxr;
+}
+
+int64 MsrleBytes(int64 w, int64 h, int64 room)
+{
+    return MsrleRows(w, h, room) * (2 * CeilDiv(w, 255) + 2) + 2;
+}
+
+/* A complete baseline JPEG for an MJPG frame, sized from the free geometry.
+ *   SOI 2 + DQT 69 + SOF0 (10 + 3*nc) + two DHT 44 + SOS (8 + 2*nc)
+ *   + entropy ceil(blocks/4) + EOI 2
+ * The entropy segment is two bits per 8x8 block: the DC difference coded with
+ * a one-code DC table and an end-of-block from a one-code AC table, so every
+ * byte is zero except the final pad - no 0xFF can appear and no byte stuffing
+ * is ever needed. */
+int64 JpegBytes(int64 w, int64 h, int64 nc)
+{
+    if (w <= 0 || h <= 0)
+        return 0;
+    local int64 blocks = CeilDiv(w, 8) * CeilDiv(h, 8) * nc;
+    return 135 + 5 * nc + CeilDiv(blocks, 4);
+}
+
+/* Microsoft Video 1: four bytes for every 4x4 block - a 16-bit all-zero flag
+ * word (every pixel takes colour A) followed by the two colour bytes. */
+int64 Msv1Bytes(int64 w, int64 h)
+{
+    if (w <= 0 || h <= 0)
+        return 0;
+    return 4 * CeilDiv(w, 4) * CeilDiv(h, 4);
+}
+
+/* ===========================================================================
+ * Reference codec bitstream pool - the payload emitters for the codecs whose
+ * frames cannot be written in closed form from the geometry.
+ *
+ * One real key frame per codec and, where the codec is inter-coded, the delta
+ * frame that follows it, plus the codec configuration that belongs in
+ * strfHEADER_BIH.exData / strfHEADER_WAVE.exData (dependency 6).  Each one was
+ * checked to decode in the measured target at a DECLARED geometry that
+ * disagrees with the frame - these codecs carry their own dimensions, channel
+ * count and sample rate in the bitstream - so biWidth, biHeight, biBitCount,
+ * nChannels, nSamplesPerSec and wBitsPerSample all stay free.  That is the
+ * difference between this and pinning a dimension to fit a fixed payload.
+ *
+ * index  decoder reached                      sizes
+ *    0  mpeg4videodec  (XVID DIVX DX50 FMP4 MP4V) extradata   0  frames 48 + 8
+ *    1  h264dec        (H264 h264)          extradata   0  frames 46
+ *    2  mpeg12dec v1   (mpg1)               extradata   0  frames 38 + 15
+ *    3  mpeg12dec v2   (mpg2)               extradata   0  frames 57 + 24
+ *    4  msmpeg4v2      (MP42)               extradata   0  frames 8 + 2
+ *    5  msmpeg4v3      (MP43)               extradata   0  frames 10 + 2
+ *    6  msmpeg4v1/wmv1 (WMV1)               extradata   0  frames 10 + 2
+ *    7  wmv2dec        (WMV2)               extradata   4  frames 8 + 3
+ *    8  h263dec        (H263)               extradata   0  frames 21 + 14
+ *    9  flvdec         (FLV1)               extradata   0  frames 14 + 8
+ *   10  jpeglsdec      (MJLS)               extradata   0  frames 49
+ *   11  pngdec         (MPNG)               extradata   0  frames 94
+ *   12  targa          (tga )               extradata   0  frames 108
+ *   13  svq1dec        (svq1)               extradata  22  frames 16 + 12
+ *   14  zmbv           (ZMBV)               extradata   0  frames 27 + 10
+ *   15  snowdec        (SNOW)               extradata   0  frames 32 + 11
+ *   16  asvdec v1      (ASV1)               extradata   8  frames 12
+ *   17  asvdec v2      (ASV2)               extradata   8  frames 12
+ *   18  (unused: cljr is emitted from its geometry instead)
+ *   19  vp8            (VP80 VP8 )          extradata   0  frames 31 + 17
+ *   20  vp9            (VP90)               extradata   0  frames 28 + 15
+ *   21  aacdec         (0x00FF)             extradata   6  frames 21 + 4
+ *   22  mpegaudio L2   (0x0050)             extradata  22  frames 288
+ *   23  mpegaudio L3   (0x0055)             extradata  12  frames 72
+ *   24  ac3dec         (0x2000)             extradata   0  frames 192
+ *   25  eac3 in EXTENSIBLE (0xFFFE)         extradata  22  frames 192
+ *   26  wmadec v1      (0x0160)             extradata   4  frames 256
+ *   27  wmadec v2      (0x0161)             extradata  10  frames 256
+ *   28  flacdec        (0xF1AC)             extradata  34  frames 11 + 12
+ *   29  speexdec       (0xA109)             extradata  80  frames 62 + 62
+ * =========================================================================== */
+
+local ubyte ref_pool[] = {
+    0x00, 0x00, 0x01, 0xb0, 0x01, 0x00, 0x00, 0x01, 0xb5, 0x89, 0x13, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x20, 0x00,
+    0xc4, 0x8d, 0x88, 0x00, 0xcd, 0x00, 0x84, 0x02, 0x14, 0x63, 0x00, 0x00, 0x01, 0xb3, 0x00, 0x10, 0x07, 0x00, 0x00, 0x01,
+    0xb6, 0x10, 0x60, 0x51, 0x82, 0x3d, 0xb7, 0xef, 0x00, 0x00, 0x01, 0xb6, 0x50, 0xf0, 0x23, 0x7f, 0x00, 0x00, 0x00, 0x01,
+    0x67, 0x42, 0xc0, 0x0a, 0xdd, 0xec, 0x04, 0x40, 0x00, 0x00, 0x03, 0x00, 0x40, 0x00, 0x00, 0x0c, 0x83, 0xc4, 0x89, 0xe0,
+    0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x0f, 0xc8, 0x00, 0x00, 0x01, 0x65, 0x88, 0x82, 0x02, 0x28, 0x98, 0xa0, 0x00, 0x27,
+    0xbf, 0x80, 0x00, 0x00, 0x01, 0xb3, 0x01, 0x00, 0x10, 0x13, 0xff, 0xff, 0xe0, 0x18, 0x00, 0x00, 0x01, 0xb8, 0x00, 0x08,
+    0x00, 0x40, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0f, 0xff, 0xf8, 0x00, 0x00, 0x01, 0x01, 0x13, 0xf8, 0x7d, 0x29, 0x48, 0x88,
+    0x00, 0x00, 0x01, 0x00, 0x00, 0x57, 0xff, 0xf8, 0x80, 0x00, 0x00, 0x01, 0x01, 0x12, 0x70, 0x00, 0x00, 0x01, 0xb3, 0x01,
+    0x00, 0x10, 0x13, 0xff, 0xff, 0xe0, 0x18, 0x00, 0x00, 0x01, 0xb5, 0x14, 0x8a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0xb8, 0x00, 0x08, 0x00, 0x40, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0f, 0xff, 0xf8, 0x00, 0x00, 0x01, 0xb5, 0x8f, 0xff, 0xf3,
+    0x41, 0x80, 0x00, 0x00, 0x01, 0x01, 0x13, 0xf8, 0x7d, 0x29, 0x48, 0x88, 0x00, 0x00, 0x01, 0x00, 0x00, 0x57, 0xff, 0xfb,
+    0x80, 0x00, 0x00, 0x01, 0xb5, 0x81, 0x1f, 0xf3, 0x41, 0x80, 0x00, 0x00, 0x01, 0x01, 0x12, 0x70, 0x07, 0x78, 0xfe, 0x1f,
+    0x24, 0x0c, 0x8c, 0x30, 0x45, 0x80, 0x07, 0x7b, 0xc0, 0xf3, 0x4b, 0x06, 0xa0, 0xc8, 0xc3, 0x80, 0x45, 0xf8, 0x05, 0x7c,
+    0x8c, 0x3a, 0xf0, 0x3c, 0xd2, 0xc1, 0xa8, 0x00, 0x45, 0x7c, 0xc8, 0xc3, 0xb4, 0x80, 0x00, 0x10, 0x60, 0x79, 0xa5, 0x83,
+    0x50, 0x00, 0x88, 0x23, 0x20, 0x00, 0x00, 0x80, 0x02, 0x1c, 0xe8, 0x01, 0x00, 0x10, 0x80, 0xe0, 0x44, 0x80, 0x69, 0x88,
+    0x08, 0x08, 0x08, 0x7f, 0xff, 0x80, 0x00, 0x00, 0x80, 0x06, 0x1c, 0xe8, 0x01, 0x04, 0x90, 0x80, 0xe0, 0x44, 0x80, 0x48,
+    0x00, 0x00, 0x84, 0x00, 0x08, 0x08, 0x11, 0x26, 0x20, 0x20, 0x20, 0x21, 0xff, 0xfe, 0x00, 0x00, 0x84, 0x04, 0x08, 0x08,
+    0x31, 0x20, 0xff, 0xd8, 0xff, 0xf7, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00,
+    0x03, 0x11, 0x00, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x00, 0x01, 0x00, 0xff, 0x7f, 0xff,
+    0x7f, 0xff, 0x7f, 0xff, 0x7f, 0xff, 0x7f, 0xff, 0x78, 0xff, 0xd9, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
+    0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10, 0x08, 0x02, 0x00, 0x00, 0x00,
+    0x90, 0x91, 0x68, 0x36, 0x00, 0x00, 0x00, 0x09, 0x70, 0x48, 0x59, 0x73, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x4f, 0x25, 0xc4, 0xd6, 0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x18, 0x05, 0xa3,
+    0x60, 0x14, 0xc0, 0x00, 0x00, 0x03, 0x10, 0x00, 0x01, 0x3f, 0x2c, 0x2b, 0xec, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10,
+    0x00, 0x18, 0x20, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f,
+    0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f,
+    0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x8f,
+    0x00, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54, 0x52, 0x55, 0x45, 0x56,
+    0x49, 0x53, 0x49, 0x4f, 0x4e, 0x2d, 0x58, 0x46, 0x49, 0x4c, 0x45, 0x2e, 0x00, 0x00, 0x00, 0x00, 0x15, 0x53, 0x56, 0x51,
+    0x31, 0x4c, 0x61, 0x76, 0x63, 0x36, 0x31, 0x2e, 0x31, 0x39, 0x2e, 0x31, 0x30, 0x31, 0x00, 0x00, 0x00, 0x80, 0x00, 0x17,
+    0x01, 0x00, 0x10, 0x10, 0x00, 0x15, 0x11, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01, 0x1c, 0xc2, 0x88, 0x14, 0x40,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0x08, 0x10, 0x10, 0x78, 0xda, 0x62, 0x60, 0x60, 0xf8, 0xcf, 0x30, 0x8a, 0x47,
+    0xf1, 0x28, 0x1e, 0x91, 0x18, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x02, 0x62, 0x06, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff,
+    0xd8, 0x43, 0x3a, 0xe7, 0xef, 0x0d, 0x1e, 0x03, 0x93, 0xc0, 0x21, 0x6c, 0xf3, 0xf3, 0x37, 0x67, 0xfb, 0xc3, 0x59, 0x6a,
+    0x77, 0x1e, 0xab, 0x05, 0xb3, 0xff, 0xea, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x73, 0x4d, 0xcf, 0x18, 0xa6, 0xa1, 0xc0, 0x82,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x41, 0x53, 0x55, 0x53, 0xc4, 0x83, 0x78, 0x10, 0x07, 0xf8, 0x20, 0x1e, 0x00,
+    0x00, 0x3c, 0xc0, 0x10, 0x00, 0x00, 0x00, 0x41, 0x53, 0x55, 0x53, 0x00, 0x21, 0x40, 0x08, 0x10, 0x02, 0x84, 0x00, 0x28,
+    0x00, 0x0a, 0x00, 0x10, 0x82, 0x28, 0x20, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10,
+    0x44, 0x27, 0xe0, 0x10, 0x84, 0x28, 0x20, 0x10, 0x84, 0x28, 0x20, 0x10, 0x44, 0x28, 0x1f, 0x10, 0x44, 0x28, 0x1f, 0x10,
+    0x84, 0x27, 0xdf, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x44, 0x27, 0xe0, 0x08,
+    0x44, 0x28, 0x20, 0x10, 0x44, 0x27, 0xe0, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x44, 0x28, 0x20, 0x10,
+    0x84, 0x18, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x20, 0x10, 0x84, 0x27, 0xe0, 0x08,
+    0x44, 0x28, 0x1f, 0x10, 0x44, 0x27, 0xe0, 0x10, 0x84, 0x28, 0x20, 0x10, 0x84, 0x28, 0x20, 0x10, 0x84, 0x28, 0x20, 0x10,
+    0x44, 0x27, 0xe0, 0x10, 0x84, 0x27, 0xdf, 0x08, 0x84, 0x28, 0x20, 0x10, 0x84, 0x28, 0x20, 0x10, 0x42, 0x28, 0x1f, 0x10,
+    0x84, 0x27, 0xdf, 0x10, 0x42, 0x27, 0xe0, 0x10, 0x82, 0x18, 0x20, 0x10, 0x82, 0x28, 0x20, 0x10, 0x84, 0x17, 0xe0, 0x10,
+    0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x08, 0x84, 0x28, 0x20, 0x10, 0x82, 0x28, 0x20, 0x10, 0x84, 0x27, 0xe0, 0x08,
+    0x84, 0x18, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x08, 0x82, 0x28, 0x20, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x84, 0x27, 0xe0, 0x10,
+    0x84, 0x18, 0x20, 0x10, 0x44, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x18, 0x20, 0x10, 0x84, 0x28, 0x20, 0x08,
+    0x84, 0x28, 0x20, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x84, 0x28, 0x20, 0x10, 0x84, 0x27, 0xe0, 0x08, 0x84, 0x28, 0x20, 0x10,
+    0x82, 0x28, 0x1f, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x84, 0x27, 0xdf, 0x10,
+    0x84, 0x18, 0x1f, 0x10, 0x84, 0x18, 0x1f, 0x10, 0x44, 0x27, 0xe0, 0x10, 0x82, 0x27, 0xe0, 0x08, 0x84, 0x27, 0xdf, 0x10,
+    0x84, 0x28, 0x1f, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x84, 0x27, 0xe0, 0x08, 0x82, 0x28, 0x1f, 0x10, 0x44, 0x27, 0xdf, 0x10,
+    0x42, 0x28, 0x1f, 0x10, 0x82, 0x27, 0xdf, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x82, 0x28, 0x1f, 0x10,
+    0x84, 0x28, 0x1f, 0x10, 0x82, 0x27, 0xe0, 0x10, 0x84, 0x28, 0x20, 0x10, 0x84, 0x28, 0x20, 0x10, 0x82, 0x18, 0x1f, 0x10,
+    0x84, 0x27, 0xe0, 0x08, 0x84, 0x27, 0xe0, 0x08, 0x84, 0x18, 0x20, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x44, 0x28, 0x20, 0x10,
+    0x84, 0x18, 0x20, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x44, 0x28, 0x20, 0x10, 0x44, 0x27, 0xdf, 0x10, 0x42, 0x28, 0x20, 0x10,
+    0x84, 0x27, 0xe0, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x84, 0x18, 0x20, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x44, 0x28, 0x20, 0x10,
+    0x82, 0x28, 0x1f, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x84, 0x18, 0x1f, 0x10, 0x42, 0x17, 0xe0, 0x10, 0x84, 0x28, 0x20, 0x10,
+    0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x20, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10,
+    0x84, 0x28, 0x20, 0x10, 0x84, 0x17, 0xdf, 0x10, 0x84, 0x17, 0xdf, 0x10, 0x84, 0x27, 0xdf, 0x10, 0x84, 0x27, 0xdf, 0x10,
+    0x84, 0x27, 0xdf, 0x08, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x1f, 0x10, 0x84, 0x28, 0x20, 0x08,
+    0x84, 0x27, 0xdf, 0x10, 0x44, 0x27, 0xdf, 0x08, 0x84, 0x27, 0xe0, 0x10, 0x82, 0x27, 0xdf, 0x10, 0x44, 0x27, 0xe0, 0x10,
+    0x84, 0x27, 0xdf, 0x10, 0x82, 0x28, 0x20, 0x10, 0x84, 0x27, 0xe0, 0x10, 0x82, 0x28, 0x1f, 0x10, 0x02, 0x00, 0x9d, 0x01,
+    0x2a, 0x10, 0x00, 0x10, 0x00, 0x00, 0x47, 0x08, 0x85, 0x85, 0x88, 0x85, 0x84, 0x88, 0x02, 0x02, 0x00, 0x0c, 0x0d, 0x60,
+    0x00, 0xfe, 0xff, 0xab, 0x50, 0x80, 0xb1, 0x01, 0x00, 0x05, 0x10, 0xac, 0x00, 0x18, 0x00, 0x18, 0x58, 0x2f, 0xf4, 0x00,
+    0x08, 0x00, 0x00, 0x82, 0x49, 0x83, 0x42, 0x00, 0x00, 0xf0, 0x00, 0xf6, 0x00, 0x38, 0x24, 0x1c, 0x18, 0x4a, 0x00, 0x00,
+    0x30, 0x60, 0x00, 0x00, 0x10, 0xbf, 0xff, 0xfd, 0x48, 0x8c, 0x00, 0x86, 0x00, 0x40, 0x92, 0x9c, 0x00, 0x50, 0x00, 0x00,
+    0x03, 0x20, 0x00, 0x00, 0x42, 0x40, 0x15, 0x88, 0x56, 0xe5, 0x00, 0x00, 0xde, 0x02, 0x00, 0x4c, 0x61, 0x76, 0x63, 0x36,
+    0x31, 0x2e, 0x31, 0x39, 0x2e, 0x31, 0x30, 0x31, 0x00, 0x02, 0x30, 0x40, 0x0e, 0x01, 0x18, 0x20, 0x07, 0x02, 0x00, 0x00,
+    0x7d, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+    0xf5, 0x48, 0xc4, 0x75, 0x54, 0x4d, 0xa6, 0xdf, 0xfe, 0x80, 0x00, 0x00, 0x15, 0x55, 0x55, 0x55, 0x57, 0xdf, 0x7d, 0xf7,
+    0xdf, 0x7d, 0xf7, 0xdf, 0x7d, 0xf7, 0xdf, 0x7d, 0xf7, 0xcf, 0xbe, 0xfb, 0xbb, 0xbb, 0xba, 0xd8, 0xf9, 0x6c, 0x5b, 0x1f,
+    0x2d, 0x8b, 0x62, 0xd8, 0xb6, 0x2d, 0x8b, 0x62, 0xd8, 0xb6, 0x35, 0xf7, 0xdf, 0x77, 0x77, 0x77, 0x5b, 0x1f, 0x2d, 0x8b,
+    0x63, 0xe5, 0xb1, 0x6c, 0x5b, 0x16, 0xc5, 0xb1, 0x6c, 0x5b, 0x16, 0xc6, 0xbe, 0xfb, 0xee, 0xee, 0xee, 0xeb, 0x63, 0xe5,
+    0xb1, 0x6c, 0x7c, 0xb6, 0x2d, 0x8b, 0x62, 0xd8, 0xb6, 0x2d, 0x8b, 0x62, 0xd8, 0xd7, 0xdf, 0x7d, 0xdd, 0xdd, 0xdd, 0x6c,
+    0x7c, 0xb6, 0x2d, 0x8f, 0x96, 0xc5, 0xb1, 0x6c, 0x5b, 0x16, 0xc5, 0xb1, 0x6c, 0x5b, 0x1a, 0xfb, 0xef, 0xbb, 0xbb, 0xbb,
+    0xad, 0x8f, 0x96, 0xc5, 0xb1, 0xf2, 0xd8, 0xb6, 0x2d, 0x8b, 0x62, 0xd8, 0xb6, 0x2d, 0x8b, 0x63, 0x5f, 0x7d, 0xf7, 0x77,
+    0x77, 0x75, 0xb1, 0xf2, 0xd8, 0xb6, 0x3e, 0x5b, 0x16, 0xc5, 0xb1, 0x6c, 0x5b, 0x16, 0xc5, 0xb1, 0x6c, 0x6b, 0xef, 0xbe,
+    0xee, 0xee, 0xee, 0xb6, 0x3e, 0x5b, 0x16, 0xc7, 0xcb, 0x62, 0xd8, 0xb6, 0x2d, 0x8b, 0x62, 0xd8, 0xb6, 0x2d, 0x8d, 0x7d,
+    0xf7, 0xdd, 0xdd, 0xdd, 0xd6, 0xc7, 0xcb, 0x62, 0xd8, 0xf9, 0x6c, 0x5b, 0x16, 0xc5, 0xb1, 0x6c, 0x5b, 0x16, 0xc5, 0xb1,
+    0xaf, 0xbe, 0xfb, 0xbb, 0xbb, 0xba, 0xd8, 0xf9, 0x6c, 0x5b, 0x1f, 0x2d, 0x8b, 0x62, 0xd8, 0xb6, 0x2d, 0x8b, 0x62, 0xd8,
+    0xb6, 0x35, 0xf7, 0xdf, 0x77, 0x77, 0x77, 0x5b, 0x1f, 0x2d, 0x8b, 0x63, 0xe5, 0xb1, 0x6c, 0x5b, 0x16, 0xc5, 0xb1, 0x6c,
+    0x5b, 0x16, 0xc6, 0xbe, 0xfb, 0xee, 0xee, 0xee, 0xeb, 0x63, 0xe5, 0xb1, 0x6c, 0x7c, 0xb6, 0x2d, 0x8b, 0x62, 0xd8, 0xb6,
+    0x2d, 0x8b, 0x62, 0xd8, 0xd7, 0xdf, 0x7d, 0xdd, 0xdd, 0xdd, 0x6c, 0x7c, 0xb6, 0x2d, 0x8f, 0x96, 0xc5, 0xb1, 0x6c, 0x5b,
+    0x16, 0xc5, 0xb1, 0x6c, 0x5b, 0x1a, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x80, 0x04, 0x01, 0x00, 0x71, 0x05, 0xff,
+    0xe3, 0x18, 0xc4, 0x00, 0x00, 0x00, 0x03, 0x48, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x41, 0x4d, 0x45, 0x33, 0x2e, 0x31, 0x30,
+    0x30, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+    0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+    0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x0b, 0x77, 0xf6, 0xd4, 0x80, 0x40, 0x2f, 0x84, 0x29,
+    0x03, 0xfe, 0x75, 0x7c, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf3,
+    0xe7, 0xcf, 0x8c, 0xbf, 0xbe, 0x90, 0x00, 0x00, 0x36, 0xb5, 0xad, 0x6b, 0x5a, 0xd7, 0xcf, 0x9f, 0x3e, 0x6d, 0xb6, 0xdb,
+    0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x68, 0x00, 0x00, 0x01, 0xb5, 0xad, 0x6b, 0x5a, 0xd6, 0xbe, 0x7c,
+    0xf9, 0xf3, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x40, 0x00, 0x00, 0x0d, 0xad, 0x6b,
+    0x5a, 0xd6, 0xb5, 0xf3, 0xe7, 0xcf, 0x9b, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xda, 0x00,
+    0x00, 0x00, 0x6d, 0x6b, 0x5a, 0xd6, 0xb5, 0xaf, 0x9f, 0x3e, 0x7c, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6,
+    0xdb, 0x6d, 0xb6, 0xd0, 0x00, 0x00, 0x03, 0x6b, 0x5a, 0xd6, 0xb5, 0xad, 0x7c, 0xf9, 0xf3, 0xe6, 0xdb, 0x6d, 0xb6, 0xdb,
+    0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0x80, 0x00, 0x00, 0x1b, 0x5a, 0xd6, 0xb5, 0xad, 0x6b, 0xe7, 0xcf, 0x9f,
+    0x36, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xd0, 0x4a, 0x10, 0x00, 0x04, 0x00, 0x00, 0x00, 0xaf, 0x87, 0xfb, 0xa7, 0x02, 0x2d, 0xfb, 0x42, 0xa4, 0xd4, 0x05,
+    0xcd, 0x93, 0x84, 0x3b, 0xdd, 0x0b, 0x77, 0x00, 0x5f, 0xb2, 0x87, 0xc0, 0x00, 0x00, 0x07, 0xf0, 0x01, 0xff, 0x3a, 0xbe,
+    0x7c, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf3, 0xe7, 0xc0, 0x00,
+    0x00, 0xdd, 0xad, 0x6b, 0x5a, 0xd6, 0x3e, 0x7c, 0xf9, 0x93, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d,
+    0xb6, 0xdb, 0x6d, 0xb6, 0xc0, 0x00, 0x01, 0xbb, 0x5a, 0xd6, 0xb5, 0xac, 0x7c, 0xf9, 0xf3, 0x26, 0xdb, 0x6d, 0xb6, 0xdb,
+    0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0x80, 0x00, 0x03, 0x76, 0xb5, 0xad, 0x6b, 0x58, 0xf9, 0xf3,
+    0xe6, 0x4d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x00, 0x00, 0x06, 0xed,
+    0x6b, 0x5a, 0xd6, 0xb1, 0xf3, 0xe7, 0xcc, 0x9b, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb,
+    0x6d, 0xb6, 0x00, 0x00, 0x0d, 0xda, 0xd6, 0xb5, 0xad, 0x63, 0xe7, 0xcf, 0x99, 0x36, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6,
+    0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6c, 0x00, 0x00, 0x1b, 0xb5, 0xad, 0x6b, 0x5a, 0xc7, 0xcf, 0x9f, 0x32, 0x6d,
+    0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xd8, 0x00, 0x49, 0x30, 0x00, 0x00, 0x01,
+    0x00, 0x80, 0x50, 0x00, 0x01, 0xe0, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x40, 0x00, 0x03, 0xc0, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e,
+    0x4e, 0x4e, 0x4e, 0x02, 0x40, 0x02, 0x40, 0x00, 0x00, 0x00, 0x00, 0x04, 0x95, 0x01, 0xf4, 0x00, 0xf0, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xf8, 0x24,
+    0x08, 0x00, 0xca, 0x00, 0x00, 0x00, 0xce, 0x76, 0xff, 0xf8, 0x64, 0x08, 0x01, 0xdf, 0xe5, 0x00, 0x00, 0x00, 0xcf, 0x0a,
+    0x53, 0x70, 0x65, 0x65, 0x78, 0x20, 0x20, 0x20, 0x31, 0x2e, 0x32, 0x2e, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x40, 0x1f, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x18, 0x60, 0x00, 0x00, 0xa0, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x3e, 0x9d, 0x1b, 0x9a, 0x20, 0x00, 0x01, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0x89,
+    0x00, 0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xed, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x42, 0x00, 0x5f, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xf6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xa1, 0x00, 0x2f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfb, 0x6d, 0xb6, 0xdb, 0x6d,
+    0xb6, 0xd7, 0x3e, 0x9d, 0x1b, 0x9a, 0x20, 0x08, 0x01, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d,
+    0xb6, 0x84, 0x00, 0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xed, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x42, 0x00, 0x5f, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xf6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xa1, 0x00, 0x2f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfb, 0x6d, 0xb6,
+    0xdb, 0x6d, 0xb6, 0xd7
+};
+
+local uint32 ref_ex_off[] = {
+    0, 56, 102, 155, 236, 246, 258, 270, 285, 320, 342, 391, 485, 593, 643, 680,
+    723, 743, 763, 1275, 1323, 1366, 1397, 1707, 1791, 1983, 2197, 2457, 2723, 2780
+};
+
+local uint32 ref_ex_len[] = {
+    0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 22, 0, 0,
+    8, 8, 0, 0, 0, 6, 22, 12, 0, 22, 4, 10, 34, 80
+};
+
+local uint32 ref_f1_off[] = {
+    0, 56, 102, 155, 236, 246, 258, 274, 285, 320, 342, 391, 485, 615, 643, 680,
+    731, 751, 763, 1275, 1323, 1372, 1419, 1719, 1791, 2005, 2201, 2467, 2757, 2860
+};
+
+local uint32 ref_f1_len[] = {
+    48, 46, 38, 57, 8, 10, 10, 8, 21, 14, 49, 94, 108, 16, 27, 32,
+    12, 12, 256, 31, 28, 21, 288, 72, 192, 192, 256, 256, 11, 62
+};
+
+local uint32 ref_f2_off[] = {
+    48, 56, 140, 212, 244, 256, 268, 282, 306, 334, 342, 391, 485, 631, 670, 712,
+    731, 751, 1019, 1306, 1351, 1393, 1419, 1719, 1791, 2005, 2201, 2467, 2768, 2922
+};
+
+local uint32 ref_f2_len[] = {
+    8, 0, 15, 24, 2, 2, 2, 3, 14, 8, 0, 0, 0, 12, 10, 11,
+    0, 0, 256, 17, 15, 4, 0, 0, 0, 0, 0, 0, 12, 62
+};
+
+local uint32 ref_ba[] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 768, 288, 576, 3840, 2, 256, 256, 2, 2
+};
+
+
+typedef struct
+{ 
+  /* WAVEFORMATEX.wFormatTag - Tier B, and the field that selects which audio
+   * decoder the demuxer instantiates. */
+  local int evil_wf = SetEvilBit(IsParsing());
+  WORD  wFormatTag <values=wformat_values>; 
+  SetEvilBit(evil_wf);
+  WORD  nChannels;                    /* Tier C - diversity axis, bare       */
+  DWORD nSamplesPerSec;               /* Tier C - diversity axis, bare       */
+  /* nAvgBytesPerSec and nBlockAlign are Tier A calculated_values that depend
+   * on wBitsPerSample, which the struct declares AFTER them.  Keeping the
+   * original's field order means emitting them here and rewriting them below
+   * (the backpatch idiom) rather than reordering the structure. */
+  local int64 pos_avg = FTell();
+  DWORD nAvgBytesPerSec; 
+  local int64 pos_ba = FTell();
+  WORD  nBlockAlign; 
+  WORD  wBitsPerSample;               /* Tier C - diversity axis, bare       */
+  /* cbSize - Tier A: the byte count of the codec-specific extradata that
+   * follows.  Dependency 9: WAVE_FORMAT_EXTENSIBLE requires 22. */
+  local int    wf_ref   = AudRef(wFormatTag);
+  local uint32 wf_refba = 0;
+  local uint32 wf_reflen = 0;
+  if (wf_ref >= 0)
+  {
+      wf_refba  = ref_ba[wf_ref];
+      wf_reflen = ref_ex_len[wf_ref];
+  }
+  local uint32 wf_cb = AudExtra(wFormatTag, wf_reflen);
+  local int evil_cb = SetEvilBit(IsParsing());
+  WORD  cbSize = { (uint16)wf_cb }; 
+  SetEvilBit(evil_cb);
+
+  /* Dependency 8: for PCM, nBlockAlign must equal nChannels * wBitsPerSample
+   * / 8 and nAvgBytesPerSec must equal nSamplesPerSec * nBlockAlign.  For the
+   * block-oriented codecs nBlockAlign is the codec's own frame size, which is
+   * the gate measured on GSM 6.10.  Both are read off the free fields. */
+  local uint32 wf_ba = AudBlock(wFormatTag, nChannels, wBitsPerSample, wf_refba);
+  local int64  wf_avg = nSamplesPerSec;
+  wf_avg = wf_avg * wf_ba;
+  if (wf_avg > 4294967295)
+      wf_avg = 4294967295;
+  local int64 wf_end = FTell();
+  FSeek(pos_avg);
+  local int evil_der = SetEvilBit(IsParsing());
+  DWORD nAvgBytesPerSec = { (uint32)wf_avg };
+  WORD  nBlockAlign = { (uint16)wf_ba };
+  SetEvilBit(evil_der);
+  FSeek(wf_end);
+} WAVEFORMATEX; 
+
+// head structure info
+typedef struct 
+{
+    DWORD  dwMicroSecPerFrame;        /* Tier C - bare                       */
+    DWORD  dwMaxBytesPerSec;          /* Tier C - bare                       */
+    DWORD  dwReserved1;               /* Tier C - spec's dwPaddingGranularity */
+    /* dwFlags - Tier B bitmask.  AVIF_MUSTUSEINDEX changes a strict reader's
+     * whole strategy from walking the movi list to seeking via idx1. */
+    local int evil_mf = SetEvilBit(IsParsing());
+    DWORD  dwFlags <values=mainflags_values>;
+    SetEvilBit(evil_mf);
+    DWORD  dwTotalFrames;             /* Tier C - diversity axis, bare       */
+    DWORD  dwInitialFrames;           /* Tier C - bare                       */
+    DWORD  dwStreams;                 /* Tier C - diversity axis, bare       */
+    DWORD  dwSuggestedBufferSize;     /* Tier C - bare                       */
+    DWORD  dwWidth;                   /* Tier C - advisory, bare             */
+    DWORD  dwHeight;                  /* Tier C - advisory, bare             */
+    DWORD  dwScale;                   /* Tier C - spec's dwReserved[0]       */
+    DWORD  dwRate;                    /* Tier C - spec's dwReserved[1]       */
+    DWORD  dwStart;                   /* Tier C - spec's dwReserved[2]       */
+    DWORD  dwLength;                  /* Tier C - spec's dwReserved[3]       */
+} MainAVIHeader;
+
+typedef struct
+{
+  /* biSize - Tier A calculated_value: the byte count of the structure, which
+   * also identifies the header variant.  The template declares the eleven-field
+   * 40-byte BITMAPINFOHEADER, so this is 40; the palette and any codec
+   * extradata follow it and are counted by strfHEADER_BIH.datalen instead. */
+  local int evil_bs = SetEvilBit(IsParsing());
+  uint32 biSize = { 40 };
+  SetEvilBit(evil_bs);
+  uint32 biWidth;                     /* Tier C - diversity axis, bare       */
+  uint32 biHeight;                    /* Tier C - diversity axis, bare       */
+  uint16 biPlanes;                    /* Tier C - bare (ignored in AVI)      */
+  /* biBitCount - Tier B.  Third factor of the frame-length product, and each
+   * value selects a different pixel unpacking path. */
+  local int evil_bc = SetEvilBit(IsParsing());
+  uint16 biBitCount <values=bitcount_values>;
+  SetEvilBit(evil_bc);
+
+  /* Dependency 3 in the only direction it can be satisfied: the exact size a
+   * BI_RGB frame must have, computed from the three free geometry fields.  If
+   * that product (or the widest raw-fourcc product) does not fit the engine's
+   * file ceiling, those codecs have no expressible payload for THIS geometry
+   * and the value set narrows to the codecs that do - never the geometry. */
+  local int64 bih_raw = RawBytes(biWidth, biHeight, biBitCount);
+  local int64 bih_geo = GeoBound(biWidth, biHeight);
+  local int64 bih_blk = BlockBound(biWidth, biHeight);
+  local uint32 bih_cv[0];
+  if (bih_raw > 0 && bih_raw <= frame_room && bih_geo > 0 && bih_geo <= frame_room)
+  {
+      bih_cv = comp_all;
+  }
+  else if (bih_blk > 0 && bih_blk <= frame_room)
+  {
+      bih_cv = comp_mid;
+  }
+  else
+  {
+      bih_cv = comp_fix;
+  }
+  /* Dependency 4: BI_RLE8 wants biBitCount 8 and BI_RLE4 wants 4 (measured,
+   * msrle also decodes at 1 and 24 and refuses 2, 16 and 32).  Add weight
+   * where the depth and the codec agree, without removing the mismatched pairs
+   * - those reach the decoder's own init rejection, which is a branch too.
+   * Read through a local so the value miner cannot reach biBitCount. */
+  local int64 bih_bpp = biBitCount;
+  if (bih_bpp == 1 || bih_bpp == 4 || bih_bpp == 8 || bih_bpp == 24)
+  {
+      bih_cv += 1;
+      bih_cv += 1;
+      bih_cv += 2;
+      bih_cv += 2;
+  }
+  local int evil_comp = SetEvilBit(IsParsing());
+  uint32 biCompression <format=hex,values=bih_cv>;
+  SetEvilBit(evil_comp);
+
+  /* biSizeImage - Tier A calculated_value: the exact row-stride product for
+   * the uncompressed forms, the codec's own frame size otherwise, 0 where the
+   * size is implied (which the specification allows for BI_RGB). */
+  local int bih_kind = VidKind(biCompression);
+  local int64 bih_img = 0;
+  if (bih_kind == 1)
+      bih_img = bih_raw;
+  else if (bih_kind == 6)
+      bih_img = RawTagBytes(biCompression, biWidth, AbsHeight(biHeight));
+  else if (bih_kind == 7)
+      bih_img = ref_f1_len[VidRef(biCompression)];
+  if (bih_img < 0 || bih_img > 4294967295)
+      bih_img = 0;
+  local int evil_si = SetEvilBit(IsParsing());
+  uint32 biSizeImage = { (uint32)bih_img };
+  SetEvilBit(evil_si);
+  uint32 biXPelsPerMeter;             /* Tier C - bare                       */
+  uint32 biYPelsPerMeter;             /* Tier C - bare                       */
+  uint32 biClrUsed;                   /* Tier C - diversity axis, bare       */
+  uint32 biClrImportant;              /* Tier C - bare                       */
+} BITMAPINFOHEADER;
+
+typedef struct 
+{
+  unsigned char rgbBlue;              /* Tier C - bare                       */
+  unsigned char rgbGreen;             /* Tier C - bare                       */
+  unsigned char rgbRed;               /* Tier C - bare                       */
+  unsigned char rgbReserved;          /* Tier C - bare (spec says 0)         */
+} RGBQUAD;
+
+/* Declared by the original and never instantiated: strfHEADER_BIH declares its
+ * own BITMAPINFOHEADER and RGBQUAD directly.  Kept so every typedef in the
+ * original is still present. */
+typedef struct 
+{
+  BITMAPINFOHEADER bmiHeader;
+  RGBQUAD bmiColors;
+} BITMAPINFO;
+
+typedef struct 
+{
+  /* id - Tier A fixed_value; datalen - Tier A and the strictest length in the
+   * format: measured, 55 or 57 is "Invalid data found" and 52 or 60 produces a
+   * file with ZERO streams.  56 exactly. */
+  local int evil_av = SetEvilBit(IsParsing());
+  char id[4] = { {"avih"} };
+  uint32 datalen = { 56 };
+  SetEvilBit(evil_av);
+  MainAVIHeader data;
+} avihHEADER;
+
+
+// header stream structure info
+typedef struct 
+{
+    /* fccType - Tier B, and the field the strl list dispatches on to decide
+     * whether strf is a BITMAPINFOHEADER, a WAVEFORMATEX or opaque bytes
+     * (dependencies 0, 1, 2).  "txts" and "mids" are the only route to the
+     * generic strfHEADER branch, so both are in the set; preferred_value
+     * ["vids","auds"] is expressed by repetition. */
+    /* Stream 0 carries the media.  A file whose ONLY stream is "txts" or "mids"
+     * gives a reader nothing to decode - measured, ffmpeg reports "Output file
+     * does not contain any stream" for the first and refuses the container
+     * outright for the second ("unknown stream type") - and a real AVI file
+     * puts the video stream, or in an audio-only file the audio stream, first.
+     * So the exotic types are emitted on the LATER streams.  The Tier B set is
+     * still complete across the corpus, because the stream count is free: one
+     * file in four carries a second stream, and preferred_value ["vids","auds"]
+     * is the weighting the constraint asks for.
+     * The set is assembled from locals rather than declared in two branches
+     * because a field declared inside an if is not visible to the caller, and
+     * the strl list dispatches on strh.data.fccType. */
+    local string ft1 = "vids";
+    local string ft2 = "vids";
+    local string ft3 = "vids";
+    local string ft4 = "vids";
+    local string ft5 = "vids";
+    local string ft6 = "vids";
+    local string ft7 = "vids";
+    local string ft8 = "auds";
+    local string ft9 = "auds";
+    local string ft10 = "auds";
+    if (n_str > 0)
+    {
+        ft5 = "auds";
+        ft6 = "auds";
+        ft7 = "auds";
+        ft8 = "txts";
+        ft9 = "txts";
+        ft10 = "mids";
+    }
+    local int evil_ft = SetEvilBit(IsParsing());
+    char   fccType[4] = { ft1, ft2, ft3, ft4, ft5, ft6, ft7, ft8, ft9, ft10 };
+    SetEvilBit(evil_ft);
+    char   fccHandler[4];             /* Tier C - advisory, bare             */
+    local int evil_sf = SetEvilBit(IsParsing());
+    DWORD  dwFlags <values=strflags_values>;    /* Tier B bitmask            */
+    SetEvilBit(evil_sf);
+    DWORD  dwReserved1;               /* Tier C - spec's wPriority+wLanguage */
+    DWORD  dwInitialFrames;           /* Tier C - bare                       */
+    DWORD  dwScale;                   /* Tier C - diversity axis, bare       */
+    DWORD  dwRate;                    /* Tier C - diversity axis, bare       */
+    DWORD  dwStart;                   /* Tier C - bare                       */
+    DWORD  dwLength;                  /* Tier C - bare                       */
+    DWORD  dwSuggestedBufferSize;     /* Tier C - bare                       */
+    DWORD  dwQuality;                 /* Tier C - bare                       */
+    DWORD  dwSampleSize;              /* Tier C - bare                       */
+    DWORD  xdwQuality;                /* Tier C - spec's rcFrame left+top    */
+    DWORD  xdwSampleSize;             /* Tier C - spec's rcFrame right+bottom */
+} AVIStreamHeader;
+
+typedef struct 
+{
+  /* Tier A: "strh" and 56 exactly - measured, 57 gives a stream with no codec
+   * and no dimensions. */
+  local int evil_sh = SetEvilBit(IsParsing());
+  char id[4] = { {"strh"} };
+  uint32  datalen = { 56 };
+  SetEvilBit(evil_sh);
+  AVIStreamHeader data;
+}strhHEADER;
+
+int64 Clip16(int64 v)
+{
+    if (v < 1)
+        return 1;
+    if (v > 65535)
+        return 65535;
+    return v;
+}
+
+/* ===========================================================================
+ * genericblock.data - Tier A payload_wellformedness, THE central rule for this
+ * format.  One emitter per codec variant; every length is computed from
+ * derives_from (biWidth, biHeight, biBitCount, biCompression, wFormatTag,
+ * nChannels, wBitsPerSample) and none of those is ever shrunk to fit a
+ * precomputed frame.  `content_is_free` is honoured: wherever a byte is a
+ * pixel or a sample it is drawn freely, and only framing bytes are pinned.
+ * =========================================================================== */
+typedef struct (uint32 kind, uint32 sidx, int64 n, int64 total, int64 sub)
+{
+    local int64  md_w = st_w[sidx];
+    local int64  md_h = AbsHeight(st_h[sidx]);
+    local int64  md_b = st_bits[sidx];
+    local uint32 md_c = st_comp[sidx];
+    local int64  md_start = FTell();
+    /* THE payload guard.  genericblock.data is Tier A payload_wellformedness,
+     * and a structured frame is a hundred or more PINNED bytes: at the engine's
+     * 1/128 escape rate per declaration, roughly 70% of JPEG frames and 90% of
+     * reference frames would carry at least one evil byte and fail to decode.
+     * Bare declarations inside this struct - pixels, samples, palette colours,
+     * RLE indices - are unaffected, because the escape only applies where a
+     * value set exists, so content_is_free is still honoured. */
+    local int evil_md = SetEvilBit(IsParsing());
+    local int64 md_n = n;
+    if (md_n < 0 || md_n > 65536)
+        md_n = 0;
+    local uint32 md_k = kind;
+    if (md_k == 2 && md_n < 2)
+        md_k = 20;
+    if (md_k == 3 && JpegBytes(Clip16(md_w), Clip16(md_h), sub) != md_n)
+        md_k = 20;
+    if (md_k == 5 && md_n < 10)
+        md_k = 20;
+
+    if (md_k == 1)
+    {
+        /* BI_RGB / BI_BITFIELDS: abs(biHeight) rows of ((biWidth*biBitCount+31)/32)*4
+         * bytes each, bottom-up unless biHeight is negative.  Reaches rawvideo
+         * at pal8 / rgb555le / bgr24 / bgra depending on biBitCount, and so four
+         * different scaler input paths. */
+        if (md_n > 0)
+        {
+            uchar rows[md_n];
+        }
+    }
+    else if (md_k == 2)
+    {
+        /* BI_RLE8 / BI_RLE4 -> msrle.  Encoded-mode [count][index] pairs, one
+         * [00][00] end-of-line per row, [00][01] end-of-bitmap to close. */
+        local int64 rl_rows = MsrleRows(md_w, md_h, n);
+        local int64 rl_y = 0;
+        while (rl_y < rl_rows)
+        {
+            local int64 rl_x = md_w;
+            while (rl_x > 0)
+            {
+                local int64 rl_run = rl_x;
+                if (rl_run > 255)
+                    rl_run = 255;
+                ubyte rle_count = { (ubyte)rl_run };
+                ubyte rle_index;                    /* palette index - free     */
+                rl_x -= rl_run;
+            }
+            ubyte rle_eol0 = { 0 };
+            ubyte rle_eol1 = { 0 };
+            rl_y++;
+        }
+        ubyte rle_eob0 = { 0 };
+        ubyte rle_eob1 = { 1 };
+    }
+    else if (md_k == 3)
+    {
+        /* MJPG / mjpg -> mjpegdec.  A complete JPEG datastream per frame: SOI,
+         * one quantisation table, SOF0 carrying the geometry, a minimal
+         * one-code DC table and one-code AC table, SOS, the entropy-coded
+         * segment (two bits per 8x8 block: DC category 0 then end-of-block)
+         * and EOI.  sub is the component count - 1 gives a gray frame, 3 a
+         * yuvj444p one, which are different decoder paths. */
+        local int64 jw = Clip16(md_w);
+        local int64 jh = Clip16(md_h);
+        local int64 jnc = sub;
+        local int64 jblk = CeilDiv(jw, 8) * CeilDiv(jh, 8) * jnc;
+        ubyte jp_soi0 = { 0xFF };
+        ubyte jp_soi1 = { 0xD8 };
+        ubyte jp_dqtm = { 0xFF };
+        ubyte jp_dqtk = { 0xDB };
+        ubyte jp_dqtl0 = { 0 };
+        ubyte jp_dqtl1 = { 67 };
+        ubyte jp_dqtpq = { 0 };
+        local int64 jq = 0;
+        while (jq < 64)
+        {
+            ubyte jp_qval = { 1, 2, 4, 8, 16, 32, 64 };   /* any non-zero step */
+            jq++;
+        }
+        ubyte jp_sofm = { 0xFF };
+        ubyte jp_sofk = { 0xC0 };
+        local int64 jsofl = 8 + 3 * jnc;
+        ubyte jp_sofl0 = { (ubyte)((jsofl >> 8) & 255) };
+        ubyte jp_sofl1 = { (ubyte)(jsofl & 255) };
+        ubyte jp_prec = { 8 };
+        ubyte jp_hi = { (ubyte)((jh >> 8) & 255) };
+        ubyte jp_lo = { (ubyte)(jh & 255) };
+        ubyte jp_whi = { (ubyte)((jw >> 8) & 255) };
+        ubyte jp_wlo = { (ubyte)(jw & 255) };
+        ubyte jp_nf = { (ubyte)jnc };
+        local int64 jc = 0;
+        while (jc < jnc)
+        {
+            ubyte jp_cid = { (ubyte)(jc + 1) };
+            ubyte jp_hv = { 0x11 };
+            ubyte jp_ctq = { 0 };
+            jc++;
+        }
+        local int64 jt = 0;
+        while (jt < 2)
+        {
+            ubyte jp_dhtm = { 0xFF };
+            ubyte jp_dhtk = { 0xC4 };
+            ubyte jp_dhtl0 = { 0 };
+            ubyte jp_dhtl1 = { 20 };
+            ubyte jp_dhttc = { (ubyte)(jt * 16) };      /* 0x00 = DC, 0x10 = AC */
+            ubyte jp_bits1 = { 1 };                     /* one code of length 1 */
+            local int64 jb = 1;
+            while (jb < 16)
+            {
+                ubyte jp_bitsn = { 0 };
+                jb++;
+            }
+            ubyte jp_huffval = { 0 };
+            jt++;
+        }
+        ubyte jp_sosm = { 0xFF };
+        ubyte jp_sosk = { 0xDA };
+        local int64 jsosl = 6 + 2 * jnc;
+        ubyte jp_sosl0 = { (ubyte)((jsosl >> 8) & 255) };
+        ubyte jp_sosl1 = { (ubyte)(jsosl & 255) };
+        ubyte jp_ns = { (ubyte)jnc };
+        local int64 js = 0;
+        while (js < jnc)
+        {
+            ubyte jp_scs = { (ubyte)(js + 1) };
+            ubyte jp_stdta = { 0x00 };
+            js++;
+        }
+        ubyte jp_ss = { 0 };
+        ubyte jp_se = { 63 };
+        ubyte jp_ahal = { 0 };
+        local int64 jnby = CeilDiv(2 * jblk, 8);
+        local int64 jpad = 8 * jnby - 2 * jblk;
+        local int64 je = 0;
+        while (je + 1 < jnby)
+        {
+            ubyte jp_ent = { 0 };
+            je++;
+        }
+        if (jnby > 0)
+        {
+            ubyte jp_entl = { (ubyte)((1 << jpad) - 1) };
+        }
+        ubyte jp_eoim = { 0xFF };
+        ubyte jp_eoik = { 0xD9 };
+    }
+    else if (md_k == 4)
+    {
+        /* MSVC / CRAM -> msvideo1.  Four bytes per 4x4 block: an all-zero
+         * 16-bit flag word (two-colour mode, every pixel takes one colour)
+         * followed by the two colour indices, which are free. */
+        local int64 mv_n = n / 4;
+        local int64 mv_i = 0;
+        while (mv_i < mv_n)
+        {
+            ubyte mv_f0 = { 0 };
+            ubyte mv_f1 = { 0 };
+            ubyte mv_ca;
+            ubyte mv_cb;
+            mv_i++;
+        }
+    }
+    else if (md_k == 5)
+    {
+        /* cvid -> cinepak.  A 10-byte frame header declaring zero strips, which
+         * is a complete and legal Cinepak frame for any geometry.  The width
+         * and height here are the free geometry fields, big-endian. */
+        local int64 cv_w = Clip16(md_w);
+        local int64 cv_h = Clip16(md_h);
+        ubyte cv_flags = { 0 };
+        ubyte cv_len0 = { 0 };
+        ubyte cv_len1 = { 0 };
+        ubyte cv_len2 = { 10 };
+        ubyte cv_w0 = { (ubyte)((cv_w >> 8) & 255) };
+        ubyte cv_w1 = { (ubyte)(cv_w & 255) };
+        ubyte cv_h0 = { (ubyte)((cv_h >> 8) & 255) };
+        ubyte cv_h1 = { (ubyte)(cv_h & 255) };
+        ubyte cv_ns0 = { 0 };
+        ubyte cv_ns1 = { 0 };
+    }
+    else if (md_k == 6)
+    {
+        /* A rawvideo fourcc: exactly av_image_get_buffer_size(pix_fmt, w, h, 1)
+         * bytes, computed in RawTagBytes from the free geometry.  Every byte is
+         * a sample, so all of them are free. */
+        if (md_n > 0)
+        {
+            uchar planes[md_n];
+        }
+    }
+    else if (md_k == 7)
+    {
+        /* A reference bitstream from ref_pool - see the table at the top.  sub
+         * selects the key frame (0) or the delta frame that follows it (1). */
+        local uint32 rf = st_ref[sidx];
+        local uint32 ro = ref_f1_off[rf];
+        local uint32 rn = ref_f1_len[rf];
+        if (sub == 1 && ref_f2_len[rf] > 0)
+        {
+            ro = ref_f2_off[rf];
+            rn = ref_f2_len[rf];
+        }
+        if (rn > md_n)
+            rn = (uint32)md_n;             /* parse direction: never overrun  */
+        local uint32 rj = 0;
+        while (rj < rn)
+        {
+            ubyte refbyte = { ref_pool[ro + rj] };
+            rj++;
+        }
+    }
+    else if (md_k == 8)
+    {
+        /* Audio for the byte-oriented tags: PCM of any depth, IEEE float,
+         * A-law, mu-law, Yamaha ADPCM, G.722, TrueSpeech, GSM 6.10, Creative
+         * ADPCM.  No framing at all - a whole number of nBlockAlign units of
+         * free sample data, which is the audio equivalent of the stored form. */
+        if (md_n > 0)
+        {
+            uchar samples[md_n];
+        }
+    }
+    else if (md_k == 9)
+    {
+        /* WAVE_FORMAT_ADPCM -> adpcm_ms.  A packet is a whole number of
+         * nBlockAlign blocks and EVERY block carries its own header, which the
+         * decoder reads field-interleaved: each channel's block predictor,
+         * then each channel's delta, then the two priming samples.  The nibble
+         * data that follows is free. */
+        local int64 ms_bs = sub;
+        if (ms_bs < 7 || ms_bs > n)
+            ms_bs = n;
+        local int64 ac = st_ch[sidx];
+        if (ac < 1)
+            ac = 1;
+        if (ac > 8)
+            ac = 8;
+        if (7 * ac > ms_bs)
+            ac = ms_bs / 7;
+        local int64 ms_nb = 0;
+        if (ms_bs > 0 && ac > 0)
+            ms_nb = n / ms_bs;
+        local int64 ms_bi = 0;
+        while (ms_bi < ms_nb)
+        {
+            local int64 ai = 0;
+            while (ai < ac)
+            {
+                ubyte ms_pred = { 0 };              /* coefficient set 0        */
+                ai++;
+            }
+            ai = 0;
+            while (ai < ac)
+            {
+                ubyte ms_d0 = { 16 };
+                ubyte ms_d1 = { 0 };                /* idelta = 16              */
+                ai++;
+            }
+            ai = 0;
+            while (ai < ac)
+            {
+                ubyte ms_s10 = { 0 };
+                ubyte ms_s11 = { 0 };
+                ai++;
+            }
+            ai = 0;
+            while (ai < ac)
+            {
+                ubyte ms_s20 = { 0 };
+                ubyte ms_s21 = { 0 };
+                ai++;
+            }
+            local int64 ms_rem = ms_bs - 7 * ac;
+            if (ms_rem > 0)
+            {
+                uchar ms_nibbles[ms_rem];
+            }
+            ms_bi++;
+        }
+    }
+    else if (md_k == 10)
+    {
+        /* WAVE_FORMAT_IMA_ADPCM -> adpcm_ima_wav.  Four bytes of block header
+         * per channel - the priming sample and the step index - at the start of
+         * every nBlockAlign block, then free nibble data. */
+        local int64 im_bs = sub;
+        if (im_bs < 4 || im_bs > n)
+            im_bs = n;
+        local int64 ic = st_ch[sidx];
+        if (ic < 1)
+            ic = 1;
+        if (ic > 8)
+            ic = 8;
+        if (4 * ic > im_bs)
+            ic = im_bs / 4;
+        local int64 im_nb = 0;
+        if (im_bs > 0 && ic > 0)
+            im_nb = n / im_bs;
+        local int64 im_bi = 0;
+        while (im_bi < im_nb)
+        {
+            local int64 ii = 0;
+            while (ii < ic)
+            {
+                ubyte im_s0 = { 0 };
+                ubyte im_s1 = { 0 };
+                ubyte im_idx = { 0 };               /* step index 0             */
+                ubyte im_rsv = { 0 };
+                ii++;
+            }
+            local int64 im_rem = im_bs - 4 * ic;
+            if (im_rem > 0)
+            {
+                uchar im_nibbles[im_rem];
+            }
+            im_bi++;
+        }
+    }
+    else if (md_k == 11)
+    {
+        /* A "##pc" palette-change chunk.  AVISF_VIDEO_PALCHANGES in the stream
+         * header is what makes it meaningful, and the demuxer has its own
+         * branch for it (size <= 4*256+4), so this is a real AVI element
+         * rather than filler. */
+        local int64 pc_n = (n - 4) / 4;
+        if (pc_n < 0)
+            pc_n = 0;
+        if (pc_n > 255)
+            pc_n = 255;
+        if (n < 4)
+            pc_n = -1;                              /* nothing fits            */
+        if (pc_n >= 0)
+        {
+        ubyte pc_first = { 0 };
+        ubyte pc_num = { (ubyte)pc_n };
+        ubyte pc_fl0 = { 0 };
+        ubyte pc_fl1 = { 0 };
+        local int64 pc_i = 0;
+        while (pc_i < pc_n)
+        {
+            RGBQUAD pc_entry;                       /* Tier C - free colours    */
+            pc_i++;
+        }
+        }
+    }
+    else
+    {
+        /* An unregistered fourcc or a tag with no decoder: the demuxer lists
+         * the stream and attaches no decoder, which is its own branch.  The
+         * payload is the geometry product where that is expressible, because
+         * that is what a real file carrying an unknown fourcc looks like.
+         * md_k 20 lands here too - a structured frame that does not fit the
+         * chunk length a real file declares (parse direction only). */
+        if (md_n > 0)
+        {
+            uchar opaque[md_n];
+        }
+    }
+
+    /* RIFF requires a chunk to occupy an even number of bytes.  The pad byte is
+     * NOT counted in datalen; the original consumes it by declaring the data
+     * array as datalen+1 in the odd case, so `total` is datalen or datalen+1
+     * and this fills whatever the emitter above left. */
+    SetEvilBit(evil_md);
+    local int64 md_used = FTell() - md_start;
+    local int64 md_pad = total - md_used;
+    if (md_pad > 65536)
+        md_pad = 0;
+    if (md_pad > 0)
+    {
+        uchar pad[md_pad];
+    }
+} MEDIADATA;
+
+/* Largest multiple of `unit` that is at most min(want, room) - keeps an audio
+ * chunk a whole number of nBlockAlign units without bounding either field. */
+uint32 CapUnit(int64 want, int64 room, int64 unit)
+{
+    local int64 u = unit;
+    local int64 v = want;
+    if (u < 1)
+        u = 1;
+    if (v > room)
+        v = room;
+    if (v < 0)
+        v = 0;
+    v = (v / u) * u;
+    return (uint32)v;
+}
+
+// Generic strfHEADER
+typedef struct 
+{
+  local int evil_sf = SetEvilBit(IsParsing());
+  char id[4] = { {"strf"} };
+  SetEvilBit(evil_sf);
+  /* datalen - Tier A.  strfHEADER.data is Tier C unconstrained, so for the
+   * generic format chunk the payload length is itself a free quantity: the
+   * length field carries it and the array is derived from it, which is exact
+   * in both directions.  Odd values are in the set so the RIFF pad rule - the
+   * template's datalen+1 branch - is exercised. */
+  local uint32 sf_room = 64;
+  if (hdrl_used < HDRL_BUDGET)
+      sf_room = HDRL_BUDGET - hdrl_used;
+  local uint32 sf_values[] = { Cap(1, sf_room), Cap(2, sf_room), Cap(3, sf_room),
+                               Cap(4, sf_room), Cap(5, sf_room), Cap(8, sf_room),
+                               Cap(16, sf_room), Cap(18, sf_room), Cap(20, sf_room),
+                               Cap(32, sf_room), Cap(40, sf_room), Cap(44, sf_room),
+                               Cap(64, sf_room), Cap(128, sf_room), Cap(256, sf_room),
+                               Cap(7, sf_room), Cap(11, sf_room), Cap(1024, sf_room) };
+  local int evil_sl = SetEvilBit(IsParsing());
+  uint32  datalen <values=sf_values>;
+  SetEvilBit(evil_sl);
+  if (datalen % 2)
+	  char data[datalen+1];
+  else
+	  char data[datalen];
+  /* Register this stream for the movi list.  Done inside the format chunk
+   * rather than in the caller because the original names all three variants
+   * `strf`, and a field declared in three sibling branches has no single
+   * handle the caller can read back. */
+  st_type += 3;
+  st_comp += 0;
+  st_w    += 0;
+  st_h    += 0;
+  st_bits += 0;
+  st_kind += 0;
+  st_ref  += 0;
+  st_ba   += 1;
+  st_ch   += 1;
+  st_pal  += 0;
+} strfHEADER;
+
+// strfHEADER with BITMAPINFOHEADER
+typedef struct 
+{
+  local int evil_bh = SetEvilBit(IsParsing());
+  char id[4] = { {"strf"} };
+  SetEvilBit(evil_bh);
+  /* datalen - Tier A: 40 for a bare BITMAPINFOHEADER, 44 when a single RGBQUAD
+   * follows, 40 + palette or 40 + codec extradata otherwise.  It is declared
+   * here, before the header it measures, so it is rewritten as soon as the
+   * header has been emitted and the palette length is known - and the rewrite
+   * happens BEFORE the datalen == 44 test below, so that test sees the real
+   * value in both directions. */
+  local int64 pos_bhlen = FTell();
+  uint32  datalen;
+  BITMAPINFOHEADER bmiHeader;
+
+  /* Dependency 7: the indexed depths need a colour table of biClrUsed entries,
+   * or 2^biBitCount when biClrUsed is 0, and never more than 2^biBitCount.
+   * biClrUsed itself stays bare - this reads it.
+   * Dependency 6: the codecs whose decoder needs a configuration header get it
+   * from ref_pool. */
+  local int bh_kind = VidKind(bmiHeader.biCompression);
+  local int64 bh_pal = 0;
+  if (bmiHeader.biBitCount >= 1 && bmiHeader.biBitCount <= 8)
+  {
+      if (bh_kind == 1 || bh_kind == 2 || bh_kind == 4 || bh_kind == 5)
+      {
+          local int64 bh_max = 1;
+          bh_max = bh_max << bmiHeader.biBitCount;
+          bh_pal = bmiHeader.biClrUsed;
+          if (bh_pal == 0 || bh_pal > bh_max)
+              bh_pal = bh_max;
+      }
+  }
+  local int64 bh_ex = 4 * bh_pal;
+  if (bh_kind == 7)
+      bh_ex = ref_ex_len[VidRef(bmiHeader.biCompression)];
+
+  local int64 bh_mark = FTell();
+  FSeek(pos_bhlen);
+  local int evil_bl = SetEvilBit(IsParsing());
+  uint32 datalen = { (uint32)(40 + bh_ex) };
+  SetEvilBit(evil_bl);
+  FSeek(bh_mark);
+
+  /* sizeof(bmiHeader): eleven fields, 40 bytes.  Written out rather than taken
+   * from sizeof() because the value has to agree with the rewritten length
+   * above in both directions. */
+  local int sz = 40;
+  if (datalen == 44)
+  {
+    RGBQUAD bmiColors;
+    sz += 4;
+  }
+  Printf("left: %d\n", sz);
+  /* exData - Tier C.  What belongs here depends on biCompression: the colour
+   * table for the indexed depths, the codec configuration for the codecs that
+   * need one, nothing for BI_RGB.  A real 256-entry palette makes datalen 1064
+   * and this template reads it as exData rather than as a palette, which is a
+   * template limitation recorded on the constraint, not a format rule. */
+  if (datalen > sz)
+  {
+      if (bh_kind == 7 && bh_ex > 0)
+      {
+          local uint32 bh_ro = ref_ex_off[VidRef(bmiHeader.biCompression)];
+          local uint32 bh_rj = 0;
+          local int evil_bx = SetEvilBit(IsParsing());
+          while (bh_rj < bh_ex)
+          {
+              ubyte exData = { ref_pool[bh_ro + bh_rj] };
+              bh_rj++;
+          }
+          SetEvilBit(evil_bx);
+      }
+      else
+      {
+          char exData[datalen - sz];
+      }
+  }
+  /* Register this video stream for the movi list - see strfHEADER. */
+  st_type += 1;
+  st_comp += bmiHeader.biCompression;
+  st_w    += bmiHeader.biWidth;
+  st_h    += bmiHeader.biHeight;
+  st_bits += bmiHeader.biBitCount;
+  st_kind += (uint32)VidKind(bmiHeader.biCompression);
+  local int bh_vr = VidRef(bmiHeader.biCompression);
+  if (bh_vr < 0)
+  {
+      bh_vr = 0;
+  }
+  st_ref  += (uint32)bh_vr;
+  st_ba   += 1;
+  st_ch   += 1;
+  if ((cur_strh_flags & 65536) != 0)
+  {
+      st_pal += 1;                         /* AVISF_VIDEO_PALCHANGES          */
+  }
+  else
+  {
+      st_pal += 0;
+  }
+} strfHEADER_BIH;
+
+/* The codec-specific extension that follows a WAVEFORMATEX.  Reached only from
+ * strfHEADER_WAVE; its length is WAVEFORMATEX.cbSize, which is Tier A. */
+typedef struct (uint16 tag, int64 n)
+{
+    local int we_ref = AudRef(tag);
+    local int evil_we = SetEvilBit(IsParsing());
+    if (tag == 0xFFFE)
+    {
+        /* Dependency 9: WAVE_FORMAT_EXTENSIBLE requires a 22-byte extension -
+         * the valid bits, a channel mask and a format GUID.  The channel mask
+         * is free content and decides which codec the GUID names, so both the
+         * plain-PCM form (which decodes as PCM) and the E-AC-3 form (which
+         * reaches the E-AC-3 decoder) occur in the corpus. */
+        uint16 ex_validbits = { 8, 16, 20, 24, 32 };
+        uint32 ex_chanmask = { 3, 4 };
+        if (ex_chanmask == 3)
+        {
+            /* KSDATAFORMAT_SUBTYPE_PCM {00000001-0000-0010-8000-00AA00389B71} */
+            ubyte ex_g00 = { 0x01 };
+            ubyte ex_g01 = { 0x00 };
+            ubyte ex_g02 = { 0x00 };
+            ubyte ex_g03 = { 0x00 };
+            ubyte ex_g04 = { 0x00 };
+            ubyte ex_g05 = { 0x00 };
+            ubyte ex_g06 = { 0x10 };
+            ubyte ex_g07 = { 0x00 };
+            ubyte ex_g08 = { 0x80 };
+            ubyte ex_g09 = { 0x00 };
+            ubyte ex_g10 = { 0x00 };
+            ubyte ex_g11 = { 0xAA };
+            ubyte ex_g12 = { 0x00 };
+            ubyte ex_g13 = { 0x38 };
+            ubyte ex_g14 = { 0x9B };
+            ubyte ex_g15 = { 0x71 };
+        }
+        else
+        {
+            /* The E-AC-3 subformat GUID, from ref_pool entry 25 (its first six
+             * bytes are the valid bits and channel mask already emitted). */
+            local uint32 we_eo = ref_ex_off[25] + 6;
+            local uint32 we_ej = 0;
+            while (we_ej < 16)
+            {
+                ubyte ex_guid = { ref_pool[we_eo + we_ej] };
+                we_ej++;
+            }
+        }
+    }
+    else if (we_ref >= 0 && n > 0)
+    {
+        local uint32 we_ro = ref_ex_off[we_ref];
+        local uint32 we_rn = ref_ex_len[we_ref];
+        local uint32 we_rj = 0;
+        while (we_rj < we_rn && we_rj < n)
+        {
+            ubyte ex_cfg = { ref_pool[we_ro + we_rj] };
+            we_rj++;
+        }
+    }
+    else if (tag == 0x0002 && n >= 32)
+    {
+        /* ADPCMWAVEFORMAT: wSamplesPerBlock, wNumCoef and the seven standard
+         * Microsoft ADPCM coefficient pairs that adpcm_ms expects. */
+        uint16 ex_spb = { 2036, 500, 244, 1012 };
+        uint16 ex_ncoef = { 7 };
+        /* The seven standard AdaptCoeff pairs, as signed 16-bit little-endian:
+         * (256,0) (512,-256) (0,0) (192,64) (240,0) (460,-208) (392,-232).
+         * Written as WORDs rather than a byte-string literal because a char
+         * array initialised from a literal truncates at its first NUL. */
+        uint16 ex_c0 = { 256 };
+        uint16 ex_c1 = { 0 };
+        uint16 ex_c2 = { 512 };
+        uint16 ex_c3 = { 65280 };
+        uint16 ex_c4 = { 0 };
+        uint16 ex_c5 = { 0 };
+        uint16 ex_c6 = { 192 };
+        uint16 ex_c7 = { 64 };
+        uint16 ex_c8 = { 240 };
+        uint16 ex_c9 = { 0 };
+        uint16 ex_c10 = { 460 };
+        uint16 ex_c11 = { 65328 };
+        uint16 ex_c12 = { 392 };
+        uint16 ex_c13 = { 65304 };
+    }
+    else if (n >= 2)
+    {
+        /* IMAADPCMWAVEFORMAT / GSM610WAVEFORMAT and friends: wSamplesPerBlock. */
+        uint16 ex_spb = { 505, 1017, 2041, 249, 320, 160 };
+        if (n > 2)
+        {
+            char data[n - 2];
+        }
+    }
+    else if (n > 0)
+    {
+        char data[n];
+    }
+    SetEvilBit(evil_we);
+} WAVEEXTRA;
+
+// strfHEADER with WAVEFORMAT
+typedef struct 
+{
+  local int evil_wh = SetEvilBit(IsParsing());
+  char id[4] = { {"strf"} };
+  SetEvilBit(evil_wh);
+  /* datalen - Tier A = 18 + cbSize.  Line 146 of the original sizes exData as
+   * datalen - 18 unconditionally, so the 16-byte legacy PCM WAVEFORMAT cannot
+   * be expressed by this template; the full 18-byte WAVEFORMATEX is always
+   * emitted, which is what the constraint's template_parse_requirement says. */
+  local int64 pos_whlen = FTell();
+  uint32  datalen;
+  WAVEFORMATEX wave;
+  local int64 wh_mark = FTell();
+  FSeek(pos_whlen);
+  local int evil_wl = SetEvilBit(IsParsing());
+  uint32 datalen = { (uint32)(18 + wave.cbSize) };
+  SetEvilBit(evil_wl);
+  FSeek(wh_mark);
+  if (datalen > 18)
+  {
+      WAVEEXTRA exData(wave.wFormatTag, datalen - 18);
+  }
+  /* Register this audio stream for the movi list - see strfHEADER. */
+  st_type += 2;
+  st_comp += wave.wFormatTag;
+  st_w    += 0;
+  st_h    += 0;
+  st_bits += 0;
+  st_kind += (uint32)AudKind(wave.wFormatTag);
+  local int wh_ar = AudRef(wave.wFormatTag);
+  if (wh_ar < 0)
+  {
+      wh_ar = 0;
+  }
+  st_ref  += (uint32)wh_ar;
+  st_ba   += wave.nBlockAlign;
+  st_ch   += wave.nChannels;
+  st_pal  += 0;
+} strfHEADER_WAVE;
+
+//
+typedef struct 
+{
+  local int evil_sn = SetEvilBit(IsParsing());
+  char id[4] = { {"strn"} };
+  SetEvilBit(evil_sn);
+  /* The stream name's length is free; odd and even values are both in the set
+   * so the RIFF pad rule is exercised on both branches below. */
+  local uint32 sn_values[] = { 2, 4, 6, 6, 8, 10, 12, 16, 24, 1, 3, 5, 7, 9, 11, 13 };
+  local int evil_nl = SetEvilBit(IsParsing());
+  uint32  datalen <values=sn_values>;
+  SetEvilBit(evil_nl);
+  if ( datalen % 2 )
+    char data[datalen+1];
+  else
+    char data[datalen];
+} strnHEADER;
+
+//
+typedef struct (uint32 sidx, int64 room, int64 fno)
+{
+  local int64  gb_start = FTell();
+  local uint32 gb_type  = st_type[sidx];
+  local uint32 gb_kind  = st_kind[sidx];
+  local uint32 gb_comp  = st_comp[sidx];
+  local int64  gb_w     = st_w[sidx];
+  local int64  gb_h     = AbsHeight(st_h[sidx]);
+  local int64  gb_b     = st_bits[sidx];
+  local uint32 gb_ref   = st_ref[sidx];
+
+  /* --- what this chunk carries, and exactly how many bytes that is ------- */
+  local uint32 md_kind  = 0;
+  local int64  want     = 0;
+  local int64  sub      = 0;
+  local uint32 free_len = 0;
+  local int64  unit     = 1;
+  local uint32 pal_now  = 0;
+
+  /* Dependency: a stream that declares AVISF_VIDEO_PALCHANGES tells a reader to
+   * expect "##pc" palette-change chunks, and the demuxer has a dedicated branch
+   * for them.  Emit one every third chunk of such a stream. */
+  if (gb_type == 1 && st_pal[sidx] != 0 && (fno % 3) == 2)
+  {
+      pal_now = 1;
+      md_kind = 11;
+      want = 68;                           /* header plus sixteen RGBQUADs    */
+  }
+  else if (gb_type == 1)
+  {
+      if (gb_kind == 1)
+      {
+          md_kind = 1;
+          want = RawBytes(st_w[sidx], st_h[sidx], gb_b);
+      }
+      else if (gb_kind == 2)
+      {
+          md_kind = 2;
+          want = MsrleBytes(gb_w, gb_h, room - 8);
+      }
+      else if (gb_kind == 3)
+      {
+          md_kind = 3;
+          sub = 1;
+          if (gb_b >= 16)
+              sub = 3;                   /* three components -> yuvj444p path */
+          want = JpegBytes(Clip16(gb_w), Clip16(gb_h), sub);
+      }
+      else if (gb_kind == 4)
+      {
+          md_kind = 4;
+          want = Msv1Bytes(gb_w, gb_h);
+      }
+      else if (gb_kind == 5)
+      {
+          md_kind = 5;
+          want = 10;
+      }
+      else if (gb_kind == 6)
+      {
+          md_kind = 6;
+          want = RawTagBytes(gb_comp, gb_w, gb_h);
+      }
+      else if (gb_kind == 7)
+      {
+          md_kind = 7;
+          sub = fno % 2;
+          if (sub == 1 && ref_f2_len[gb_ref] == 0)
+              sub = 0;
+          if (sub == 1)
+              want = ref_f2_len[gb_ref];
+          else
+              want = ref_f1_len[gb_ref];
+      }
+      else
+      {
+          /* unregistered fourcc: the stream is listed with no decoder */
+          md_kind = 0;
+          want = RawBytes(st_w[sidx], st_h[sidx], gb_b);
+          if (want <= 0 || want > room - 24)
+          {
+              free_len = 1;
+              unit = 1;
+          }
+      }
+  }
+  else if (gb_type == 2)
+  {
+      unit = st_ba[sidx];
+      if (unit < 1 || unit > 8192)
+          unit = 1;
+      if (gb_kind == 4)
+      {
+          md_kind = 7;                   /* a real frame for this audio codec */
+          sub = fno % 2;
+          if (sub == 1 && ref_f2_len[gb_ref] == 0)
+              sub = 0;
+          if (sub == 1)
+              want = ref_f2_len[gb_ref];
+          else
+              want = ref_f1_len[gb_ref];
+      }
+      else if (gb_kind == 2)
+      {
+          md_kind = 9;                   /* adpcm_ms: whole blocks            */
+          want = unit;
+          free_len = 1;
+          sub = unit;                    /* the emitter needs the block size  */
+      }
+      else if (gb_kind == 3)
+      {
+          md_kind = 10;                  /* adpcm_ima_wav: whole blocks       */
+          want = unit;
+          free_len = 1;
+          sub = unit;
+      }
+      else
+      {
+          md_kind = 8;                   /* a whole number of sample frames   */
+          free_len = 1;
+      }
+  }
+  else
+  {
+      /* a "##tx" subtitle-text chunk for a txts stream, or opaque data for a
+       * mids stream - free bytes either way */
+      md_kind = 0;
+      free_len = 1;
+  }
+
+  /* A chunk may never run past the list, and must leave either nothing or room
+   * for another chunk header.  When the payload this stream wants does not fit,
+   * this chunk becomes the list's last chunk and fills the remainder exactly -
+   * as a palette-change chunk where that is legal (which is a real AVI element
+   * with its own branch in the demuxer), otherwise as JUNK, which is the
+   * format's designated filler. */
+  local uint32 filler = 0;
+  local int64  cons = 8 + want + (want % 2);
+  if (free_len == 1 && room < 24)
+      filler = 1;
+  if (free_len == 0 && (want <= 0 || cons > room || (cons != room && cons + 8 > room)))
+      filler = 1;
+  if (filler == 1)
+  {
+      want = room - 8;
+      if (want < 0)
+          want = 0;
+      free_len = 0;
+      sub = 0;
+      if (gb_type == 1 && want >= 4 && want <= 1028)
+          md_kind = 11;
+      else
+          md_kind = 12;
+  }
+
+  /* genericblock.id - Tier C, derived from the stream index per dependency 14
+   * and carrying the suffix set that stream's type permits. */
+  local string gid1 = cid_dc[sidx];
+  local string gid2 = cid_dc[sidx];
+  local string gid3 = cid_db[sidx];
+  if (md_kind == 11)
+  {
+      gid1 = cid_pc[sidx];
+      gid2 = gid1;
+      gid3 = gid1;
+  }
+  else if (filler == 1)
+  {
+      gid1 = "JUNK";
+      gid2 = gid1;
+      gid3 = gid1;
+  }
+  else if (gb_type == 1)
+  {
+      if (md_kind == 1 || md_kind == 6)
+      {
+          /* "db" is the uncompressed-frame code, "dc" the compressed one */
+          gid1 = cid_db[sidx];
+          gid2 = cid_db[sidx];
+          gid3 = cid_dc[sidx];
+      }
+  }
+  else if (gb_type == 2)
+  {
+      gid1 = cid_wb[sidx];
+      gid2 = gid1;
+      gid3 = gid1;
+  }
+  else
+  {
+      gid1 = cid_tx[sidx];
+      gid2 = gid1;
+      gid3 = gid1;
+  }
+  char id[4] = { gid1, gid2, gid3 };
+
+  /* datalen - Tier A calculated_value.  Measured, a declared length SHORT of
+   * the real payload fails the frame with AVERROR_INVALIDDATA while a long one
+   * is tolerated, so it is computed from the payload emitted.  Where the
+   * payload length is itself free - audio sample runs, subtitle text, an
+   * unknown codec's opaque data - the length field carries that freedom as a
+   * value set and the payload is derived from it. */
+  local uint32 dl_values[0];
+  if (free_len == 1)
+  {
+      local int64 dl_room = room - 17;
+      dl_values += CapUnit(unit, dl_room, unit);
+      dl_values += CapUnit(unit * 2, dl_room, unit);
+      dl_values += CapUnit(unit * 3, dl_room, unit);
+      dl_values += CapUnit(unit * 4, dl_room, unit);
+      dl_values += CapUnit(unit * 6, dl_room, unit);
+      dl_values += CapUnit(unit * 8, dl_room, unit);
+      dl_values += CapUnit(unit * 12, dl_room, unit);
+      dl_values += CapUnit(unit * 16, dl_room, unit);
+      dl_values += CapUnit(unit * 24, dl_room, unit);
+      dl_values += CapUnit(unit * 32, dl_room, unit);
+      dl_values += CapUnit(unit * 48, dl_room, unit);
+      dl_values += CapUnit(unit * 64, dl_room, unit);
+      dl_values += CapUnit(unit * 96, dl_room, unit);
+      dl_values += CapUnit(unit * 128, dl_room, unit);
+      dl_values += CapUnit(unit * 256, dl_room, unit);
+      /* The exact-fill entry is NOT rounded to a block: it has to land on the
+       * end of the list, and a partial trailing block is what a real writer
+       * produces anyway (the decoder reads floor(size/blockalign) blocks). */
+      dl_values += (uint32)(room - 8);
+  }
+  else
+  {
+      dl_values += (uint32)want;
+  }
+  local int evil_dl = SetEvilBit(IsParsing());
+  uint32 datalen <values=dl_values>;
+  SetEvilBit(evil_dl);
+
+  /* The index entry for this chunk: dwChunkOffset is measured from the movi
+   * list's type field, where the first chunk's offset is 4. */
+  if (n_idx < 2048 && movi_type > 0)
+  {
+      idx_off += (uint32)(gb_start - movi_type);
+      idx_len += datalen;
+      n_idx++;
+  }
+
+  if ( datalen % 2 )
+    MEDIADATA data(md_kind, sidx, datalen, datalen+1, sub);
+  else
+    MEDIADATA data(md_kind, sidx, datalen, datalen, sub);
+} genericblock;
+
+uint32 CapEven(int64 want, int64 room)
+{
+    local int64 v = want;
+    if (v > room)
+        v = room;
+    if (v < 12)
+        v = 12;
+    v = v - (v % 2);
+    return (uint32)v;
+}
+
+typedef struct (uint32 want)
+{
+  /* id - Tier A fixed_value, and one of the three identifiers the top-level
+   * loop recognises. */
+  local int evil_li = SetEvilBit(IsParsing());
+  char id[4] = { {"LIST"} };
+  SetEvilBit(evil_li);
+
+  /* datalen - Tier A calculated_value: 4 for the type FOURCC plus every nested
+   * chunk including its own header and pad byte.  The movi list is the one
+   * place where this is declared up front rather than rewritten, because the
+   * template's own loop below is driven by it - which makes the movi length
+   * the file's free size axis, and the frames are then derived from it.  For
+   * every other list type the length is rewritten once the body exists. */
+  local int64 pos_lilen = FTell();
+  local uint32 li_values[0];
+  if (want == 2)
+  {
+      /* The per-round cost of one chunk from each stream, so that the ladder
+       * below is a count of frames rather than an arbitrary byte figure: the
+       * FRAME COUNT is what the budget bounds (structure rule 5), and no
+       * dimension, depth, codec or channel count is touched to reach it. */
+      local int64 fcost = 0;
+      local uint32 fi = 0;
+      while (fi < n_str)
+      {
+          local int64 fe = 0;
+          if (st_type[fi] == 1)
+          {
+              if (st_kind[fi] == 1)
+                  fe = RawBytes(st_w[fi], st_h[fi], st_bits[fi]);
+              else if (st_kind[fi] == 2)
+                  fe = MsrleBytes(st_w[fi], AbsHeight(st_h[fi]), 60000);
+              else if (st_kind[fi] == 3)
+                  fe = JpegBytes(Clip16(st_w[fi]), Clip16(AbsHeight(st_h[fi])), 3);
+              else if (st_kind[fi] == 4)
+                  fe = Msv1Bytes(st_w[fi], AbsHeight(st_h[fi]));
+              else if (st_kind[fi] == 5)
+                  fe = 10;
+              else if (st_kind[fi] == 6)
+                  fe = RawTagBytes(st_comp[fi], st_w[fi], AbsHeight(st_h[fi]));
+              else if (st_kind[fi] == 7)
+                  fe = ref_f1_len[st_ref[fi]];
+              else
+                  fe = RawBytes(st_w[fi], st_h[fi], st_bits[fi]);
+          }
+          else if (st_type[fi] == 2)
+          {
+              if (st_kind[fi] == 4)
+                  fe = ref_f1_len[st_ref[fi]];
+              else
+                  fe = st_ba[fi] * 8;
+          }
+          else
+              fe = 16;
+          if (fe < 8)
+              fe = 8;
+          if (fe > 40000)
+              fe = 40000;
+          fcost += 8 + fe + (fe % 2);
+          fi++;
+      }
+      if (fcost < 16)
+          fcost = 16;
+      local int64 mv_room = 0;
+      if (file_used + 64 < FILE_BUDGET)
+          mv_room = FILE_BUDGET - file_used - 64;
+      if (mv_room > 46000)
+          mv_room = 46000;                 /* MAX_RAND_SIZE headroom          */
+      li_values += CapEven(4 + fcost, mv_room);
+      li_values += CapEven(4 + fcost * 2, mv_room);
+      li_values += CapEven(4 + fcost * 3, mv_room);
+      li_values += CapEven(4 + fcost * 4, mv_room);
+      li_values += CapEven(4 + fcost * 5, mv_room);
+      li_values += CapEven(4 + fcost * 6, mv_room);
+      li_values += CapEven(4 + fcost * 8, mv_room);
+      li_values += CapEven(4 + fcost * 10, mv_room);
+      li_values += CapEven(4 + fcost * 12, mv_room);
+      li_values += CapEven(4 + fcost * 16, mv_room);
+      li_values += CapEven(4 + fcost * 20, mv_room);
+      li_values += CapEven(4 + fcost * 24, mv_room);
+      li_values += CapEven(4 + fcost * 32, mv_room);
+      li_values += CapEven(4 + fcost * 40, mv_room);
+      li_values += CapEven(4 + fcost * 48, mv_room);
+      li_values += CapEven(4 + fcost * 64, mv_room);
+      li_values += CapEven(4 + fcost * 96, mv_room);
+      li_values += CapEven(4 + fcost * 128, mv_room);
+  }
+  else if (want == 3)
+  {
+      /* An INFO metadata list or an OpenDML odml list - the two list types real
+       * AVI files carry that this template reads as opaque bytes, which is the
+       * only route to its else branch below. */
+      local uint32 ol_room = 32;
+      if (file_used + 72 < FILE_BUDGET)
+          ol_room = FILE_BUDGET - file_used - 72;
+      if (ol_room > 4096)
+          ol_room = 4096;
+      li_values += Cap(8, ol_room);
+      li_values += Cap(12, ol_room);
+      li_values += Cap(16, ol_room);
+      li_values += Cap(20, ol_room);
+      li_values += Cap(24, ol_room);
+      li_values += Cap(32, ol_room);
+      li_values += Cap(40, ol_room);
+      li_values += Cap(64, ol_room);
+      li_values += Cap(128, ol_room);
+      li_values += Cap(252, ol_room);
+      li_values += Cap(260, ol_room);
+      li_values += Cap(1024, ol_room);
+  }
+  else
+  {
+      /* hdrl and strl: a placeholder, rewritten from the bytes actually
+       * emitted once the body exists.  A real file's own value is read
+       * through the evil escape, which is what keeps the parse honest. */
+      li_values += 4;
+      li_values += 8;
+      li_values += 16;
+      li_values += 64;
+      li_values += 256;
+      li_values += 1024;
+      li_values += 4096;
+  }
+  local int evil_ll = SetEvilBit(IsParsing());
+  uint32 datalen <values=li_values>;
+  SetEvilBit(evil_ll);
+
+  /* type - Tier B enumerated_values.  Which value this list carries is decided
+   * by where it sits in the file (structure rules first_element / required /
+   * ordering), not at random: "hdrl" opens the file, one "strl" per stream
+   * follows, then "movi", and "INFO"/"odml" fill the optional slots.  All five
+   * values occur across the corpus. */
+  local string lt1 = "hdrl";
+  local string lt2 = "hdrl";
+  local string lt3 = "hdrl";
+  if (want == 1)
+  {
+      lt1 = "strl";
+      lt2 = "strl";
+      lt3 = "strl";
+  }
+  else if (want == 2)
+  {
+      lt1 = "movi";
+      lt2 = "movi";
+      lt3 = "movi";
+  }
+  else if (want == 3)
+  {
+      lt1 = "INFO";
+      lt2 = "INFO";
+      lt3 = "odml";
+  }
+  local int evil_ty = SetEvilBit(IsParsing());
+  char type[4] = { lt1, lt2, lt3 };
+  SetEvilBit(evil_ty);
+
+  if (!Memcmp(type,"hdrl",4))
+  {
+    /* The header list carries the main AVI header first and then one strl list
+     * per stream.  The original reads only the avih chunk here and lets its
+     * top-level loop pick up the nested strl lists, which is what flattens the
+     * nesting; that shape is kept, so hdrl's own length is rewritten from the
+     * top level once the last strl has been emitted. */
+    avihHEADER avhi;
+    pos_hdrl_len = pos_lilen;
+    hdrl_body = pos_lilen + 8;
+    have_hdrl = 1;
+    hdrl_end = FTell();
+    /* MainAVIHeader.dwStreams is Tier C and a diversity axis, so it is read
+     * through a LOCAL here: comparing the field itself against literals makes
+     * ffcompile's value miner install those literals as the field's global
+     * known_values, which silently turned a free DWORD into a four-value set
+     * (measured: 597 of 600 files drew 2, 3, 4 or 5).  The miner skips locals. */
+    local int64 want_ds = avhi.data.dwStreams;
+    want_str = 1;
+    if (want_ds == 2 || want_ds == 3)
+        want_str = 2;
+    else if (want_ds == 4)
+        want_str = 3;
+    else if (want_ds == 5)
+        want_str = 4;
+  }
+  else if (!Memcmp(type,"strl",4))
+  {
+    strhHEADER strh;
+    cur_strh_flags = strh.data.dwFlags;
+
+    // Printf("->%c%c%c%c\n", strh.data.fccHandler[0], strh.data.fccHandler[1],strh.data.fccHandler[2],strh.data.fccHandler[3]);
+    /* Dependencies 0, 1, 2: fccType decides how the format chunk is parsed.
+     * The three variants are mutually exclusive (structure rule 12), and each
+     * one registers the stream it describes. */
+    if (Memcmp(strh.data.fccType, "vids", 4) == 0)
+    {
+      strfHEADER_BIH strf;
+    }
+    else if (Memcmp(strh.data.fccType, "auds", 4) == 0)
+    {
+      strfHEADER_WAVE strf;
+    }
+    else
+    {
+      strfHEADER strf;
+    }
+    /* The original reads strn unconditionally, which is a TEMPLATE requirement
+     * and not a format rule - the AVI specification makes the stream name
+     * optional and most real files omit it, putting JUNK, vprp or indx here
+     * instead.  Generation always emits it (structure rule 3); the lookahead is
+     * what lets the parse direction skip it when a real file has something
+     * else at this offset. */
+    local char snpeek[4];
+    local string snp[] = { "strn" };
+    local int evil_sp = SetEvilBit(IsParsing());
+    ReadBytes(snpeek, FTell(), 4, snp, snp, 0.99);
+    SetEvilBit(evil_sp);
+    if (Memcmp(snpeek, "strn", 4) == 0)
+    {
+        strnHEADER strn;
+    }
+    n_str++;
+    /* rewrite this list's own length from the bytes actually emitted */
+    local int64 sl_end = FTell();
+    FSeek(pos_lilen);
+    local int evil_sl = SetEvilBit(IsParsing());
+    uint32 datalen = { (uint32)(sl_end - pos_lilen - 4) };
+    SetEvilBit(evil_sl);
+    FSeek(sl_end);
+    hdrl_used = (uint32)(sl_end - hdrl_body);
+    hdrl_end = sl_end;
+  }
+  else if (Memcmp(type,"movi",4) == 0)
+  {
+    movi_type = FTell() - 4;
+    if (n_str == 0)
+    {
+        /* Parsing a file whose strl lists this template did not recognise.
+         * Register one opaque stream so the media chunks can still be walked
+         * instead of indexing an empty per-stream table. */
+        st_type += 3;
+        st_kind += 0;
+        st_comp += 0;
+        st_w    += 0;
+        st_h    += 0;
+        st_bits += 0;
+        st_ba   += 1;
+        st_ref  += 0;
+        st_ch   += 1;
+        st_pal  += 0;
+        n_str = 1;
+    }
+    local int32 pointer = 0;
+    local int32 stop = datalen - 4;
+    
+    //Printf("stop=%d\n", stop);
+
+    /* The media chunks run contiguously from the type field to the end of the
+     * list, separated only by RIFF pad bytes (structure rules 5 and 7), and the
+     * list must hold at least one of them (rule 6, which is why this is a
+     * do/while).  The original's terminator is `pointer != stop`, an exact
+     * equality on an accumulator: a file whose chunks do not sum precisely runs
+     * past the end of the file.  Generation lands on `stop` exactly, so `<` is
+     * equivalent here and leaves the parse direction able to recover; the
+     * mismatch is still reported. */
+    local uint32 nch = 0;
+    do
+    {
+      local uint32 sidx = nch % n_str;
+      local uint32 fno = nch / n_str;
+      genericblock gb(sidx, stop - pointer, fno);
+      pointer = FTell() - movi_type - 4;
+      nch++;
+      //Printf("+%x = %d\n", gb.datalen, pointer);
+    } while (pointer + 8 <= stop && nch < 4096);
+    if (pointer != stop)
+        Warning("movi chunk sizes do not sum to the list length");
+    have_movi = 1;
+
+    /* With the last stream header written, hdrl's own length is now known. */
+    if (pos_hdrl_len > 0)
+    {
+        local int64 mv_end = FTell();
+        FSeek(pos_hdrl_len);
+        local int evil_hl = SetEvilBit(IsParsing());
+        uint32 datalen = { (uint32)(hdrl_end - pos_hdrl_len - 4) };
+        SetEvilBit(evil_hl);
+        FSeek(mv_end);
+        pos_hdrl_len = 0;
+    }
+  }
+  else
+  {
+    if (datalen >= 4 && FTell() + datalen - 4 <= 65000)
+      char data[datalen-4];                /* INFO / odml - Tier C opaque     */
+    else
+      Warning("list length out of range");
+  }
+} LISTHEADER;
+
+
+// junk structure info
+typedef struct 
+{
+  local int evil_jk = SetEvilBit(IsParsing());
+  char id[4] = { {"JUNK"} };
+  SetEvilBit(evil_jk);
+  /* JUNK is the format's designated filler and the one element whose bytes and
+   * length vary without touching anything a decoder validates, so the file's
+   * spare-size budget lives here (structure rule 10 output_budget). */
+  local uint32 jk_room = 0;
+  if (junk_used < JUNK_BUDGET)
+      jk_room = JUNK_BUDGET - junk_used;
+  if (file_used + 72 < FILE_BUDGET)
+  {
+      if (jk_room > FILE_BUDGET - file_used - 72)
+          jk_room = FILE_BUDGET - file_used - 72;
+  }
+  else
+      jk_room = 0;
+  local uint32 jk_values[] = { Cap(1, jk_room), Cap(2, jk_room), Cap(3, jk_room), Cap(4, jk_room),
+                               Cap(8, jk_room), Cap(16, jk_room), Cap(17, jk_room), Cap(32, jk_room),
+                               Cap(64, jk_room), Cap(128, jk_room), Cap(255, jk_room), Cap(256, jk_room),
+                               Cap(512, jk_room), Cap(1024, jk_room), Cap(1017, jk_room),
+                               Cap(2048, jk_room), Cap(4096, jk_room), Cap(8192, jk_room) };
+  local int evil_kl = SetEvilBit(IsParsing());
+  uint32  datalen <values=jk_values>;
+  SetEvilBit(evil_kl);
+  junk_used += datalen + 8;
+  if ( datalen % 2 )
+    char data[datalen+1];
+  else
+    char data[datalen];
+} JUNKHEADER;
+
+
+// aviindex structure info
+local uint32 idx_i = 0;
+
+typedef struct 
+{
+    DWORD  ckid;                           /* Tier C - advisory, bare         */
+    local int evil_if = SetEvilBit(IsParsing());
+    DWORD  dwFlags <values=idxflags_values>;   /* Tier B bitmask              */
+    SetEvilBit(evil_if);
+    /* dwChunkOffset / dwChunkLength - Tier A calculated_values.  The offset is
+     * measured from the movi list's type field, the specification's convention,
+     * where the first chunk's offset is 4. */
+    local uint32 ie_off = 0;
+    local uint32 ie_len = 0;
+    if (idx_i < n_idx)
+    {
+        ie_off = idx_off[idx_i];
+        ie_len = idx_len[idx_i];
+    }
+    local int evil_ie = SetEvilBit(IsParsing());
+    DWORD  dwChunkOffset = { ie_off };
+    DWORD  dwChunkLength = { ie_len };
+    SetEvilBit(evil_ie);
+    idx_i++;
+} AVIINDEXENTRY;
+
+const DWORD AVIINDEXENTRYLEN = 16;
+
+typedef struct 
+{
+  /* The legacy index: one 16-byte entry per media chunk, written after the
+   * media it indexes because its offsets are only known then (structure rules
+   * 8 and 9).  Optional for ffmpeg - measured, files with and without it
+   * decoded identically - but mandatory for any reader honouring
+   * AVIF_MUSTUSEINDEX (dependency 13). */
+  local int evil_ix = SetEvilBit(IsParsing());
+  char id[4] = { {"idx1"} };
+  uint32  datalen = { 16 * n_idx };
+  SetEvilBit(evil_ix);
+  idx_i = 0;
+  if (datalen >= AVIINDEXENTRYLEN && datalen <= 65536)
+  {
+      AVIINDEXENTRY data[datalen/AVIINDEXENTRYLEN];
+  }
+  else if (datalen > 0)
+  {
+      Warning("idx1 length is not a usable multiple of 16");
+  }
+  have_idx = 1;
+} idx1HEADER;
+
+/* A top-level chunk this template does not model.  Nothing GENERATES it - the
+ * lookahead in the main loop offers only LIST, JUNK and idx1 (structure rule
+ * 11) - but real AVI files carry vprp, indx and strl lists with extra chunks
+ * after strn, and the original abandons the parse on the first of them.  This
+ * skips the chunk by its own length instead, which is what every reader does. */
+typedef struct
+{
+  char id[4];
+  uint32 datalen;
+  local int64 un_n = datalen + (datalen % 2);
+  if (un_n > 0 && FTell() + un_n <= 65000)
+  {
+      uchar data[un_n];
+  }
+  else
+  {
+      Warning("unknown top-level chunk length out of range");
+  }
+} UNKNOWNCHUNK;
+
+// root structure info
+typedef struct xroot 
+{
+  /* ROOT.id - Tier A fixed_value, exact and case-sensitive: measured, RIFX,
+   * riff and RIFZ were all refused outright. */
+  local int evil_rt = SetEvilBit(IsParsing());
+  char id[4] = { {"RIFF"} }; // RIFF
+  SetEvilBit(evil_rt);
+  if (root.id[3] == 'X')
+  {
+    Printf("Motorola format\n");
+    BigEndian();
+  }
+  else
+  {
+    Printf("Intel format\n");
+    LittleEndian();
+  }
+
+  /* datalen - Tier A: the whole file after this field.  Measured, ffmpeg
+   * ignores it completely (0 and ten million both decoded), but it is the
+   * format's outermost length, so it is rewritten at the end of the file. */
+  pos_root_len = FTell();
+  uint32  datalen;
+  local int evil_fm = SetEvilBit(IsParsing());
+  char form[4] = { {"AVI "} };   /* Tier A - the trailing space is part of it */
+  SetEvilBit(evil_fm);
+
+  if (Strcmp(form, "AVI "))
+  {
+    Warning("Not a valid AVI file");
+    return -1;
+  }
+} ROOT <bgcolor=cLtGray>;
+
+local char nheader[4];
+
+/* structure rule 0 (first_element): the twelve bytes "RIFF", a length and
+ * "AVI " open the file at offset zero. */
+ROOT root;
+file_used = (uint32)FTell();
+
+/* How many streams this file declares.  A free structural choice - the number
+ * of strl lists is what a reader counts - bounded only by the hdrl byte
+ * budget, which is what structure rule 2's output_budget asks for. */
+/* How many strl lists this file carries.  Taken from MainAVIHeader.dwStreams,
+ * which the hdrl list has just written and which is Tier C and bare: the
+ * declared stream count is a free draw, and letting the structure follow it is
+ * what a real writer does.  Values above the budget's reach leave the field
+ * disagreeing with the real count, which the measured gate says is legal and
+ * which the diversity axis calls out as worth generating. */
+local uint32 top_n = 0;
+
+while (top_n < 64 && (have_movi == 0 || !FEof(eof_p)))
+{
+  top_n++;
+  /* The top-level chunk sequence is a state machine over the structure rules:
+   * hdrl first, then one strl per stream, then movi, then the optional index,
+   * with JUNK free to appear between them and INFO/odml in the optional slots.
+   * The lookahead is what makes the same loop work in both directions: while
+   * generating it draws from these sets, while parsing it reads the real four
+   * bytes.  Evil is suppressed so that generation can only ever produce LIST,
+   * JUNK or idx1 at this level (structure rule 11, forbidden). */
+  local string tp[0];
+  local string ts[0];
+  if (have_hdrl == 0)
+  {
+      want_list = 0;
+      tp += "LIST";
+      ts += "LIST";
+  }
+  else if (n_str < want_str && hdrl_used < HDRL_BUDGET)
+  {
+      want_list = 1;
+      tp += "LIST";
+      ts += "LIST";
+      ts += "JUNK";
+  }
+  else if (have_movi == 0)
+  {
+      want_list = 2;
+      tp += "LIST";
+      ts += "LIST";
+      ts += "JUNK";
+  }
+  else if (have_idx == 0)
+  {
+      want_list = 3;
+      tp += "idx1";
+      ts += "idx1";
+      ts += "JUNK";
+      ts += "LIST";
+  }
+  else
+  {
+      want_list = 3;
+      tp += "JUNK";
+      ts += "JUNK";
+      ts += "LIST";
+      eof_p = 0.85;
+  }
+  local int evil_lk = SetEvilBit(IsParsing());
+  ReadBytes(nheader, FTell(), 4, tp, ts, 0.75);
+  SetEvilBit(evil_lk);
+
+  if (Memcmp(nheader,"LIST",4) == 0)
+  {
+    LISTHEADER list(want_list);
+  }
+  else if (Memcmp(nheader, "JUNK",4) == 0)
+  {
+    JUNKHEADER junk;
+  }
+  else if (Memcmp(nheader, "idx1",4) == 0)
+  {
+    idx1HEADER idx1;
+    eof_p = 0.90;
+  }
+  else
+  {
+    if (!FEof())
+      Printf("unknown chunk: %c%c%c%c", nheader[0],nheader[1],nheader[2],nheader[3]);
+    UNKNOWNCHUNK other;
+  }
+  file_used = (uint32)FTell();
+  if (file_used + 96 >= FILE_BUDGET)
+      eof_p = 0.97;
+}
+
+/* ROOT.datalen - the outermost length, now that the whole file is laid out. */
+local int64 eof_pos = FTell();
+if (pos_hdrl_len > 0)
+{
+    /* a file with no movi list still owes hdrl its length */
+    FSeek(pos_hdrl_len);
+    local int evil_h2 = SetEvilBit(IsParsing());
+    uint32 datalen = { (uint32)(hdrl_end - pos_hdrl_len - 4) };
+    SetEvilBit(evil_h2);
+    FSeek(eof_pos);
+}
+FSeek(pos_root_len);
+local int evil_r2 = SetEvilBit(IsParsing());
+uint32 datalen = { (uint32)(eof_pos - pos_root_len - 4) };
+SetEvilBit(evil_r2);
+FSeek(eof_pos);

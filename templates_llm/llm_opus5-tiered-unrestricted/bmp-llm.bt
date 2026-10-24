@@ -1,0 +1,1128 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: BMP.bt
+//    Author: SweetScape Software
+//   Version: 2.3
+//   Purpose: Parse BMP image files.
+//  Category: Image
+// File Mask: *.bmp
+//  ID Bytes: 42 4D //BM
+//   History:  
+//   2.3   2016-02-26 SweetScape: Allow negative heights.
+//   2.2   2015-10-13 SweetScape: Updated header for repository submission.
+//   2.1   SweetScape: Bug fix for ReadRGBQUAD function.
+//   2.0   SweetScape: Added read functions.
+//   1.0   SweetScape: Initial release.
+//
+// More information available at
+//  https://en.wikipedia.org/wiki/BMP_file_format
+//------------------------------------------------
+//
+//=== REWRITE NOTE ============================================================
+// Generative rewrite of templates_originals/bmp-orig.bt, driven by
+// llm_learned_specification/opus5-tiered/llm_reterived_constraints_bmp-llm_opus5-tiered.json.
+// Every original typedef, field name, field order and comment is kept; the
+// additions are marked ADDED and each names the decoder branch it reaches.
+//
+// TIER DISCIPLINE
+//   Tier A (fixed/calculated/payload)  pinned inside SetEvilBit(IsParsing()).
+//     The guard must be IsParsing() and not false: while GENERATING the two
+//     are identical, so no Tier A field ever takes the 1/128 out-of-set value;
+//     while PARSING it is the only escape that lets a computed field accept a
+//     real file's own number.  With a literal false this template parses none
+//     of the archives in testcases/bmp.
+//   Tier B (biBitCount, biCompression) the complete valid_values set, as an
+//     enum type, weighted by preferred_value.  Weighting, never filtering -
+//     and deliberately NOT guarded, so the evil bit still reaches each
+//     decoder's out-of-range rejection (io-bmp.c:338 "unsupported depth").
+//   Tier C  bare.  No value set, no <min=>, no <max=>.  Every field named in
+//     diversity_axes with must_remain_unconstrained is in this group.
+//
+// WHY THE FREE FIELDS ARE RESERVED FIRST
+//   BMP writes its two size fields (bfSize, bfOffBits) in the first 14 bytes
+//   but their values depend on the whole layout, and that layout is decided by
+//   fields that come later.  The free quantities are therefore RESERVED at
+//   their own final offsets with a lookahead call carrying no value set, which
+//   draws them from exactly the distribution a bare declaration would use; the
+//   bare declaration further down then picks up those same bytes.  Nothing is
+//   narrowed by this - it only moves the draw earlier so the layout can be
+//   planned in one forward pass with no backpatching.
+//
+// SIZING DISCIPLINE
+//   Every array is sized from the DECLARED field, so the same code parses a
+//   real file and generates a new one.  The payload is computed from
+//   biWidth / biHeight / biBitCount / biCompression / biClrUsed; none of those
+//   is ever narrowed to suit a payload.
+//
+// OUTPUT BUDGET - the only size-control mechanism
+//   The JSON budgets ~4 MB of pixel area and 1024 bytes of palette.  4 MB is
+//   past FormatFuzzer's MAX_FILE_SIZE of 65536, so the pixel figure is scaled
+//   to fit the runtime while the mechanism and the proportions are unchanged:
+//   the pixel area is a running byte total checked BEFORE anything is emitted,
+//   and it steers the row loop / the RLE state machine toward their end.  The
+//   palette keeps the JSON's own 1024-byte figure, which is the format's
+//   ceiling of 256 RGBQUAD entries.  No dimension, count or depth is capped.
+//=============================================================================
+
+// Tier C fields are drawn through lookahead calls; clear ffcompile's mined
+// global value sets so those draws stay free instead of being pulled onto a
+// mined constant.
+const local int    ReadIntInitValues[0];
+const local uint   ReadUIntInitValues[0];
+const local ushort ReadUShortInitValues[0];
+const local ubyte  ReadUByteInitValues[0];
+
+// output_budget, scaled to the runtime - see REWRITE NOTE
+#define BUDGET_PIXELS   48000
+#define BUDGET_PALETTE   1024
+#define BUDGET_GAP        600
+#define FILE_ROOM       61000
+
+//---------------------------------------------
+// Tier B value sets, as enum types because the JSON supplies value_names.
+
+// biBitCount: valid_values [0,1,2,4,8,16,24,32], preferred [1,4,8,24,32]
+typedef enum <WORD> {
+    implied_by_embedded_codec   = 0,
+    monochrome                  = 1,
+    bpp2_windows_ce             = 2,
+    colour_16                   = 4,
+    colour_256                  = 8,
+    rgb555_or_bitfields_16      = 16,
+    rgb_24                      = 24,
+    rgb_32_or_bitfields         = 32
+} E_BITCOUNT;
+
+// biCompression: valid_values [0,1,2,3,4,5,6,11,12,13], preferred [0,1,2,3]
+typedef enum <DWORD> {
+    BI_RGB              = 0,
+    BI_RLE8             = 1,
+    BI_RLE4             = 2,
+    BI_BITFIELDS        = 3,
+    BI_JPEG             = 4,
+    BI_PNG              = 5,
+    BI_ALPHABITFIELDS   = 6,
+    BI_CMYK             = 11,
+    BI_CMYKRLE8         = 12,
+    BI_CMYKRLE4         = 13
+} E_COMPRESSION;
+
+// Define structures used in BMP files
+
+typedef struct (uint wsize, uint woff) {   // bmfh
+    // Tier A fixed_value: the only signature this template accepts (line 86).
+    local int evil_type = SetEvilBit(IsParsing());
+    CHAR    bfType[2] = { "BM" };
+    SetEvilBit(evil_type);
+    // Tier A calculated_value: byte count of the entire file, includes_self.
+    local int evil_size = SetEvilBit(IsParsing());
+    DWORD   bfSize = { wsize };
+    SetEvilBit(evil_size);
+    WORD    bfReserved1;
+    WORD    bfReserved2;
+    // Tier A calculated_value: 14 + biSize + mask bytes + palette + any gap.
+    // The gap is the one free part of it (diversity axis bfOffBits).
+    local int evil_off = SetEvilBit(IsParsing());
+    DWORD   bfOffBits = { woff };
+    SetEvilBit(evil_off);
+} BITMAPFILEHEADER;
+
+typedef struct (int wkind, int wbsel, uint wimg) {    // bmih
+    // Tier A: biSize must agree with the number of header bytes actually
+    // emitted (dependency 13's measured gate: "the constraint is agreement,
+    // not the value 40").  BITMAPINFOEXT below emits the tail that makes each
+    // of 52/56/64/108/124 true; 40 emits none.
+    local int evil_hs = SetEvilBit(IsParsing());
+    local DWORD hsv = (DWORD)wkind;
+    DWORD   biSize = { hsv };
+    SetEvilBit(evil_hs);
+    LONG    biWidth;                        // Tier C - diversity axis
+    LONG    biHeight;                       // Tier C - diversity axis (signed)
+    // Tier A fixed_value: always 1 in every BMP variant.
+    local int evil_pl = SetEvilBit(IsParsing());
+    WORD    biPlanes = { 1 };
+    SetEvilBit(evil_pl);
+    // Tier B, with the dependency on biCompression applied as a branch.
+    if( wbsel == 1 )
+    {
+        // dependency 0: BI_RLE8 is defined only at 8 bits per pixel.
+        local int evil_b8 = SetEvilBit(IsParsing());
+        E_BITCOUNT biBitCount = { colour_256 };
+        SetEvilBit(evil_b8);
+    }
+    else if( wbsel == 2 )
+    {
+        // dependency 1: BI_RLE4 is defined only at 4 bits per pixel.
+        local int evil_b4 = SetEvilBit(IsParsing());
+        E_BITCOUNT biBitCount = { colour_16 };
+        SetEvilBit(evil_b4);
+    }
+    else if( wbsel == 3 )
+    {
+        // dependency 2: BI_BITFIELDS applies at 16 and 32 bpp, preferring 32.
+        E_BITCOUNT biBitCount = { rgb_32_or_bitfields, rgb_32_or_bitfields,
+                                  rgb_32_or_bitfields, rgb555_or_bitfields_16 };
+    }
+    else
+    {
+        // The complete Tier B set, weighted by preferred_value [1,4,8,24,32].
+        E_BITCOUNT biBitCount = { monochrome, monochrome, monochrome,
+                                  colour_16, colour_16, colour_16,
+                                  colour_256, colour_256, colour_256,
+                                  rgb_24, rgb_24, rgb_24,
+                                  rgb_32_or_bitfields, rgb_32_or_bitfields,
+                                  rgb555_or_bitfields_16, rgb555_or_bitfields_16,
+                                  implied_by_embedded_codec, bpp2_windows_ce };
+    }
+    // The complete Tier B set.  The per-call-site weighting that actually
+    // picks the value lives on the lookahead in the plan below; this
+    // declaration carries the whole set so value mining and FFMut see it.
+    E_COMPRESSION biCompression = { BI_RGB, BI_RGB, BI_RGB, BI_RGB,
+                                    BI_RLE8, BI_RLE8, BI_RLE4, BI_RLE4,
+                                    BI_BITFIELDS, BI_BITFIELDS,
+                                    BI_JPEG, BI_PNG, BI_ALPHABITFIELDS,
+                                    BI_CMYK, BI_CMYKRLE8, BI_CMYKRLE4 };
+    // Tier A calculated_value for a compressed payload (dependency 6);
+    // advisory and free under BI_RGB (dependency 5).  Both of the template's
+    // two branches at lines 107-110 are driven from here: wimg is either the
+    // exact encoded length or 0, and 0 sends the array through
+    // bfSize - FTell() instead.
+    local int evil_si = SetEvilBit(IsParsing());
+    DWORD   biSizeImage = { wimg };
+    SetEvilBit(evil_si);
+    LONG    biXPelsPerMeter;                // Tier C
+    LONG    biYPelsPerMeter;                // Tier C
+    DWORD   biClrUsed;                      // Tier C - diversity axis
+    DWORD   biClrImportant;                 // Tier C
+} BITMAPINFOHEADER;
+
+// ADDED: the OS/2 1.x BITMAPCOREHEADER, biSize 12.  A legal header variant
+// listed in the JSON's biSize notes.  Reaches io-bmp.c:323-328 (the size == 12
+// arm of DecodeHeader), io-bmp.c:348-349 (clrUsed = 1 << depth rather than
+// being read from the file) and the samples == 3 side of io-bmp.c:523/584,
+// where the palette is read as RGBTRIPLE instead of RGBQUAD.  Its dimensions
+// are 16-bit, and the decoder reads them with a SIGNED lsb_16, which is why
+// the plan below sign-extends them before deriving anything.
+typedef struct {   // bmch
+    local int evil_cs = SetEvilBit(IsParsing());
+    DWORD   bcSize = { 12 };
+    SetEvilBit(evil_cs);
+    WORD    bcWidth;                        // Tier C - the biWidth axis
+    WORD    bcHeight;                       // Tier C - the biHeight axis
+    local int evil_cp = SetEvilBit(IsParsing());
+    WORD    bcPlanes = { 1 };
+    SetEvilBit(evil_cp);
+    E_BITCOUNT bcBitCount = { monochrome, colour_16, colour_256, rgb_24,
+                              colour_256, colour_16,
+                              rgb_32_or_bitfields, rgb555_or_bitfields_16,
+                              implied_by_embedded_codec, bpp2_windows_ce };
+} BITMAPCOREHEADER;
+
+// ADDED: the header tails that make biSize 52, 56, 64, 108 and 124 true.
+// Each reaches its own arm of DecodeHeader's size chain (io-bmp.c:287-323),
+// and for 52/56/108/124 under BI_BITFIELDS it also reaches io-bmp.c:545-553,
+// where the colour masks are taken from the HEADER rather than from the
+// payload - a different entry into decode_bitmasks than the 12-byte payload
+// form, and the only one that reads an alpha mask (io-bmp.c:660-663).
+typedef struct (int wkind, uint wcomp, uint wr, uint wg, uint wb, uint wa) {   // bmiv
+    if( wkind == 52 || wkind == 56 || wkind >= 108 )
+    {
+        if( wcomp == 3 )
+        {
+            // Tier A payload_wellformedness, dependency 3: three non-zero
+            // little-endian masks, red then green then blue.
+            local int evil_m = SetEvilBit(IsParsing());
+            local DWORD rmv = (DWORD)wr;
+            local DWORD gmv = (DWORD)wg;
+            local DWORD bmv = (DWORD)wb;
+            DWORD   RedMask   = { rmv };
+            DWORD   GreenMask = { gmv };
+            DWORD   BlueMask  = { bmv };
+            SetEvilBit(evil_m);
+        }
+        else
+        {
+            // Not BI_BITFIELDS: the Win32 structure still carries the fields
+            // and the decoder never reads them, so they are free.
+            DWORD   RedMask;
+            DWORD   GreenMask;
+            DWORD   BlueMask;
+        }
+    }
+    if( wkind == 56 || wkind >= 108 )
+    {
+        if( wcomp == 3 )
+        {
+            local int evil_a = SetEvilBit(IsParsing());
+            local DWORD amv = (DWORD)wa;
+            DWORD   AlphaMask = { amv };
+            SetEvilBit(evil_a);
+        }
+        else
+        {
+            DWORD   AlphaMask;
+        }
+    }
+    if( wkind == 64 )
+    {
+        // OS/2 2.x BITMAPCOREHEADER2 tail; all of it free.
+        WORD    usUnits;
+        WORD    usReserved;
+        WORD    usRecording;
+        WORD    usRendering;
+        DWORD   cSize1;
+        DWORD   cSize2;
+        DWORD   ulColorEncoding;
+        DWORD   ulIdentifier;
+    }
+    if( wkind >= 108 )
+    {
+        // BITMAPV4HEADER tail: colour space and gamma.  All free.
+        DWORD   CSType;
+        LONG    Endpoints[9];
+        DWORD   GammaRed;
+        DWORD   GammaGreen;
+        DWORD   GammaBlue;
+    }
+    if( wkind == 124 )
+    {
+        // BITMAPV5HEADER tail: rendering intent and ICC profile.  All free.
+        DWORD   Intent;
+        DWORD   ProfileData;
+        DWORD   ProfileSize;
+        DWORD   Reserved;
+    }
+    if( wkind > 40 && wkind != 52 && wkind != 56 && wkind != 64
+        && wkind != 108 && wkind != 124 )
+    {
+        // ADDED: a header size that is none of the seven the decoder knows.
+        // Emitting the bytes biSize claims keeps the file self-describing, so
+        // it reaches io-bmp.c:329-335 ("unsupported header size") as a
+        // well-formed file rather than as a misaligned one.
+        UBYTE   biExtra[ wkind - 40 ];
+    }
+} BITMAPINFOEXT;
+
+typedef struct {   // rgbq
+    UBYTE   rgbBlue;
+    UBYTE   rgbGreen;
+    UBYTE   rgbRed;
+    UBYTE   rgbReserved;
+} RGBQUAD <read=ReadRGBQUAD>;
+
+typedef struct {   // rgbt
+    UBYTE   rgbBlue;
+    UBYTE   rgbGreen;
+    UBYTE   rgbRed;
+} RGBTRIPLE <read=ReadRGBTRIPLE>;
+
+//---------------------------------------------
+// Custom read functions for color types - this allows the
+//  color to be displayed without having to open up the structure.
+
+string ReadRGBQUAD( RGBQUAD &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X%02X", a.rgbReserved, a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+string ReadRGBTRIPLE( RGBTRIPLE &a )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X", a.rgbRed, a.rgbGreen, a.rgbBlue );
+    return s;
+}
+
+//---------------------------------------------
+// ADDED: generator state and payload emitters.  Nothing here writes a field;
+// these only decide what the declarations further down carry.
+
+local uint  g_rnd;          // derived PRNG, seeded from the file's own free fields
+local int   g_kind;         // biSize actually emitted
+local int64 g_w;            // biWidth  as the decoder reads it
+local int64 g_h;            // biHeight as the decoder reads it (signed)
+local int64 g_ah;           // abs(biHeight)
+local int   g_bpp;          // biBitCount
+local uint  g_comp;         // biCompression
+local uint  g_clr;          // biClrUsed
+local int64 g_stride;       // ((w*bpp+31)/32)*4, the padded row length
+local int64 g_nrows;        // rows actually emitted - the budget acts here
+local int   g_nc;           // palette entries actually emitted
+local int   g_rle4;         // 1 when the RLE stream is nibble-packed
+local uint  g_rmask;
+local uint  g_gmask;
+local uint  g_bmask;
+local uint  g_amask;
+local int64 g_maskpay;      // mask bytes carried at the head of rleData
+local int   g_mixmode;      // per-row RLE mode selector
+local int   g_eob;          // 1 when the stream ends with end-of-bitmap
+local int64 g_stoprow;      // the row the stream stops at; < g_nrows makes the
+                            // stream finish early, which is the ONLY way the
+                            // decoder reaches its end-of-bitmap escape - after
+                            // the last row's end-of-line its y has already
+                            // reached the height and DoCompressed returns at
+                            // io-bmp.c:1106 before looking at another pair.
+
+// A plain LCG's low bits have very short periods, which biases every % and &
+// draw taken from them; the avalanche step is what makes the low bits usable.
+uint nextrnd()
+{
+    g_rnd = g_rnd * 1103515245 + 12345;
+    local uint x = g_rnd;
+    x = (x ^ (x >> 16)) * 2246822519;
+    x = (x ^ (x >> 13)) * 3266489917;
+    return x ^ (x >> 16);
+}
+
+//---------------------------------------------
+// BI_BITFIELDS colour masks.  content_is_free, so these are the variants that
+// matter to the decoder rather than any fixed triple:
+//   0,1  RGB888 and BGR888 - dependency 3's note records that a BGR-ordered
+//        triple is accepted by some decoders and refused by others.
+//   2,3  RGB565 and RGB555+alpha, the two 16-bit layouts.
+//   4    all zero - reaches io-bmp.c:666-689, where the decoder substitutes a
+//        default layout; the Type == 16 arm and the else arm are different code.
+//   5,6  channels wider than 8 bits - reaches io-bmp.c:691-702, the
+//        shift-normalisation that only runs when r_bits/g_bits/b_bits > 8.
+//   7    four bits per channel, sparse.
+//   8    thirteen bits of ALPHA and nine of red - the only variant that
+//        reaches io-bmp.c:703-706, the alpha arm of that normalisation, which
+//        needs a_bits > 8 and so an alpha mask read from a 56/108/124 header.
+uint mask_of( int v, int ch )
+{
+    if( v == 0 ) { if( ch == 0 ) return 0x00FF0000; if( ch == 1 ) return 0x0000FF00; if( ch == 2 ) return 0x000000FF; return 0xFF000000; }
+    if( v == 1 ) { if( ch == 0 ) return 0x000000FF; if( ch == 1 ) return 0x0000FF00; if( ch == 2 ) return 0x00FF0000; return 0xFF000000; }
+    if( v == 2 ) { if( ch == 0 ) return 0x0000F800; if( ch == 1 ) return 0x000007E0; if( ch == 2 ) return 0x0000001F; return 0x00000000; }
+    if( v == 3 ) { if( ch == 0 ) return 0x00007C00; if( ch == 1 ) return 0x000003E0; if( ch == 2 ) return 0x0000001F; return 0x00008000; }
+    if( v == 4 ) { return 0x00000000; }
+    if( v == 5 ) { if( ch == 0 ) return 0xFFF00000; if( ch == 1 ) return 0x000FFC00; if( ch == 2 ) return 0x000003FF; return 0x00000000; }
+    if( v == 6 ) { if( ch == 0 ) return 0x3FF00000; if( ch == 1 ) return 0x000FFC00; if( ch == 2 ) return 0x000003FF; return 0xC0000000; }
+    if( v == 8 ) { if( ch == 0 ) return 0x0007FC00; if( ch == 1 ) return 0x000003F8; if( ch == 2 ) return 0x00000007; return 0xFFF80000; }
+    if( ch == 0 ) return 0x00F00000;
+    if( ch == 1 ) return 0x0000F000;
+    if( ch == 2 ) return 0x000000F0;
+    return 0x0000000F;
+}
+
+//---------------------------------------------
+// Microsoft RLE8 / RLE4 encoder, as a byte-at-a-time state machine.
+//
+// The stream is a sequence of items; rs_item says which one is in progress and
+// rs_i how far through it we are.  The SAME machine is run twice: once to
+// measure the stream (which is how biSizeImage gets an exact length that can
+// never disagree with what is emitted) and once to emit it.  Run lengths and
+// the row count come from biWidth and biHeight; the index bytes come from the
+// palette entry count, per dependency 8.  Reaches, in io-bmp.c's DoCompressed:
+//   encoded mode   1117-1140,
+//   absolute mode  1160-1164 and 1179-1220 including the pixel writes at
+//                  1182-1187 / 1204-1209, which a stream whose x has already
+//                  run past the width never reaches,
+//   end of line    1144-1151,
+//   end of bitmap  1152-1156,
+//   delta          1157-1159 and 1167-1177.
+local int rs_row;
+local int rs_rem;       // pixels left in the current row; -1 = row not started
+local int rs_item;      // 0 pick, 1 delta, 2 encoded, 3 absolute, 4 eol, 5 eob, 6 done
+local int rs_i;
+local int rs_len;
+local int rs_k;
+local int rs_pad;
+local int rs_mode;      // 0 encoded, 1 absolute, 3 delta then encoded
+local int rs_dx;
+
+uint rle_reset()
+{
+    rs_row  = 0;
+    rs_rem  = -1;
+    rs_item = 0;
+    rs_i    = 0;
+    rs_len  = 0;
+    rs_k    = 0;
+    rs_pad  = 0;
+    rs_mode = 0;
+    rs_dx   = 0;
+    return 0;
+}
+
+int rle_mode_for_row( int r )
+{
+    if( g_mixmode == 0 ) return 0;              // all encoded
+    if( g_mixmode == 1 ) return 1;              // all absolute
+    if( g_mixmode == 2 ) return r & 1;          // alternating
+    return 3;                                   // delta, then encoded
+}
+
+uint rle_pick()
+{
+    if( rs_item == 6 )
+        return 0;
+    if( rs_row >= g_stoprow )
+    {
+        // Rows done.  End-of-bitmap is optional: all three measured decoders
+        // tolerate its absence, which is a different exit from DoCompressed.
+        if( g_eob )
+        {
+            rs_item = 5; rs_len = 2; rs_i = 0; g_eob = 0;
+        }
+        else
+            rs_item = 6;
+        return 0;
+    }
+    if( rs_rem < 0 )
+    {
+        rs_rem  = (int)g_w;
+        rs_mode = rle_mode_for_row( rs_row );
+        rs_dx   = 0;
+        if( rs_mode == 3 && g_w > 1 )
+        {
+            // DELTA: advance dx pixels into the row, then encode the rest, so
+            // the row still accounts for exactly biWidth pixels.
+            rs_dx   = (int)(g_w / 2);
+            rs_rem  = (int)g_w - rs_dx;
+            rs_item = 1; rs_len = 4; rs_i = 0;
+            return 0;
+        }
+    }
+    if( rs_rem > 0 )
+    {
+        rs_k = rs_rem;
+        if( rs_k > 255 ) rs_k = 255;            // a run longer than 255 must split
+        if( rs_mode == 1 && rs_k >= 3 )
+        {
+            // ABSOLUTE MODE: 00 [n] then n literal indices, padded to an even
+            // byte count.  n < 3 is impossible here - 0, 1 and 2 are escapes.
+            rs_item = 3;
+            if( g_rle4 )
+            {
+                rs_pad = 0;
+                if( (rs_k & 3) == 1 || (rs_k & 3) == 2 ) rs_pad = 1;
+                rs_len = 2 + (rs_k + 1) / 2 + rs_pad;
+            }
+            else
+            {
+                rs_pad = rs_k & 1;
+                rs_len = 2 + rs_k + rs_pad;
+            }
+        }
+        else
+        {
+            rs_item = 2; rs_len = 2; rs_pad = 0;    // ENCODED MODE: [n][index]
+        }
+        rs_i    = 0;
+        rs_rem -= rs_k;
+        return 0;
+    }
+    rs_item = 4; rs_len = 2; rs_i = 0;          // END OF LINE
+    rs_row++;
+    rs_rem = -1;
+    return 0;
+}
+
+// One palette index byte, derived from the number of palette entries actually
+// emitted (dependency 8: the indices come from the palette, never the reverse).
+ubyte rle_idx()
+{
+    local uint v = nextrnd();
+    local int  n = g_nc;
+    if( n < 1 ) n = 1;
+    if( g_rle4 )
+    {
+        if( n > 16 ) n = 16;
+        return (ubyte)((((v % n) & 0xF) << 4) | (((v >> 9) % n) & 0xF));
+    }
+    if( n > 256 ) n = 256;
+    return (ubyte)(v % n);
+}
+
+ubyte rle_next()
+{
+    local int b = 0;
+    while( rs_item == 0 )
+        rle_pick();
+    if( rs_item == 1 )
+    {
+        if( rs_i == 1 ) b = 2;                  // 00 02 dx 00
+        else if( rs_i == 2 ) b = rs_dx;
+        else b = 0;
+    }
+    else if( rs_item == 2 )
+    {
+        if( rs_i == 0 ) b = rs_k;
+        else b = rle_idx();
+    }
+    else if( rs_item == 3 )
+    {
+        if( rs_i == 1 ) b = rs_k;
+        else if( rs_i >= 2 && rs_i < rs_len - rs_pad ) b = rle_idx();
+        else b = 0;
+    }
+    else if( rs_item == 4 )
+        b = 0;                                  // 00 00
+    else if( rs_item == 5 )
+    {
+        if( rs_i == 1 ) b = 1;                  // 00 01
+        else b = 0;
+    }
+    else
+        b = 0;
+    rs_i++;
+    if( rs_i >= rs_len && rs_item != 6 )
+        rs_item = 0;
+    return (ubyte)b;
+}
+
+//---------------------------------------------
+// ADDED: the two embedded-codec payloads.  BI_JPEG and BI_PNG do not compress
+// the pixels, they carry a whole image file (dependency 4).  Both tables below
+// were built and verified to decode on their own before being embedded: an
+// 8x8 greyscale baseline JPEG and a 2x2 greyscale PNG whose IDAT is a stored
+// deflate block.  gdk-pixbuf does not implement either code and refuses both
+// at io-bmp.c:399, so in THIS target they reach the same line that a random
+// payload would; they are emitted because the constraint is a Tier A payload
+// contract, and they are what a decoder that does implement the codes needs.
+local ubyte JPG_TBL[141] = {
+    0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x10, 0x10, 0x10, 0x10, 0x10,
+    0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+    0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+    0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+    0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+    0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0xFF,
+    0xC0, 0x00, 0x0B, 0x08, 0x00, 0x08, 0x00, 0x08, 0x01, 0x01, 0x11, 0x00,
+    0xFF, 0xC4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xC4,
+    0x00, 0x14, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xDA, 0x00, 0x08,
+    0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x3F, 0xFF, 0xD9 };
+
+local ubyte PNG_TBL[74] = {
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+    0x08, 0x00, 0x00, 0x00, 0x00, 0x57, 0xDD, 0x52, 0xF8, 0x00, 0x00, 0x00,
+    0x11, 0x49, 0x44, 0x41, 0x54, 0x78, 0x01, 0x01, 0x06, 0x00, 0xF9, 0xFF,
+    0x00, 0x40, 0x40, 0x00, 0x80, 0x80, 0x03, 0xC6, 0x01, 0x81, 0x83, 0x34,
+    0xBB, 0x95, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42,
+    0x60, 0x82 };
+
+// The i'th byte of whichever payload biCompression selected.  Only the leading
+// g_maskpay bytes and the embedded-codec tables are determined; everything
+// after them is declared bare, because content_is_free.
+ubyte pay_byte( int64 i )
+{
+    if( g_comp == 1 || g_comp == 2 )
+        return rle_next();
+    if( g_comp == 3 || g_comp == 6 )
+    {
+        // Three (BI_BITFIELDS) or four (BI_ALPHABITFIELDS) little-endian masks
+        // at the head of the payload, then the raw rows.  Reaches
+        // io-bmp.c:1318-1321 -> decode_bitmasks, the payload entry into it.
+        local int ch = (int)(i / 4);
+        local int sh = (int)((i % 4) * 8);
+        return (ubyte)((mask_of( g_mixmode, ch ) >> sh) & 0xFF);
+    }
+    if( g_comp == 4 )
+        return JPG_TBL[i % 141];
+    if( g_comp == 5 )
+        return PNG_TBL[i % 74];
+    return 0;
+}
+
+//---------------------------------------------
+
+// Define the headers
+LittleEndian(); 
+SetBackColor( cLtGray );
+
+//=== PLAN ====================================================================
+// Reserve the free quantities at their own final offsets, then lay the whole
+// file out before a byte is written.  See REWRITE NOTE.
+
+local ushort rv1 = ReadUShort( 6 );         // bfReserved1 - Tier C, free
+local ushort rv2 = ReadUShort( 8 );         // bfReserved2 - Tier C, free
+
+g_rnd = 0x9E3779B9 ^ (((uint)rv1) << 16) ^ ((uint)rv2);
+nextrnd();
+
+// Which header variant to emit.  Taken through a lookahead on biSize's own
+// offset rather than from the PRNG, so that the choice is RECOVERABLE when
+// this template is run in the parse direction: a real file's biSize comes back
+// from the file and selects the layout that file actually has.  Weighted
+// toward 40, the only size the files in testcases/bmp use and the only one
+// with no header tail at all.  biSize stays Tier A - the declaration below
+// pins it to this same number, so it always agrees with the bytes emitted.
+local uint kind_set[45] = { 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40,
+                            40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40,
+                            52, 56, 64, 108, 124,
+                            52, 56, 64, 108, 124,
+                            52, 56, 64, 108, 124,
+                            12, 12, 12, 12, 12, 12,
+                            44, 100 };
+// The guard matters here as much as on the declaration: this lookahead carries
+// a value set, so without it the 1/128 out-of-set draw would put a size in the
+// file that the emitted header does not match, and every offset computed below
+// would describe a file that was never written.
+local int evil_kind = SetEvilBit(IsParsing());
+g_kind = (int)ReadUInt( 14, kind_set );
+SetEvilBit(evil_kind);
+
+local int bsel = 0;                         // which biBitCount set applies
+
+if( g_kind == 12 )
+{
+    // The OS/2 1.x header has no compression and no colour count at all, and
+    // its dimensions are 16-bit; the decoder sign-extends them (lsb_16 returns
+    // a signed short), so this does too.
+    local ushort cw = ReadUShort( 18 );
+    local ushort ch16 = ReadUShort( 20 );
+    local ushort core_bpp[10] = { 1, 4, 8, 24, 8, 4, 32, 16, 0, 2 };
+    local ushort cb = ReadUShort( 24, core_bpp );
+    g_w = (int64)cw;
+    g_h = (int64)ch16;
+    if( g_h >= 32768 ) g_h = g_h - 65536;
+    g_bpp  = (int)cb;
+    g_comp = 0;
+    g_clr  = 0;
+}
+else
+{
+    g_w = (int64)ReadInt( 18 );             // biWidth  - Tier C, free
+    g_h = (int64)ReadInt( 22 );             // biHeight - Tier C, free
+
+    // biCompression, Tier B.  The set below is the complete valid_values list
+    // every time; only the weights move, which is the preferred/possible split
+    // the JSON asks for.  Two rules shape the weights:
+    //   dependency 11 - a top-down bitmap cannot be compressed, so a negative
+    //                   height leaves BI_RGB as the only legal value;
+    //   the header tails 52/56/108/124 carry the colour masks in the header,
+    //                   so BI_BITFIELDS is worth reaching more often there.
+    if( g_h < 0 )
+    {
+        local uint comp_topdown[1] = { 0 };
+        g_comp = ReadUInt( 30, comp_topdown );
+    }
+    else if( g_kind == 52 || g_kind == 56 || g_kind == 108 || g_kind == 124 )
+    {
+        local uint comp_masked[30] = { 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+                                       0, 0, 0, 0, 0, 1, 1, 1, 2, 2,
+                                       4, 5, 6, 11, 12, 13 };
+        g_comp = ReadUInt( 30, comp_masked );
+    }
+    else
+    {
+        local uint comp_plain[40] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                      1, 1, 1, 1, 1, 1, 1,
+                                      2, 2, 2, 2, 2, 2, 2,
+                                      3, 3, 3, 3, 3, 3,
+                                      4, 5, 6, 11, 12, 13 };
+        g_comp = ReadUInt( 30, comp_plain );
+    }
+
+    // biBitCount, Tier B, with dependencies 0, 1 and 2 selecting the legal set.
+    if( g_comp == 1 )
+    {
+        bsel = 1;
+        local ushort bpp_rle8[1] = { 8 };
+        g_bpp = (int)ReadUShort( 28, bpp_rle8 );
+    }
+    else if( g_comp == 2 )
+    {
+        bsel = 2;
+        local ushort bpp_rle4[1] = { 4 };
+        g_bpp = (int)ReadUShort( 28, bpp_rle4 );
+    }
+    else if( g_comp == 3 )
+    {
+        bsel = 3;
+        local ushort bpp_bf_hdr[4] = { 32, 32, 32, 16 };
+        local ushort bpp_bf_pay[1] = { 32 };
+        if( g_kind == 52 || g_kind == 56 || g_kind == 108 || g_kind == 124 )
+            // Masks in the header: both legal depths work from this template.
+            g_bpp = (int)ReadUShort( 28, bpp_bf_hdr );
+        else
+            // Masks in the payload: at 16bpp line 93 would insert a palette
+            // where the masks belong, so only 32 is expressible here.  16 is
+            // still emitted, through the branch above.
+            g_bpp = (int)ReadUShort( 28, bpp_bf_pay );
+    }
+    else
+    {
+        local ushort bpp_all[30] = { 1, 1, 1, 1, 1, 4, 4, 4, 4, 4,
+                                     8, 8, 8, 8, 8, 8, 24, 24, 24, 24, 24,
+                                     32, 32, 32, 32, 16, 16, 16, 0, 2 };
+        g_bpp = (int)ReadUShort( 28, bpp_all );
+    }
+
+    // biClrUsed.  Tier C, and the ONE place in this template where a Tier C
+    // field carries a value set, taken under the dependency exception:
+    // dependency 7 says "a colour table must be present, with at most
+    // 2^biBitCount entries", and its measured gate records 257 and 1000
+    // entries being refused at 8bpp.  That is a real format rule tying a count
+    // to another field's value - the JSON says so in as many words - and
+    // gdk-pixbuf enforces it at io-bmp.c:353.  The set below spans the whole
+    // legal range for the depth, 0 included (dependency 9's fallback) and the
+    // full table included, with a short table among them because a count below
+    // 2^depth is the only way to make index validation mean anything; one slot
+    // in sixteen is deliberately oversize so the rejection stays reachable.
+    // NOTE on the ceiling: the decoder's test is clrUsed > (1 << depth) in int
+    // arithmetic, so at depth 32 the shift is undefined and evaluates to 1 on
+    // the measured build.  1 is therefore the real ceiling there, which is why
+    // clrLimit is not simply 1 << g_bpp.
+    local int64 clrLimit = 1;
+    if( g_bpp > 0 && g_bpp < 32 )
+        clrLimit = 1 << g_bpp;
+    local uint clrFull = (uint)clrLimit;
+    local uint clrA = (uint)(1 + nextrnd() % clrLimit);
+    local uint clrB = (uint)(1 + nextrnd() % clrLimit);
+    local uint clrC = (uint)(1 + nextrnd() % clrLimit);
+    local uint clrOver = (uint)(clrLimit + 1);
+    local uint clr_set[16];
+    clr_set[0]  = 0;
+    clr_set[1]  = 0;
+    clr_set[2]  = 0;
+    clr_set[3]  = 0;
+    clr_set[4]  = clrFull;
+    clr_set[5]  = clrFull;
+    clr_set[6]  = clrFull;
+    clr_set[7]  = clrFull;
+    clr_set[8]  = clrA;
+    clr_set[9]  = clrA;
+    clr_set[10] = clrB;
+    clr_set[11] = clrB;
+    clr_set[12] = clrC;
+    clr_set[13] = clrC;
+    clr_set[14] = clrC;
+    clr_set[15] = clrOver;
+    g_clr = ReadUInt( 46, clr_set );
+}
+
+g_ah = g_h;
+if( g_ah < 0 ) g_ah = -g_ah;
+
+// Calculate bytes per line and padding required
+local int64 bytesPerLine = ( g_w * g_bpp + 7 ) / 8;
+local int64 padding      = 4 - (bytesPerLine % 4);
+if( padding == 4 )
+    padding = 0;
+g_stride = bytesPerLine + padding;
+
+// --- the colour table (structure rule "aColors", condition biBitCount not in
+// --- (24, 32)), sized exactly as the original's two branches size it.
+local int palElem = 4;
+if( g_kind == 12 ) palElem = 3;             // OS/2 1.x palettes are RGBTRIPLE
+g_nc = 0;
+if( g_bpp != 24 && g_bpp != 32 )
+{
+    if( g_clr > 0 )
+        g_nc = (int)g_clr;                  // dependency 7
+    else if( g_bpp >= 0 && g_bpp <= 16 )
+        g_nc = 1 << g_bpp;                  // dependency 9 - the line 99 fallback
+    else
+        g_nc = 256;
+    // output_budget: the format's own ceiling of 256 RGBQUAD entries.  This
+    // only ever bites at 16bpp, where the line 99 fallback asks for 65536
+    // entries the format does not define (the TEMPLATE BUG the JSON records);
+    // for depths 1, 4 and 8 the fallback is already inside the ceiling.
+    if( g_nc * palElem > BUDGET_PALETTE )
+        g_nc = BUDGET_PALETTE / palElem;
+    if( g_nc < 0 ) g_nc = 0;
+}
+local int64 palBytes = (int64)g_nc * palElem;
+
+// --- BI_BITFIELDS masks and the per-codec payload variant selector, both
+// --- drawn from the derived PRNG (seeded by the file's own free fields).
+g_mixmode = (int)(nextrnd() % 9);
+if( g_comp == 3 && g_bpp == 16 && g_mixmode < 2 )
+    g_mixmode = 2 + (int)(nextrnd() % 3);   // prefer a 16-bit layout at 16bpp
+g_rmask = mask_of( g_mixmode, 0 );
+g_gmask = mask_of( g_mixmode, 1 );
+g_bmask = mask_of( g_mixmode, 2 );
+g_amask = mask_of( g_mixmode, 3 );
+
+// --- the gap between the palette and the pixel data.  Legal in the format,
+// --- and the only free part of bfOffBits (diversity axis bfOffBits: "the size
+// --- of any gap beyond the minimum is free").  Like biSize it is taken
+// --- through a lookahead on bfOffBits' own offset, so the gap a real file
+// --- carries is recovered from that file rather than reinvented.  No gap is
+// --- offered under BI_BITFIELDS or BI_ALPHABITFIELDS, where the decoder takes
+// --- the bytes straight after the header as the masks and honours no offset.
+local int64 gapBase = 14 + (int64)g_kind + palBytes;
+local uint  gapNone = (uint)gapBase;
+local uint  gapTiny = (uint)(gapBase + 1 + (nextrnd() % 16));
+local uint  gapMid  = (uint)(gapBase + 1 + (nextrnd() % 256));
+local uint  gapBig  = (uint)(gapBase + 1 + (nextrnd() % BUDGET_GAP));
+local uint  off_set[8];
+off_set[0] = gapNone;
+off_set[1] = gapNone;
+off_set[2] = gapNone;
+off_set[3] = gapNone;
+off_set[4] = gapNone;
+off_set[5] = gapNone;
+off_set[6] = gapNone;
+off_set[7] = gapNone;
+if( g_comp != 3 && g_comp != 6 )
+{
+    off_set[5] = gapTiny;
+    off_set[6] = gapMid;
+    off_set[7] = gapBig;
+}
+local int evil_goff = SetEvilBit(IsParsing());
+local int64 gapLen = (int64)ReadUInt( 10, off_set ) - gapBase;
+SetEvilBit(evil_goff);
+if( gapLen < 0 || gapLen > FILE_ROOM )
+    gapLen = 0;
+
+local int64 dataStart = 14 + (int64)g_kind + palBytes + gapLen;
+local int64 room = FILE_ROOM - dataStart;
+if( room < 0 ) room = 0;
+if( room > BUDGET_PIXELS ) room = BUDGET_PIXELS;
+
+// --- how many rows fit.  This is the running total the output_budget asks
+// --- for: it is computed BEFORE anything is emitted and it steers the row
+// --- loop / the RLE machine, never the dimensions.
+g_nrows = g_ah;
+g_stoprow = g_ah;
+local int64 payLen = 0;
+g_rle4 = 0;
+g_eob  = 0;
+
+if( g_w <= 0 || g_ah <= 0 || g_stride <= 0 || g_bpp <= 0 )
+{
+    // A degenerate geometry the decoder refuses at its own front gate
+    // (io-bmp.c:395, "bogus header data").  Spending the budget on pixels it
+    // will never look at is waste, so the payload stays nominal.  The
+    // dimensions themselves are untouched.
+    g_nrows = 0;
+    if( g_comp > 0 ) payLen = 0;
+}
+else if( g_comp == 0 )
+{
+    if( g_stride * g_ah > room )
+        g_nrows = room / g_stride;
+    payLen = g_stride * g_nrows;
+}
+else if( g_comp == 1 || g_comp == 2 )
+{
+    if( g_comp == 2 ) g_rle4 = 1;
+    g_mixmode = (int)(nextrnd() % 5);       // 0 encoded, 1 absolute, 2 mixed, 3+ delta
+    if( g_mixmode > 3 ) g_mixmode = 0;
+    local int eobWant = 1;
+    if( (nextrnd() % 8) == 0 ) eobWant = 0; // a stream with no end-of-bitmap
+    // One RLE stream in four stops short of the declared height and closes
+    // with end-of-bitmap; the rows it never covers keep the transparent value
+    // the decoder initialised them to, which is a legal RLE bitmap.
+    g_stoprow = g_nrows;
+    if( (nextrnd() % 4) == 0 )
+    {
+        g_stoprow = (g_nrows + 1) / 2;
+        if( g_stoprow < 1 ) g_stoprow = 1;
+        eobWant = 1;                        // or the escape is never emitted
+    }
+    // Measure the stream by RUNNING the emitter rather than by a parallel cost
+    // formula, so biSizeImage can never disagree with the bytes emitted.  The
+    // emit pass below replays the same machine from the same reset state and
+    // the same end-of-bitmap decision; only the index bytes, which cannot
+    // change the item structure, come out different.
+    local uint seed_keep = g_rnd;
+    local int64 payGood = 0;
+    g_eob = eobWant;
+    rle_reset();
+    payLen = 0;
+    while( rs_item != 6 && payLen < room )
+    {
+        rle_next();
+        payLen++;
+        if( rs_item == 0 )
+            payGood = payLen;       // an item just finished here
+    }
+    // Cut on the last completed item rather than wherever the budget ran out,
+    // so a budget-limited stream is still a well-formed RLE stream instead of
+    // one ending inside an escape.  This also drops the single filler byte the
+    // measure loop reads past the end of a stream that finished naturally.
+    payLen  = payGood;
+    g_rnd   = seed_keep;
+    g_eob   = eobWant;
+    rle_reset();
+}
+else if( g_comp == 3 || g_comp == 6 )
+{
+    g_maskpay = 0;
+    if( g_kind == 40 || g_kind == 64 || g_kind == 12 )
+    {
+        // Sizes outside {52,56,108,124} make the decoder read the masks from
+        // the payload instead (io-bmp.c:554-557).
+        g_maskpay = 12;
+        if( g_comp == 6 ) g_maskpay = 16;
+    }
+    if( g_stride * g_ah > room )
+        g_nrows = room / g_stride;
+    // The decoder starts the rows immediately after the header under
+    // BI_BITFIELDS, so whatever palette line 93 inserted is part of the pixel
+    // region; account for it instead of fighting it.
+    payLen = g_maskpay + g_stride * g_nrows - palBytes;
+    if( payLen < g_maskpay ) payLen = g_maskpay;
+    if( payLen > room ) payLen = room;
+}
+else if( g_comp == 4 )
+    payLen = 141;
+else if( g_comp == 5 )
+    payLen = 74;
+else
+{
+    // BI_CMYK / BI_CMYKRLE8 / BI_CMYKRLE4 have no published payload layout and
+    // every decoder measured refuses the code itself, so the payload is raw
+    // rows of the right size - enough to reach the rejection with a file that
+    // is otherwise well formed.
+    if( g_stride * g_ah > room )
+        g_nrows = room / g_stride;
+    payLen = g_stride * g_nrows;
+}
+if( payLen < 0 ) payLen = 0;
+if( payLen > room ) payLen = room;
+if( g_nrows < 0 ) g_nrows = 0;
+
+// How many payload bytes are determined; the rest are free.
+local int64 nfixed = 0;
+if( g_comp == 1 || g_comp == 2 || g_comp == 4 || g_comp == 5 )
+    nfixed = payLen;
+else if( g_comp == 3 || g_comp == 6 )
+    nfixed = g_maskpay;
+
+// Tier A: the two size fields, and the free choice between an exact
+// biSizeImage and the 0 that sends the array through bfSize - FTell()
+// (diversity axis biSizeImage - "do not always emit the same one of the two").
+local uint fileSize = (uint)(dataStart + payLen);
+local uint offBits  = (uint)dataStart;
+local uint wimg     = (uint)payLen;
+if( (nextrnd() % 4) == 0 )
+    wimg = 0;
+//=== END PLAN ================================================================
+
+BITMAPFILEHEADER bmfh( fileSize, offBits );
+if( g_kind == 12 )
+{
+    BITMAPCOREHEADER bmch;
+}
+else
+{
+    BITMAPINFOHEADER bmih( g_kind, bsel, wimg );
+    BITMAPINFOEXT    bmiv( g_kind, g_comp, g_rmask, g_gmask, g_bmask, g_amask );
+}
+
+// Check for header
+if( bmfh.bfType != "BM" )
+{
+    Warning( "File is not a bitmap. Template stopped." );
+    return -1;
+}
+
+// Define the color table
+// (the original tests bmih.biBitCount here; g_bpp holds exactly that value and
+//  is also defined for the 12-byte header, where there is no bmih at all)
+if( (g_bpp != 24) && (g_bpp != 32) )
+{
+    SetBackColor( cLtAqua );
+    if( g_clr > 0 )
+    {
+        // dependency 7: biClrUsed entries, at most 2^biBitCount
+        if( g_kind == 12 )
+            RGBTRIPLE aColors[ g_nc ];
+        else
+            RGBQUAD   aColors[ g_nc ];
+    }
+    else
+    {
+        // dependency 9: the 1 << biBitCount fallback of line 99
+        if( g_kind == 12 )
+            RGBTRIPLE aColors[ g_nc ];
+        else
+            RGBQUAD   aColors[ g_nc ];
+    }
+}
+
+// ADDED: the gap the format permits between the palette and the pixel data.
+// structure rule "bfOffBits consistency"; the free part of the bfOffBits axis.
+// Reaches io-bmp.c:1286-1297 (the BufferPadding skip, which is how a
+// palettised file's gap is consumed) and io-bmp.c:531-538 (the
+// READ_STATE_HEADERS re-entry, which is how a 16/24/32bpp BI_RGB file's gap is
+// consumed).  Neither runs for a file whose pixel data follows the palette.
+if( gapLen > 0 )
+{
+    SetBackColor( cNone );
+    UBYTE gapBytes[ gapLen ];
+}
+
+// Define the bytes of the data
+SetBackColor( cNone );
+if( g_comp > 0 )
+{
+    // Bytes are compressed.  The length comes from one of the original's two
+    // sources - biSizeImage, or bfSize - FTell() when biSizeImage is 0 - and
+    // which one a file uses is the free biSizeImage choice made in the plan
+    // (diversity axis biSizeImage).  Both are evaluated here, at file scope,
+    // exactly where the original evaluates them: this is the only point at
+    // which FTell() still points at the start of the payload.  One emitter
+    // serves both because ffcompile folds two structurally identical anonymous
+    // structs into a single class, which silently gave the second branch the
+    // first branch's length.
+    local int64 rleN = 0;
+    if( bmih.biSizeImage > 0 )
+        rleN = bmih.biSizeImage;                 // original line 108
+    else
+        rleN = bmfh.bfSize - FTell();            // original line 110
+    if( rleN < 0 ) rleN = 0;
+    // The determined head (an RLE stream, the colour masks, or an embedded
+    // JPEG/PNG file) is emitted byte by byte; everything after it is one bare
+    // array, because content_is_free says those bytes may be anything and a
+    // single array is both what the original declares and what the mutator can
+    // work on as a block.
+    local int64 nfix2 = nfixed;
+    if( nfix2 > rleN ) nfix2 = rleN;
+    local int64 nfree = rleN - nfix2;
+    local int evil_pay = SetEvilBit(IsParsing());
+    struct {
+        local int64 i = 0;
+        while( i < nfix2 )
+        {
+            local ubyte pb = pay_byte( i );
+            UBYTE rleByte = { pb };
+            i++;
+        }
+        if( nfree > 0 )
+            UBYTE rleFree[ nfree ];     // content_is_free
+    } rleData;
+    SetEvilBit(evil_pay);
+}
+else
+{
+    // Define each line of the image
+    struct BITMAPLINE {
+
+        // Define color data
+        if( g_bpp < 8 )
+             UBYTE     imageData[ bytesPerLine ];
+        else if( g_bpp == 8 )
+             UBYTE     colorIndex[ g_w ];
+        else if( g_bpp == 16 )
+             // ADDED: dependency 12 - the original's chain has no branch for
+             // 16 bits per pixel, so a 16bpp uncompressed image came out with
+             // no pixel data at all and was refused by every decoder.  Packed
+             // two bytes per pixel, which is what OneLine16 reads
+             // (io-bmp.c:936-951, the RGB555 path).
+             UBYTE     imageData[ bytesPerLine ];
+        else if( g_bpp == 24 )
+             RGBTRIPLE colors[ g_w ];
+        else if( g_bpp == 32 )
+             RGBQUAD   colors[ g_w ];
+        else
+             // ADDED: any other depth the Tier B set or the evil bit produces
+             // still has to occupy its declared stride, or the file stops
+             // describing itself.
+             UBYTE     imageData[ bytesPerLine ];
+
+        // Pad if necessary        
+        if( padding != 0 )
+             UBYTE padBytes[ padding ];
+
+    } lines[ g_nrows ] <optimize=true>;
+}

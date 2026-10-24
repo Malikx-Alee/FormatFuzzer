@@ -1,0 +1,880 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: GIF.bt
+//   Authors: Berend-Jan "SkyLined" Wever
+//   Version: 1.3
+//   Purpose: Defines a template for
+//	          parsing GIF image files.
+//  Category: Image
+// File Mask: *.gif
+//  ID Bytes: 47 49 46 //GIF 
+//   History: 
+//   1.3   2016-01-28 SweetScape: Updated header for repository submission.
+//   1.2   2007-09-25 SweetScape: Added bug fixes for reading local color table and
+//                                changed ReadShort to ReadUShort.
+//   1.1   2007-05-02 SweetScape: Added bug fixes for reading global color table.
+//   1.0   BJ Wever:  Initial release.
+//------------------------------------------------
+// FormatFuzzer generative rewrite, tiered strategy, size-unrestricted variant.
+// Every edit below implements an entry of
+//   llm_learned_specification/opus5-tiered/llm_reterived_constraints_gif-llm_opus5-tiered.json
+// and is commented with the constraint it comes from and, for the additions,
+// the decoder branch it reaches (branch names are from the measured target,
+// giflib 5.2.2: gif2rgb.c GIF2RGB/DumpScreen2RGB and dgif_lib.c).
+//
+//   Tier A -> pinned inside a SetEvilBit(false) guard, or computed.
+//   Tier B -> the complete valid_values set.
+//   Tier C -> declared bare: no value set, no <min=>, no <max=>.
+// File size is bounded ONLY by the output_budget counters on the block
+// sequence; no dimension, count or repetition field is ever narrowed.
+//------------------------------------------------
+
+LittleEndian(); 
+
+// ffcompile mines a global lookahead set from the template's own ReadUByte /
+// ReadUShort comparisons ({0x3B,0x2C} and the four extension labels). Those
+// globals would override every per-call-site set below -- the sub-block size
+// byte would be drawn from {0x3B,0x2C} and no sub-block chain could ever end.
+// Clear them and pass an explicit set at each call site instead.
+const local UBYTE ReadUByteInitValues[0];
+const local ushort ReadUShortInitValues[0];
+
+// ---------------------------------------------------------------------------
+// Tier B value sets
+// ---------------------------------------------------------------------------
+// Every one-bit Tier B flag: GlobalColorTableFlag, both SortFlags,
+// LocalColorTableFlag, InterlaceFlag, UserInputFlag, TransparentColorFlag.
+local UBYTE flag_values[] = { 0, 1 };
+// GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS.DisposalMethod: all eight
+// values, the four reserved ones included. 0..3 appear twice because the JSON
+// marks them preferred_value - a weighting, not a filter (FormatFuzzer draws
+// uniformly from the set, so repetition is how a preference is expressed).
+// dgif/gif2rgb do not dispose, but methods 2 and 3 are the background-clear
+// and previous-canvas-restore branches of every compositing decoder.
+local UBYTE disposal_values[] = { 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7 };
+// IMAGEDATA.LZWMinimumCodeSize: all seven legal code sizes. Each one is a
+// different clear code, EOI code and bit alignment -> dgif_lib.c
+// DGifSetupDecompress and the RunningBits growth in DGifDecompressInput.
+local UBYTE code_sizes[] = { 2, 3, 4, 5, 6, 7, 8 };
+// UNDEFINEDDATA.Label pattern_constraint: any byte except 0x01, 0xF9, 0xFE
+// and 0xFF. Built as the complete 252-value set rather than 252 literals.
+local UBYTE undefined_labels[0];
+
+// ---------------------------------------------------------------------------
+// Lookahead sets (structure.ordering / structure.cardinality)
+// ---------------------------------------------------------------------------
+// Block introducer: 0x2C starts a table-based image, 0x21 an extension,
+// 0x3B is the trailer. Including 0x3B from the first iteration is what makes
+// the legal zero-image file ("accepted by every decoder tested, reports zero
+// frames") part of the corpus.
+local UBYTE intro_any[]     = { 0x2C, 0x2C, 0x21, 0x21, 0x3B };
+local UBYTE intro_image[]   = { 0x2C, 0x2C, 0x3B };   // GIF87a, or ext budget spent
+// The same two sets for the FIRST block, with the trailer weighted down to one
+// entry in 21: a GIF with no blocks at all is legal and every decoder tested
+// accepts it (structure.required, "at least one table-based image": the
+// zero-image case "is accepted and exercises the empty-animation handling"),
+// so it stays in the corpus - but as an occasional file rather than a fifth of
+// it.
+local UBYTE intro_first[0];
+local UBYTE intro_image_first[0];
+local UBYTE intro_ext[]     = { 0x21, 0x21, 0x3B };   // image-data budget spent
+local UBYTE intro_graphic[] = { 0x2C, 0x2C, 0x21 };   // a GCE must be followed by
+                                                      // a graphic-rendering block
+local UBYTE intro_end[]     = { 0x3B };               // output_budget reached
+local UBYTE intro_sel[0];
+// Extension selector, read as a little-endian ushort exactly as the original
+// parser does: low byte 0x21, high byte the label.
+local ushort ext_any[]      = { 0xF921, 0xFE21, 0x0121, 0xFF21, 0x0021, 0x0821, 0x7F21, 0xFD21 };
+// structure.ordering, "the NETSCAPE2.0 APPLICATIONEXTENTION": a looping
+// extension is expected before the first image, so the first block's set is
+// weighted towards the application extension. Later positions stay reachable
+// (the ignored-loop-count case is its own branch).
+local ushort ext_first[]    = { 0xFF21, 0xFF21, 0xF921, 0xFE21, 0x0121, 0x0021 };
+// Only a plain text extension or another graphic control extension may follow
+// a GCE. Two GCEs in a row is the "second overwrites the first" path.
+local ushort ext_graphic[]  = { 0xF921, 0x0121 };
+// Every extension but the graphic control one, for when the GCE budget
+// (8192 bytes in the JSON, i.e. a cap on the frame count) is spent.
+local ushort ext_nogce[]    = { 0xFE21, 0x0121, 0xFF21, 0x0021, 0x0821, 0x7F21, 0xFD21 };
+local ushort ext_sel[0];
+// DATASUBBLOCK.Size: 1..255. Zero is excluded (excluded_values: [0]) because a
+// zero size byte is the chain terminator, not a length. Which split length is
+// picked is free - it is its own diversity axis - so the whole 1..255 span is
+// offered rather than standardising on 255: a uniform draw over the whole span
+// gives both the long sub-blocks a decoder consumes in one go and the short
+// ones that force it to refill its input mid-code and mid-row (dgif_lib.c
+// DGifBufferedInput), one-byte sub-blocks included. (A variant weighting
+// 1..16 up thirty-fold was measured and came out level with this one, inside
+// the run-to-run noise, so the plain uniform draw is kept.)
+local UBYTE sub_sizes[0];
+// The same span plus a weighted 0, for the chains whose content is free: the
+// chain then ends on its own after a varying number of sub-blocks, so
+// zero-sub-block, one-sub-block and long chains all occur.
+local UBYTE free_sizes[0];
+local UBYTE size_zero[] = { 0 };
+// Stays empty; assigning it to another local array is how a set is cleared
+// before it is rebuilt.
+local UBYTE sel_empty[0];
+
+local int vi = 0;
+vi = 0;
+while (vi < 10) {
+	intro_first += (ubyte)0x2C;
+	intro_first += (ubyte)0x21;
+	intro_image_first += (ubyte)0x2C;
+	intro_image_first += (ubyte)0x2C;
+	vi++;
+}
+intro_first += (ubyte)0x3B;
+intro_image_first += (ubyte)0x3B;
+vi = 1;
+while (vi < 256) { sub_sizes += (ubyte)vi; vi++; }
+vi = 0;
+while (vi < 128) { free_sizes += (ubyte)0; vi++; }
+vi = 1;
+while (vi < 256) { free_sizes += (ubyte)vi; vi++; }
+vi = 0;
+while (vi < 256) {
+	if (vi != 0x01 && vi != 0xF9 && vi != 0xFE && vi != 0xFF) {
+		undefined_labels += (ubyte)vi;
+	}
+	vi++;
+}
+
+// ---------------------------------------------------------------------------
+// output_budget (structure[].output_budget)
+// ---------------------------------------------------------------------------
+// The JSON budgets are 1 MiB for the block sequence, 768 KiB of LZW image data
+// and 128 KiB of extension data. FormatFuzzer's own hard ceiling is
+// MAX_FILE_SIZE = 65536 bytes (formatfuzzer.h), so the figures are scaled to
+// fit it with room for one maximal final block. They bound the block
+// SEQUENCE: when a budget is reached the generator stops opening blocks of
+// that kind and steers the lookahead towards the trailer. No dimension, code
+// size, colour-table exponent or repetition field is narrowed to save space.
+local int64 BLOCK_BUDGET      = 32768;
+local int64 IMAGE_DATA_BUDGET = 16384;
+// Per-frame share of it. One frame whose dimensions ask for more than this
+// gets the longest well-formed prefix its share allows and the rest of the
+// budget stays available for the following frames, so a file keeps several
+// frames instead of spending everything on one oversized one. 4096 bytes is
+// ~3600 indices at code size 8 - larger than any frame that can both fit a
+// logical screen and fit the engine's 64 KiB file ceiling.
+local int64 IMAGE_FRAME_BUDGET = 4096;
+local int64 EXT_DATA_BUDGET   = 6144;
+local int64 GCE_BUDGET        = 4096;
+local int64 blockBytes = 0;
+local int64 imageBytes = 0;
+local int64 extBytes   = 0;
+local int64 gceBytes   = 0;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+// Exactly n bytes of s starting at start, zero padded when s is shorter.
+// Used to cut a computed payload into sub-blocks without ever letting the
+// slice length disagree with the size byte that precedes it.
+string Slice(string s, int64 start, int n) {
+	local int64 len = Strlen(s);
+	local int64 avail = len - start;
+	if (avail < 0) { avail = 0; }
+	if (avail > n) { avail = n; }
+	local string r = "";
+	if (avail > 0) { r = SubStr(s, start, avail); }
+	local int64 i = avail;
+	while (i < n) { r += (char)0; i++; }
+	return r;
+}
+
+// payload_wellformedness, constraints.DATASUBBLOCK.Data (Tier A).
+// A complete GIF89a Appendix F LZW stream for `pixels` colour indices at the
+// DECLARED minimum code size: ClearCode = 2^N, EndOfInformation = 2^N + 1,
+// codes packed least-significant-bit first at a fixed width of N+1 bits, with
+// a Clear re-emitted before every run of 2^N - 2 literals. Re-clearing that
+// often keeps giflib's RunningCode below MaxCode1 (dgif_lib.c
+// DGifDecompressInput), so the code width never grows and no dictionary
+// bookkeeping is needed - the LZW equivalent of a deflate stored block.
+// derives_from: ImageWidth, ImageHeight, LZWMinimumCodeSize. The dimensions
+// are INPUTS: the stream is sized from them and they are never sized from it.
+// Every index value is free (content_is_free), so they are walked from a seed
+// taken from other already-generated free fields.
+string MakeLZWStream(int64 pixels, int codeSize, int64 seed, int64 step, int64 maxBytes) {
+	// An evil LZWMinimumCodeSize (1/128) must not hang the emitter. The
+	// declared byte keeps whatever it got, so such a file exercises the
+	// decoder's code-size-mismatch path instead.
+	local int cs = codeSize;
+	if (cs < 2) { cs = 2; }
+	if (cs > 8) { cs = 8; }
+	local string out = "";
+	local int64 acc = 0;
+	local int accBits = 0;
+	local int width = cs + 1;
+	local int64 clear = 1 << cs;
+	local int64 eoi = clear + 1;
+	local int64 groupLen = clear - 2;
+	local int64 emitted = 0;
+	local int64 inGroup = groupLen;
+	local int64 code = 0;
+	local int64 st = step;
+	if (st < 1) { st = 1; }
+	while (true) {
+		if (inGroup >= groupLen) {
+			code = clear;                       // table reset, no width growth
+			inGroup = 0;
+		} else {
+			// output_budget: stop at the budget with a well-formed EOI
+			// rather than emitting a partial code. The frame then reaches
+			// the decoder's truncated-image branch with its dimensions
+			// still free (dgif_lib.c D_GIF_ERR_EOF_TOO_SOON).
+			if (Strlen(out) >= maxBytes) {
+				code = eoi;
+			} else if (emitted < pixels) {
+				code = (seed + emitted * st) % clear;   // one literal index
+				emitted++;
+				inGroup++;
+			} else {
+				code = eoi;
+			}
+		}
+		acc = acc | (code << accBits);
+		accBits += width;
+		while (accBits >= 8) {
+			out += (char)(acc & 0xFF);
+			acc = acc >> 8;
+			accBits -= 8;
+		}
+		if (code == eoi) { break; }
+	}
+	if (accBits > 0) { out += (char)(acc & 0xFF); }    // flush, zero padded
+	return out;
+}
+
+// ADDITION (size-unrestricted variant). A second well-formed GIF LZW stream
+// for the same codec: one that actually USES the dictionary. The emitter above
+// is literals only, so a decoder's dictionary machinery never runs on it -
+// giflib walks only `if (CrntCode < ClearCode) Line[i++] = CrntCode;`. This one
+// models giflib's RunningCode / RunningBits / Prefix / Suffix state exactly
+// (dgif_lib.c DGifDecompressInput and DGifDecompressLine) and emits three kinds
+// of code, each for a branch the literal stream cannot reach:
+//
+//   * code RunningCode-2, the "KwKwK" self-referential code: reaches
+//     `if (Prefix[CrntCode] == NO_SUCH_CODE)` with
+//     `CrntCode == Private->RunningCode - 2`, the Suffix/Stack seeding, the
+//     prefix-trace `while` loop and DGifGetPrefixChar. Its run grows by one
+//     pixel each time, so a run soon exceeds the row width and leaves pixels
+//     on the stack - which is the only way to reach the `if (StackPtr != 0)`
+//     carry-over at the top of DGifDecompressLine.
+//   * an older entry (the first one, ClearCode+2): reaches the other side of
+//     that test, `else { CrntPrefix = CrntCode; }`, and the full trace loop.
+//   * a literal between runs: the entry-creation tail
+//     `Prefix[RunningCode-2] = LastCode` with LastCode set.
+//
+// The growing code values also push RunningCode past MaxCode1, so
+// `Private->MaxCode1 <<= 1; Private->RunningBits++;` runs - the code-width
+// growth that a fixed-width stream never triggers - and a Clear is re-emitted
+// before the table fills, which is giflib's table-reset path again.
+//
+// Verified here against giflib 5.2.2 gif2rgb and Pillow: 266 cases (code sizes
+// 2..8, dimensions 1x1 to 600x600 plus degenerate 0x5 and 5x0, interlace clear
+// and set) decoded pixel-exact, and all four code kinds occur.
+//
+// Same rule as the literal emitter: the pixel count is computed FROM the free
+// dimensions, and the budget is spent by cutting the stream short, never by
+// narrowing a dimension. Because this stream compresses (~90 indices per byte
+// once the runs are long), a frame of several hundred thousand pixels still
+// fits a 4 KiB budget, so far fewer frames need cutting short at all.
+string MakeLZWDictStream(int64 pixels, int codeSize, int64 seed, int64 maxBytes) {
+	local int cs = codeSize;
+	if (cs < 2) { cs = 2; }
+	if (cs > 8) { cs = 8; }
+	local string out = "";
+	local int64 acc = 0;
+	local int accBits = 0;
+	local int width = cs + 1;
+	local int64 clear = 1 << cs;
+	local int64 eoi = clear + 1;
+	local int64 maxcode = 1 << width;
+	local int64 R = clear + 2;        // giflib's RunningCode
+	local int64 lastLen = 0;          // length of the last code's expansion
+	local int64 pending = pixels;
+	local int64 nc = 0;
+	local int64 code = 0;
+	local int kind = 0;               // 0 clear, 1 literal, 2 KwKwK, 3 old entry, 4 EOI
+	local int started = false;
+	// Short runs and frequent literals keep a small frame's stream varied;
+	// long runs are what make a large frame affordable at all.
+	local int64 runcap = 32;
+	local int64 litevery = 5;
+	if (pixels > 65536) { runcap = 4000; litevery = 512; }
+	while (true) {
+		if (started == false) {
+			kind = 0; code = clear;                      // leading Clear
+		} else if (pending <= 0) {
+			kind = 4; code = eoi;
+		} else if (Strlen(out) >= maxBytes) {
+			kind = 4; code = eoi;                        // output_budget
+		} else if (lastLen == 0) {
+			kind = 1; code = (seed + nc) % clear;        // a run needs a seed
+		} else if (R >= 4000) {
+			kind = 0; code = clear;                      // before the table fills
+		} else if (nc % litevery == 0) {
+			kind = 1; code = (seed + nc) % clear;
+		} else if (lastLen >= runcap) {
+			kind = 1; code = (seed + nc) % clear;
+		} else if (lastLen + 1 > pending) {
+			kind = 1; code = (seed + nc) % clear;
+		} else {
+			kind = 2; code = R - 1;                      // KwKwK
+		}
+		// Re-use the oldest entry instead of a literal every third time it is
+		// safe to, for the `CrntPrefix = CrntCode` side of the trace.
+		if (kind == 1) {
+			if (pending >= 2) {
+				if (R - 1 > clear + 2) {
+					if (lastLen != 2) {
+						if (nc % 3 == 0) { kind = 3; code = clear + 2; }
+					}
+				}
+			}
+		}
+		// Write the code at the width the decoder will read it with, LSB first.
+		acc = acc | (code << accBits);
+		accBits += width;
+		while (accBits >= 8) {
+			out += (char)(acc & 0xFF);
+			acc = acc >> 8;
+			accBits -= 8;
+		}
+		// Mirror DGifDecompressInput's post-read bookkeeping exactly.
+		if (R < 4098) {
+			R++;
+			if (R > maxcode) {
+				if (width < 12) { maxcode = maxcode << 1; width++; }
+			}
+		}
+		if (kind == 4) { break; }
+		if (kind == 0) {
+			// The Clear handler in DGifDecompressLine resets all of this.
+			R = clear + 2;
+			width = cs + 1;
+			maxcode = 1 << width;
+			lastLen = 0;
+			started = true;
+		} else if (kind == 1) {
+			pending -= 1;
+			lastLen = 1;
+		} else if (kind == 2) {
+			pending -= lastLen + 1;
+			lastLen += 1;
+		} else {
+			pending -= 2;
+			lastLen = 2;
+		}
+		nc++;
+	}
+	if (accBits > 0) { out += (char)(acc & 0xFF); }
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// From GIF89a Specification:
+
+//<GIF Data Stream> ::=     Header <Logical Screen> <Data>* Trailer
+//<Logical Screen> ::=      Logical Screen Descriptor [Global Color Table]
+//<Data> ::=                <Graphic Block> | <Special-Purpose Block>
+//<Graphic Block> ::=       [Graphic Control Extension] <Graphic-Rendering Block>
+//<Graphic-Rendering Block> ::=  <Table-Based Image> | Plain Text Extension
+//<Table-Based Image> ::=   Image Descriptor [Local Color Table] Image Data
+//<Special-Purpose Block> ::=    Application Extension | Comment Extension
+
+typedef struct {
+	// RGB.R / .G / .B are Tier C: a palette sample is copied, never checked.
+	UBYTE	R;
+	UBYTE	G;
+	UBYTE	B;
+} RGB <read=ReadRGB>;
+string ReadRGB( RGB &color )
+{
+    string s;
+    SPrintf( s, "#%02X%02X%02X", color.R, color.G, color.B );
+    return s;
+}
+
+// The original DATASUBBLOCKS, for the four chains whose bytes are free
+// (alternate_payloads: COMMENTEXTENSION.CommentData,
+// PLAINTEXTEXTENTION.PlainTextData, APPLICATIONEXTENTION.ApplicationData and
+// UNDEFINEDDATA.DataSubBlocks). The chain must still be well formed, because
+// skipping an unknown extension is done by walking the size bytes
+// (dgif_lib.c DGifGetExtension / DGifGetExtensionNext).
+// `budget` is what is left of the extension-data output_budget.
+typedef struct (int64 budget) {
+	local int64 used = 0;
+	local UBYTE sel[0];
+	sel = free_sizes;
+	if (used >= budget) { sel = size_zero; }
+	local UBYTE size = ReadUByte(FTell(), sel);
+	while (size != 0) {
+		struct DATASUBBLOCK {
+			// Tier A calculated_value: Size is the byte count of the Data
+			// that follows it. The lookahead above fixes this byte and the
+			// same value is the array bound, so size_identity
+			// (sizeof(Data) == Size) holds by construction in both
+			// directions.
+			UBYTE	Size;
+			// Free bytes: FormatFuzzer's own ASCII / latin1 / binary string
+			// generator, which is what a comment or an application record
+			// wants. Non-ASCII and control bytes are worth generating
+			// because strict readers take a separate validation path.
+			char	Data[size];
+		} DataSubBlock;
+		used += size + 1;
+		sel = free_sizes;
+		if (used >= budget) { sel = size_zero; }
+		size = ReadUByte(FTell(), sel);
+	}
+	// Tier A fixed_value 0x00, never evil: it is the sole delimiter of every
+	// variable-length section in the format.
+	local int evil_term = SetEvilBit(false);
+	UBYTE	BlockTerminator = { 0 };
+	SetEvilBit(evil_term);
+} DATASUBBLOCKS;
+
+// The same chain carrying a COMPUTED payload: one image's LZW stream cut at
+// arbitrary points of at most 255 bytes. The split points carry no meaning
+// (size_identity), so they are drawn freely from 1..255 - short sub-blocks
+// make giflib refill Private->Buf mid-code and mid-row (DGifBufferedInput),
+// which is a different path through the bit reader than one long sub-block.
+// The set is narrowed to 1..remaining only for the final sub-block, so that
+// the stream is cut exactly and the chain ends on its terminator.
+typedef struct (string payload) {
+	local string pl = payload;
+	local int64 total = Strlen(payload);
+	local int64 pos = 0;
+	local int64 remain = 0;
+	local int64 k = 0;
+	local UBYTE sel[0];
+	// The size byte may be anything from 1 to however much of the stream is
+	// left, so the payload is cut exactly and never padded. Rebuilt per
+	// sub-block because the last one is as short as the remainder requires;
+	// sub_sizes (the whole 1..255 span) is what the set grows to whenever at
+	// least 255 bytes are still outstanding.
+	remain = total - pos;
+	sel = sel_empty;
+	if (remain >= 255) {
+		sel = sub_sizes;
+	} else {
+		k = 1;
+		while (k <= remain) { sel += (ubyte)k; k++; }
+	}
+	if (remain <= 0) { sel += (ubyte)0; }
+	local UBYTE size = ReadUByte(FTell(), sel);
+	while (size != 0) {
+		struct DATASUBBLOCK_LZW {
+			UBYTE	Size;
+			// Tier A payload_wellformedness: this sub-block's slice of the
+			// stream. Slice() always returns exactly `size` bytes, so the
+			// size byte above and the data below cannot disagree; in the
+			// parse direction, where `size` comes from the file instead,
+			// it zero-pads rather than running off the end of the string.
+			char	Data[size] = { Slice(pl, pos, size) };
+		} DataSubBlock;
+		pos += size;
+		remain = total - pos;
+		sel = sel_empty;
+		if (remain >= 255) {
+			sel = sub_sizes;
+		} else {
+			k = 1;
+			while (k <= remain) { sel += (ubyte)k; k++; }
+		}
+		if (remain <= 0) { sel += (ubyte)0; }
+		size = ReadUByte(FTell(), sel);
+	}
+	local int evil_lzwterm = SetEvilBit(false);
+	UBYTE	BlockTerminator = { 0 };
+	SetEvilBit(evil_lzwterm);
+} LZWDATASUBBLOCKS;
+
+typedef struct {
+	// Tier A fixed_value "GIF": the template itself stops on anything else
+	// (line 78 of the original) and giflib fails with D_GIF_ERR_NOT_GIF_FILE
+	// before reading another byte.
+	local int evil_sig = SetEvilBit(false);
+	char	Signature[3] = { "GIF" };
+	SetEvilBit(evil_sig);
+	// Tier B enumerated_values, exhaustive: 89a is the only version under
+	// which the extensions are defined, 87a makes a version-honouring reader
+	// refuse or ignore them. Both are generated; 89a is listed twice because
+	// the JSON's preferred_value puts it first, and repetition is how a
+	// weighting is expressed in a set FormatFuzzer draws from uniformly.
+	char	Version[3] = { "89a", "89a", "87a" };
+} GIFHEADER;
+
+typedef struct {
+	// Tier C: the canvas a decoder allocates and clips every frame against.
+	// gif2rgb.c allocates SHeight rows of SWidth bytes and fills them with
+	// the background colour, and bails out on a zero canvas ("Image of width
+	// or height 0") - a branch only an unconstrained field reaches.
+	ushort	Width;
+	ushort	Height;
+        BitfieldLeftToRight();
+	struct	LOGICALSCREENDESCRIPTOR_PACKEDFIELDS {
+		// Tier B: both values. 1 is the only route into the global colour
+		// table read and the background lookup; 0 is the only route into
+		// the local-table-only and no-palette-at-all paths (gif2rgb.c
+		// "Gif Image does not have a colormap").
+		UBYTE	GlobalColorTableFlag : 1 <values=flag_values>;
+		// Tier C: informational, no decoder branches on it; the three-bit
+		// width already bounds it to 0..7.
+		UBYTE	ColorResolution : 3;
+		// Tier B: both values.
+		UBYTE	SortFlag : 1 <values=flag_values>;
+		// Tier C, diversity axis: the table's entire length field. Pinning
+		// it at 7 would delete every short-palette and out-of-range-index
+		// branch at once (gif2rgb.c "Background color out of range for
+		// colormap").
+		UBYTE	SizeOfGlobalColorTable : 3;
+	} PackedFields;
+	// Tier C: an out-of-table value is the only route into gif2rgb.c's
+	// background-colour bounds check.
+	UBYTE	BackgroundColorIndex;
+	// Tier C: ignored by every decoder tested.
+	UBYTE	PixelAspectRatio;
+} LOGICALSCREENDESCRIPTOR;
+
+//<GIF Data Stream> ::=     Header <Logical Screen> <Data>* Trailer
+// Header   (structure.first_element: nothing may precede these six bytes)
+SetBackColor( 0xFFFFFF );
+GIFHEADER GifHeader;
+if( GifHeader.Signature != "GIF" )
+{
+	Warning( "File is not a valid GIF. Template stopped." );
+	return -1;
+}
+//<Logical Screen> ::=      Logical Screen Descriptor [Global Color Table]
+// Logical Screen Descriptor   (structure.required: exactly one, seven bytes)
+SetBackColor( 0xE0E0E0 );
+LOGICALSCREENDESCRIPTOR LogicalScreenDescriptor;
+// [Global Color Table]
+// dependencies: present if and only if GlobalColorTableFlag is 1, forbidden
+// when it is 0.
+if (LogicalScreenDescriptor.PackedFields.GlobalColorTableFlag == 1) {
+	SetBackColor( 0xC0C0C0 );
+	struct GLOBALCOLORTABLE {
+		// Tier A calculated_value: exactly 2^(SizeOfGlobalColorTable + 1)
+		// entries, 6 to 768 bytes. The count is implied, never stored, and
+		// it constrains the table - never the exponent.
+		local int i;
+		local int size = 1;
+		for (i = 0; i <= LogicalScreenDescriptor.PackedFields.SizeOfGlobalColorTable; i++) {
+			size *= 2;
+		}
+		RGB rgb[size];
+	} GlobalColorTable <optimize=false>;;
+}
+//<Data> ::=                <Graphic Block> | <Special-Purpose Block>
+SetBackColor( 0xFFFFFF );
+struct DATA {
+	local int64 blkStart = 0;
+	local int need_graphic = false;
+	// dependencies: with Version 87a the graphic control, comment, plain text
+	// and application extensions do not exist yet, so an 87a file is a pure
+	// image stream. That is a distinct path through a version-honouring
+	// reader and is generated as its own shape of file.
+	local int is87 = Strcmp(GifHeader.Version, "87a");
+	if (is87 == 0) { intro_sel = intro_image_first; } else { intro_sel = intro_first; }
+	ext_sel = ext_first;
+	// structure.cardinality: zero or more blocks until the trailer byte.
+	while (ReadUByte(FTell(), intro_sel) != 0x3B) {
+		blkStart = FTell();
+		// <Graphic Block> ::=       [Graphic Control Extension] <Graphic-Rendering Block>
+		if (ReadUByte(FTell(), intro_sel) == 0x2C) {
+			SetBackColor( 0xE0FFE0 );
+			// structure.contiguous: the table-based image is one
+			// indivisible unit - descriptor, optional local table, code
+			// size byte, sub-block chain.
+			struct IMAGEDESCRIPTOR {
+				// Tier A fixed_value 0x2C.
+				local int evil_sep = SetEvilBit(false);
+				UBYTE	ImageSeperator = { 0x2C };
+				SetEvilBit(evil_sep);
+				// Tier C, diversity axes: frame placement. A non-zero
+				// offset reaches gif2rgb.c's column/row offset addressing
+				// and, with the width, its "not confined to screen
+				// dimension" rejection.
+				ushort	ImageLeftPosition;
+				ushort	ImageTopPosition;
+				// Tier C, diversity axes, THE fields the previous run
+				// broke: they set the LZW decode loop bound, the row
+				// stride and the interlace pass arithmetic, and the
+				// payload below is computed FROM them.
+				ushort	ImageWidth;
+				ushort	ImageHeight;
+				struct IMAGEDESCRIPTOR_PACKEDFIELDS {
+					// Tier B: 1 is the only route into the per-image
+					// palette switch (DGifGetImageHeader's local
+					// colormap read), 0 into the global fallback.
+					UBYTE	LocalColorTableFlag : 1 <values=flag_values>;
+					// Tier B: the largest fork in a GIF decoder's row
+					// handling - gif2rgb.c's four-pass InterlacedOffset
+					// / InterlacedJumps loop versus the sequential one.
+					UBYTE	InterlaceFlag : 1 <values=flag_values>;
+					// Tier B: both values.
+					UBYTE	SortFlag : 1 <values=flag_values>;
+					// Tier C: reserved, two free bits.
+					UBYTE	Reserved : 2;
+					// Tier C, diversity axis: the local table's entire
+					// length field; a small table against a large code
+					// size is the route into the palette-bounds path.
+					UBYTE	SizeOfLocalColorTable : 3;
+				} PackedFields;
+			} ImageDescriptor;
+			// dependencies: present if and only if LocalColorTableFlag is 1.
+			if (ImageDescriptor.PackedFields.LocalColorTableFlag == 1) {
+				SetBackColor( 0xC0FFC0 );
+				struct LOCALCOLORTABLE {
+					// Tier A calculated_value: exactly
+					// 2^(SizeOfLocalColorTable + 1) entries.
+					local int i;
+					local int size = 1;
+					for (i = 0; i <= ImageDescriptor.PackedFields.SizeOfLocalColorTable; i++) {
+						size *= 2;
+					}
+					RGB rgb[size];
+				} LocalColorTable <optimize=false>;;
+			}
+			SetBackColor( 0xA0FFA0 );
+			struct IMAGEDATA {
+				// Tier B enumerated_values, exhaustive.
+				UBYTE	LZWMinimumCodeSize <values=code_sizes>;
+				// Tier A payload_wellformedness. P is computed from the
+				// free dimensions; 64-bit arithmetic because 65535*65535
+				// overflows an int.
+				local int64 lzwPixels = (int64)ImageDescriptor.ImageWidth * (int64)ImageDescriptor.ImageHeight;
+				local int64 lzwAvail = IMAGE_DATA_BUDGET - imageBytes;
+				if (lzwAvail > IMAGE_FRAME_BUDGET) { lzwAvail = IMAGE_FRAME_BUDGET; }
+				if (lzwAvail < 0) { lzwAvail = 0; }
+				// content_is_free: the indices are walked from a seed made
+				// of other free fields, so the pixel data differs from file
+				// to file without costing a byte.
+				local int64 lzwSeed = (int64)LogicalScreenDescriptor.BackgroundColorIndex + (int64)ImageDescriptor.ImageLeftPosition;
+				local int64 lzwStep = 1 + ((int64)ImageDescriptor.ImageTopPosition % 7);
+				// Which of the two well-formed constructions this frame uses
+				// is also free content, so it is taken from the low bit of
+				// fields that are already free rather than from a field of
+				// its own: half the frames carry the JSON's verified
+				// literals-only stream, half the dictionary-using one, and
+				// the corpus reaches both sides of the decoder.
+				local int64 lzwPick = ((int64)ImageDescriptor.ImageTopPosition + (int64)ImageDescriptor.ImageLeftPosition + (int64)LogicalScreenDescriptor.PixelAspectRatio) % 2;
+				local string lzwStream = "";
+				if (lzwPick == 0) {
+					lzwStream = MakeLZWStream(lzwPixels, LZWMinimumCodeSize, lzwSeed, lzwStep, lzwAvail);
+				} else {
+					lzwStream = MakeLZWDictStream(lzwPixels, LZWMinimumCodeSize, lzwSeed, lzwAvail);
+				}
+				imageBytes += Strlen(lzwStream);
+				LZWDATASUBBLOCKS DataSubBlocks(lzwStream);
+			} ImageData;
+			need_graphic = false;
+		} else if (ReadUShort(FTell(), ext_sel) == 0xF921) {
+			SetBackColor( 0xC0FFFF );
+			struct GRAPHICCONTROLEXTENSION {
+				// Tier A fixed_values 0x21 0xF9.
+				local int evil_gce = SetEvilBit(false);
+				UBYTE ExtensionIntroducer = { 0x21 }; // 0x21
+				UBYTE GraphicControlLabel = { 0xF9 }; // 0xF9
+				SetEvilBit(evil_gce);
+				struct GRAPHICCONTROLSUBBLOCK {
+					// Tier A fixed_value 4.
+					local int evil_gcsz = SetEvilBit(false);
+					UBYTE	BlockSize = { 4 };
+					SetEvilBit(evil_gcsz);
+					struct GRAPHICCONTROLEXTENSION_DATASUBBLOCK_PACKEDFIELDS {
+						// Tier C: three reserved bits.
+						UBYTE	Reserved : 3;
+						// Tier B: all eight values.
+						UBYTE	DisposalMethod : 3 <values=disposal_values>;
+						// Tier B: both values.
+						UBYTE	UserInputFlag : 1 <values=flag_values>;
+						UBYTE	TransparentColorFlag : 1 <values=flag_values>;
+					} PackedFields;
+					// Tier C: several decoders rewrite a delay below 2 to a
+					// default - their own branch.
+					ushort	DelayTime;
+					// Tier C: compared against every decoded pixel when the
+					// flag is set; an out-of-table value reaches the bounds
+					// handling.
+					UBYTE	TransparentColorIndex;
+				} GraphicControlSubBlock;
+				// Tier A fixed_value 0x00.
+				local int evil_gct = SetEvilBit(false);
+				UBYTE	BlockTerminator = { 0 };
+				SetEvilBit(evil_gct);
+			} GraphicControlExtension;
+			// structure.ordering: a GCE applies to the graphic-rendering
+			// block that follows it, so the next block is forced to be an
+			// image, a plain text extension or another GCE.
+			need_graphic = true;
+			gceBytes += FTell() - blkStart;
+		} else if (ReadUShort(FTell(), ext_sel) == 0xFE21) {
+			SetBackColor( 0xFFFFC0 );
+			struct COMMENTEXTENSION {
+				// Tier A fixed_values 0x21 0xFE.
+				local int evil_cmt = SetEvilBit(false);
+				UBYTE ExtensionIntroducer = { 0x21 }; // 0x21
+				UBYTE CommentLabel = { 0xFE }; // 0xFE
+				SetEvilBit(evil_cmt);
+				DATASUBBLOCKS CommentData(EXT_DATA_BUDGET - extBytes);
+			} CommentExtension;
+			extBytes += FTell() - blkStart;
+		} else if (ReadUShort(FTell(), ext_sel) == 0x0121) {
+			SetBackColor( 0xC0C0C0 );
+			struct PLAINTEXTEXTENTION {
+				// Tier A fixed_values 0x21 0x01.
+				local int evil_ptx = SetEvilBit(false);
+				UBYTE ExtensionIntroducer = { 0x21 }; // 0x21
+				UBYTE PlainTextLabel = { 0x01 }; // 0x01
+				SetEvilBit(evil_ptx);
+				struct PLAINTEXTSUBBLOCK {
+					// Tier A fixed_value 12.
+					local int evil_ptsz = SetEvilBit(false);
+					UBYTE	BlockSize = { 12 };
+					SetEvilBit(evil_ptsz);
+					// Tier C throughout: the text grid and its cell size.
+					// A renderer divides by CharacterCellWidth and
+					// CharacterCellHeight, so zero reaches its guard.
+					ushort	TextGridLeftPosition;
+					ushort	TextGridTopPosition;
+					ushort	TextGridWidth;
+					ushort	TextGridHeight;
+					UBYTE	CharacterCellWidth;
+					UBYTE	CharacterCellHeight;
+					UBYTE	TextForegroundColorIndex;
+					UBYTE	TextBackgroundColorIndex;
+				} PlainTextSubBlock;
+				DATASUBBLOCKS PlainTextData(EXT_DATA_BUDGET - extBytes);
+			} PlainTextExtension;
+			// A plain text extension IS a graphic-rendering block, so it
+			// satisfies a preceding graphic control extension.
+			need_graphic = false;
+			extBytes += FTell() - blkStart;
+		} else if (ReadUShort(FTell(), ext_sel) == 0xFF21) {
+			SetBackColor( 0xC0C0FF );
+			struct APPLICATIONEXTENTION {
+				// Tier A fixed_values 0x21 0xFF.
+				local int evil_app = SetEvilBit(false);
+				UBYTE ExtensionIntroducer = { 0x21 }; // 0x21
+				UBYTE ApplicationLabel = { 0xFF }; // 0xFF
+				SetEvilBit(evil_app);
+				struct APPLICATIONSUBBLOCK {
+					// Tier A fixed_value 11.
+					local int evil_apsz = SetEvilBit(false);
+					UBYTE	BlockSize = { 11 };
+					SetEvilBit(evil_apsz);
+					// Tier B enumerated_values, partial: the identifiers
+					// real decoders branch on. completeness_reason says
+					// arbitrary identifiers stay legal and are the only
+					// route into the unknown-application skip path; the
+					// evil bit (1/128, left enabled here on purpose)
+					// supplies exactly those.
+					char	ApplicationIdentifier[8] = { "NETSCAPE", "ANIMEXTS", "XMP Data", "ICCRGBG1", "GIFPLAY0", "MGK8BIM0", "MGKIPTC0" };
+					// dependencies: the looping extension is recognised
+					// only as NETSCAPE + 2.0, the metadata one only as
+					// XMP Data + XMP, the profile one only as
+					// ICCRGBG1 + 012.
+					local int app_ns = Strcmp(ApplicationIdentifier, "NETSCAPE");
+					local int app_ae = Strcmp(ApplicationIdentifier, "ANIMEXTS");
+					local int app_xmp = Strcmp(ApplicationIdentifier, "XMP Data");
+					local int app_icc = Strcmp(ApplicationIdentifier, "ICCRGBG1");
+					local int app_pair = 1;
+					if (app_ns == 0) { app_pair = 0; }
+					if (app_ae == 0) { app_pair = 0; }
+					if (app_pair == 0) {
+						char	ApplicationAuthenticationCode[3] = { "2.0" };
+					} else if (app_xmp == 0) {
+						char	ApplicationAuthenticationCode[3] = { "XMP" };
+					} else if (app_icc == 0) {
+						char	ApplicationAuthenticationCode[3] = { "012" };
+					} else {
+						char	ApplicationAuthenticationCode[3] = { "2.0", "XMP", "012", "1.0" };
+					}
+				} ApplicationSubBlock;
+				local int loop_ns = Strcmp(ApplicationSubBlock.ApplicationIdentifier, "NETSCAPE");
+				local int loop_ae = Strcmp(ApplicationSubBlock.ApplicationIdentifier, "ANIMEXTS");
+				local int is_loop = 1;
+				if (loop_ns == 0) { is_loop = 0; }
+				if (loop_ae == 0) { is_loop = 0; }
+				if (is_loop == 0) {
+					// alternate_payloads, APPLICATIONEXTENTION.ApplicationData:
+					// the NETSCAPE2.0 / ANIMEXTS1.0 loop record is a fixed
+					// three-byte sub-block - 0x01 then a little-endian loop
+					// count - and a decoder that finds anything else here
+					// ignores the extension and plays the animation once,
+					// skipping its loop-control code.
+					struct NETSCAPELOOPBLOCK {
+						local int evil_loop = SetEvilBit(false);
+						UBYTE	BlockSize = { 3 };
+						UBYTE	SubBlockID = { 1 };
+						SetEvilBit(evil_loop);
+						// Free: 0 means loop forever.
+						ushort	LoopCount;
+						UBYTE	BlockTerminator = { 0 };
+					} NetscapeLoopBlock;
+				} else {
+					// XMP packets, ICC profiles and unregistered
+					// identifiers: free bytes in a well-formed chain.
+					DATASUBBLOCKS ApplicationData(EXT_DATA_BUDGET - extBytes);
+				}
+			} ApplicationExtension;
+			extBytes += FTell() - blkStart;
+		} else {
+			SetBackColor( 0xFF8080 );
+			struct UNDEFINEDDATA {
+				// Tier A fixed_value 0x21.
+				local int evil_und = SetEvilBit(false);
+				UBYTE	ExtensionIntroducer = { 0x21 }; // 21
+				SetEvilBit(evil_und);
+				// Tier B pattern_constraint: any label but 0x01, 0xF9, 0xFE
+				// and 0xFF. This is the only route into a decoder's
+				// unknown-extension skip (dgif_lib.c DGifGetExtension with
+				// an ExtCode it does not know, then DGifGetExtensionNext
+				// walking the chain).
+				UBYTE	Label <values=undefined_labels>; // F9
+				DATASUBBLOCKS DataSubBlocks(EXT_DATA_BUDGET - extBytes);
+			} UndefinedData;
+			extBytes += FTell() - blkStart;
+		}
+		blockBytes += FTell() - blkStart;
+		// output_budget: spend the budget by stopping the block sequence,
+		// never by shrinking a block.
+		if (blockBytes >= BLOCK_BUDGET) {
+			intro_sel = intro_end;
+		} else if (need_graphic == true) {
+			intro_sel = intro_graphic;
+			ext_sel = ext_graphic;
+		} else if (is87 == 0) {
+			intro_sel = intro_image;
+			ext_sel = ext_any;
+		} else if (extBytes >= EXT_DATA_BUDGET) {
+			intro_sel = intro_image;
+			ext_sel = ext_any;
+		} else if (imageBytes >= IMAGE_DATA_BUDGET) {
+			intro_sel = intro_ext;
+			ext_sel = ext_any;
+		} else if (gceBytes >= GCE_BUDGET) {
+			intro_sel = intro_any;
+			ext_sel = ext_nogce;
+		} else {
+			intro_sel = intro_any;
+			ext_sel = ext_any;
+		}
+	}
+} Data;
+SetBackColor( 0xFFFFFF );
+// structure.last_element: the final byte is 0x3B and nothing follows it.
+struct TRAILER {
+	// Tier A fixed_value 0x3B.
+	local int evil_tr = SetEvilBit(false);
+	UBYTE GIFTrailer = { 0x3B };
+	SetEvilBit(evil_tr);
+} Trailer;

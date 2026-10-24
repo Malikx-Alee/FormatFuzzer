@@ -1,0 +1,3151 @@
+//------------------------------------------------
+//--- 010 Editor v3.0.3 Binary Template
+//
+//      File: PCAP.bt
+//   Authors: Didier Stevens
+//   Website: https://DidierStevens.com
+//   Version: 0.5 
+//   Purpose: Parse a PCAP network capture file.
+//  Category: Network
+// File Mask: *.pcap
+//  ID Bytes: D4 C3 B2 A1
+//   History:
+//   0.5   2019-12-24 Tony Saigut: fix L2 padding.
+//   0.4   2019-05-22 S Gorbov: support for VLAN header.
+//   0.3   2018-03-15 Banny: support raw data pcap file.
+//   0.2   2016-02-12 SweetScape Software: Updated header for repository submission.
+//   0.1   D Stevens: Initial release.
+//
+// References:
+//  http://wiki.wireshark.org/Development/LibpcapFileFormat
+//------------------------------------------------
+//
+// GENERATIVE REWRITE NOTES (FormatFuzzer, tiered constraints)
+//
+// Driven by llm_learned_specification/opus5-tiered/
+// llm_reterived_constraints_pcap-llm_opus5-tiered.json.  Three conventions are
+// used throughout:
+//
+//  1. SIZE FLOWS INWARDS, EXACTNESS IS STRUCTURAL.  PCAPRECORD.incl_len names
+//     the frame size (free, multi-scale set); every emitter below is handed an
+//     `avail` and consumes at most that many bytes; PCAPRECORD pads whatever is
+//     left over.  So incl_len equals the bytes emitted in the generate
+//     direction by construction, and in the parse direction it is the file's
+//     own value that drives every inner length - the same arithmetic the
+//     original does by subtraction.  No frame length, payload length, port,
+//     address or count is capped to control file size: the record loop stops
+//     adding records when the output budget runs out (output_budget rule).
+//
+//  2. TIER A fields are guarded with SetEvilBit(IsParsing()) rather than
+//     SetEvilBit(false): identical while generating (no pinned or computed
+//     field can take FormatFuzzer's 1/128 out-of-set value), but it leaves a
+//     real file's own value reachable while parsing.
+//
+//  3. ffcompile's grammar accepts no `= { ... }` on a bitfield and ignores
+//     <values=> there, so the two bitfield nibbles that are Tier A
+//     (Layer_3.version, Layer_3.ip_hdr_len, Layer_4.tcp_hdr_len) get their
+//     value sets from ffcompile's value miner, fed by the equality tests that
+//     double as this template's parser-side validation of those fields.
+//
+// MEASURED CORRECTION TO THE JSON (see the report): the constraints file marks
+// PCAPRECORD.orig_len and PCAPHEADER.snaplen Tier C "bounds nothing", measured
+// on whether the FILE still opens.  Against tcpdump 4.99.6 + libpcap 1.10.6,
+// which is what coverage is measured on, both bound the DISSECTION:
+// print.c:354 skips any record whose orig_len < incl_len ("[Invalid header:
+// len(7) < caplen(71)]") and sf-pcap.c:634 truncates every record to snaplen
+// bytes.  Both fields are still DECLARED BARE here; each is only repaired
+// afterwards, by the backpatch idiom, when the free value it drew would make
+// the record self-inconsistent (a capture length larger than the on-the-wire
+// length cannot happen on a real network).
+//------------------------------------------------
+
+// Clear ffcompile's auto-mined global lookahead values so the per-call-site
+// sets below win.
+const local UBYTE ReadUByteInitValues[0];
+
+// ---------------------------------------------------------------------------
+// Helpers.  Cap() is how a free size set is held inside the engine's 64 KB
+// file limit (MAX_FILE_SIZE): it clamps a wanted size to the room left, it
+// does not cap any field of the format.
+// ---------------------------------------------------------------------------
+uint32 Cap(uint32 want, uint32 room)
+{
+    if (want > room)
+        return room;
+    return want;
+}
+
+// Application codec selected by the port pair, exactly as a dissector's port
+// table does it (tcpdump IS_SRC_OR_DST_PORT, print-udp.c / print-tcp.c).  The
+// ports are free Tier C fields: this reads whichever values they took and
+// derives the payload from them - never the other way round.  Both arguments
+// are locals, so no value is mined back onto the port fields.
+uint16 AppCodec(uint16 sp, uint16 dp)
+{
+    if (sp == 53 || dp == 53)       return 1;   // DNS            print-domain.c
+    if (sp == 5353 || dp == 5353)   return 1;   // mDNS           print-domain.c
+    if (sp == 123 || dp == 123)     return 2;   // NTP            print-ntp.c
+    if (sp == 67 || dp == 67)       return 3;   // DHCP/BOOTP     print-bootp.c
+    if (sp == 68 || dp == 68)       return 3;   // DHCP/BOOTP     print-bootp.c
+    if (sp == 69 || dp == 69)       return 4;   // TFTP           print-tftp.c
+    if (sp == 161 || dp == 161)     return 5;   // SNMP           print-snmp.c
+    if (sp == 162 || dp == 162)     return 5;   // SNMP trap      print-snmp.c
+    if (sp == 514 || dp == 514)     return 6;   // Syslog         print-syslog.c
+    if (sp == 520 || dp == 520)     return 7;   // RIP            print-rip.c
+    if (sp == 179 || dp == 179)     return 8;   // BGP            print-bgp.c
+    if (sp == 80 || dp == 80)       return 9;   // HTTP           print-http.c
+    if (sp == 8080 || dp == 8080)   return 9;   // HTTP alt       print-http.c
+    if (sp == 25 || dp == 25)       return 10;  // SMTP           print-smtp.c
+    if (sp == 23 || dp == 23)       return 11;  // Telnet         print-telnet.c
+    if (sp == 3784 || dp == 3784)   return 12;  // BFD            print-bfd.c
+    if (sp == 4789 || dp == 4789)   return 13;  // VXLAN          print-vxlan.c
+    return 0;                                   // no registered dissector
+}
+
+// ---------------------------------------------------------------------------
+// Output budget (structure rule "cardinality" on PCAPRECORD).  The JSON asks
+// for ~4 MB of records; FormatFuzzer's MAX_FILE_SIZE is 65536 and its
+// MAX_RAND_SIZE 131072 (two decision bytes per generated payload byte), so the
+// engine-safe equivalent is used here.  The loop stops adding records when it
+// is spent - no length field is narrowed to reach it.
+// ---------------------------------------------------------------------------
+// EtherType sets (Tier B, constraints.Layer_2.L3type and Dot1q.L3type).  The
+// complete valid_values array of each, with preferred_value honoured as a
+// weighting (repeated entries) rather than as a filter.  Three values are
+// ADDED: 0xFEFE, which is how an OSI PDU rides Ethernet II and the only
+// EtherType that reaches print-isoclns.c, and two IEEE 802.3 lengths, because
+// a value of 1500 or below is not an EtherType at all but a length that routes
+// to print-llc.c - a different parser that the registered values never reach.
+local uint16 etype_values[] = {
+    0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800,
+    0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800,
+    0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800,
+    0x0800, 0x0800,                               // IPv4            ip_print
+    0x86dd, 0x86dd, 0x86dd, 0x86dd, 0x86dd,
+    0x86dd, 0x86dd, 0x86dd, 0x86dd, 0x86dd,       // IPv6            ip6_print
+    0x8100, 0x8100, 0x8100, 0x8100,
+    0x8100, 0x8100, 0x8100, 0x8100,               // VLAN            vlan_print
+    0x0806, 0x0806, 0x0806, 0x0806, 0x0806, 0x0806,
+    0x8035,                                       // ARP / RARP      arp_print
+    0x0842, 0x22f0, 0x22f3, 0x22ea,               // WoL / AVTP / TRILL / SRP
+    0x6002, 0x6003,                               // DEC MOP / DECnet
+    0x809b, 0x80f3,                               // AppleTalk / AARP
+    0x8102, 0x8103, 0x8137, 0x8204,               // SLPP / VLACP / IPX / QNX
+    0x8808, 0x8809, 0x8819,                       // MPCP / Slow / CobraNet
+    0x8847, 0x8848,                               // MPLS unicast / multicast
+    0x8863, 0x8864,                               // PPPoE discovery / session
+    0x887b, 0x888e, 0x8892, 0x889a,               // HomePlug / EAPOL / PROFINET
+    0x88a2, 0x88a4, 0x88a8, 0x88ab,               // AoE / EtherCAT / S-VLAN
+    0x88b8, 0x88b9, 0x88ba,                       // GOOSE / GSE / SV
+    0x88cc, 0x88cd, 0x88e1, 0x88e3,               // LLDP / SERCOS / MRP
+    0x88e5, 0x88e7, 0x88f7, 0x88f8,               // MACsec / PBB / PTP / NC-SI
+    0x88fb, 0x8902, 0x8906, 0x8914,               // PRP / CFM / FCoE / FIP
+    0x8915, 0x891d, 0x892f, 0x893a,               // RoCE / TTE / HSR / 1905.1
+    0x9000, 0x9100, 0xf1c1,                       // ECTP / Q-in-Q / TSN-CB
+    0xfefe, 0xfefe,                               // ADDED: OSI   isoclns_print
+    0x05dc, 0x0040                                // ADDED: 802.3 lengths -> LLC
+};
+local uint16 vlan_etype_values[] = {
+    0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800, 0x0800,
+    0x86dd, 0x86dd, 0x86dd, 0x86dd,               // the tagged payload types
+    0x0806, 0x8100, 0x8847, 0x8848,
+    0x8863, 0x8864, 0x888e, 0x88a8, 0x88cc, 0x9100
+};
+local uint32 len_before_l3 = 0;     // original PCAPRECORD local, now shared
+// Which byte order the magic number declares for every later container field.
+// The original's unconditional LittleEndian() made two of the four legal
+// magics unexpressible; honouring them is what reaches libpcap's p->swapped
+// paths (sf-pcap.c's SWAPLONG of every record header field).
+local uint32 file_swapped = 0;
+local uint32 rec_budget = 0;        // bytes emitted in the record region
+local uint32 max_incl   = 0;        // largest incl_len written (snaplen repair)
+local int64  pos_snaplen = 0;       // where snaplen sits in the file header
+
+// ---------------------------------------------------------------------------
+// PCAPHEADER - structure rule "first_element": 24 fixed bytes, always first.
+// ---------------------------------------------------------------------------
+typedef struct {
+        // Tier A fixed_value, plus the one alternate_legal_values entry that is
+        // expressible while line "LittleEndian()" below stands: 0xA1B23C4D is
+        // the nanosecond variant and reaches libpcap's SCALE_DOWN timestamp
+        // path (sf-pcap.c), which the microsecond magic never does.  The two
+        // byte-swapped magics would need every later field big-endian.
+        // Tier A fixed_value, with all four alternate_legal_values emitted.
+        // 0xA1B23C4D is the nanosecond variant and reaches libpcap's
+        // SCALE_DOWN timestamp path; 0xD4C3B2A1 and 0x4D3CB2A1 are the
+        // byte-swapped forms, which declare that every later container field
+        // is the other way round - so the endianness below follows the magic
+        // rather than being fixed, which is what makes them expressible at all.
+        local uint32 magic_values[] = { 0xA1B2C3D4, 0xA1B2C3D4, 0xA1B2C3D4,
+                                        0xA1B23C4D, 0xD4C3B2A1, 0x4D3CB2A1 };
+        local int evil_magic = SetEvilBit(IsParsing());
+        uint32 magic_number <format=hex,values=magic_values>;   /* magic number */
+        SetEvilBit(evil_magic);
+        file_swapped = 0;
+        if (magic_number == 0xD4C3B2A1 || magic_number == 0x4D3CB2A1) {
+            file_swapped = 1;
+            BigEndian();
+        }
+        // Guard relaxed from the original's single value to the four the format
+        // defines; still refuses anything else, as every reader does.
+        if(magic_number != 0xA1B2C3D4 && magic_number != 0xA1B23C4D &&
+           magic_number != 0xD4C3B2A1 && magic_number != 0x4D3CB2A1) {
+            Warning("Not a valid PCAP file");
+            return 1;
+        }
+        // Tier A fixed_value: 2 is the only major version libpcap accepts.
+        local uint16 vmaj_values[] = { 2 };
+        local int evil_vmaj = SetEvilBit(IsParsing());
+        uint16 version_major <values=vmaj_values>;  /* major version number */
+        SetEvilBit(evil_vmaj);
+        // Tier A enumerated_values, complete set (dependency 16: major 2 admits
+        // minor 0..4).  Minor 3 additionally selects libpcap's MAYBE_SWAPPED
+        // caplen/len heuristic (sf-pcap.c:591), which minor 4 never reaches.
+        local uint16 vmin_values[] = { 4, 0, 1, 2, 3 };
+        local int evil_vmin = SetEvilBit(IsParsing());
+        uint16 version_minor <values=vmin_values>;  /* minor version number */
+        SetEvilBit(evil_vmin);
+        int32  thiszone;       /* GMT to local correction */
+        uint32 sigfigs;        /* accuracy of timestamps */
+        pos_snaplen = FTell();
+        uint32 snaplen;        /* max length of captured packets, in octets */
+        // Tier B enumerated_values: the whole registered LINKTYPE set, one
+        // 32-bit field that selects an entire printer chain.  preferred_value
+        // is honoured as a weighting (repeated entries), not as a filter: every
+        // registered value is still emitted, and an unregistered one is still
+        // reachable through the 1/128 evil value, which is what reaches
+        // libpcap's and tcpdump's unknown-link-type refusal.
+        local uint32 net_values[] = {
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1,            // LINKTYPE_ETHERNET      ether_if_print
+            101, 101, 101, 101,                      // LINKTYPE_RAW           raw_if_print
+            113, 113, 113, 113,                      // LINKTYPE_LINUX_SLL     sll_if_print
+            0, 0, 0, 0,                              // LINKTYPE_NULL          null_if_print
+            9, 9, 9, 9,                              // LINKTYPE_PPP           ppp_if_print
+            105, 105, 105, 105,                      // LINKTYPE_IEEE802_11    ieee802_11_if_print
+            127, 127, 127, 127,                      // LINKTYPE_IEEE802_11_RADIOTAP
+            228, 228, 228, 228,                      // LINKTYPE_IPV4          raw_if_print
+            276, 276, 276, 276,                      // LINKTYPE_LINUX_SLL2    sll2_if_print
+            3,                                       // LINKTYPE_AX25
+            6,                                       // LINKTYPE_IEEE802_5     token_if_print
+            7,                                       // LINKTYPE_ARCNET_BSD    arcnet_if_print
+            8,                                       // LINKTYPE_SLIP          sl_if_print
+            10,                                      // LINKTYPE_FDDI          fddi_if_print
+            32,                                      // LINKTYPE_REDBACK_SMARTEDGE
+            50,                                      // LINKTYPE_PPP_HDLC      ppp_hdlc_if_print
+            51,                                      // LINKTYPE_PPP_ETHER     pppoe_if_print
+            99,                                      // LINKTYPE_SYMANTEC      symantec_if_print
+            100,                                     // LINKTYPE_ATM_RFC1483   atm_if_print
+            104,                                     // LINKTYPE_C_HDLC        chdlc_if_print
+            106,                                     // LINKTYPE_ATM_CLIP      cip_if_print
+            107,                                     // LINKTYPE_FRELAY        fr_if_print
+            108,                                     // LINKTYPE_LOOP          null_if_print
+            114,                                     // LINKTYPE_LTALK         ltalk_if_print
+            117,                                     // LINKTYPE_PFLOG         pflog_if_print
+            119,                                     // LINKTYPE_PRISM         prism_if_print
+            122,                                     // LINKTYPE_IP_OVER_FC    ipfc_if_print
+            123,                                     // LINKTYPE_SUNATM        sunatm_if_print
+            129,                                     // LINKTYPE_ARCNET_LINUX  arcnet_linux_if_print
+            138,                                     // LINKTYPE_APPLE_IP_OVER_IEEE1394 ap1394_if_print
+            139, 140, 141, 142,                      // MTP2_WITH_PHDR/MTP2/MTP3/SCCP
+            143,                                     // LINKTYPE_DOCSIS
+            144,                                     // LINKTYPE_LINUX_IRDA
+            147, 162,                                // LINKTYPE_USER0 / USER15
+            163,                                     // LINKTYPE_IEEE802_11_AVS ieee802_11_radio_avs_if_print
+            165,                                     // LINKTYPE_BACNET_MS_TP
+            166,                                     // LINKTYPE_PPP_PPPD      ppp_if_print
+            169, 170, 171,                           // GPRS_LLC / GPF_T / GPF_F
+            177,                                     // LINKTYPE_LINUX_LAPD
+            178, 179, 181,                           // ADDED: LINKTYPE_JUNIPER_*
+            187,                                     // LINKTYPE_BLUETOOTH_HCI_H4
+            189,                                     // LINKTYPE_USB_LINUX     usb_linux_48_byte_if_print
+            192,                                     // LINKTYPE_PPI           ppi_if_print
+            195,                                     // LINKTYPE_IEEE802_15_4_WITHFCS ieee802_15_4_if_print
+            196, 197,                                // SITA / ERF
+            201,                                     // LINKTYPE_BLUETOOTH_HCI_H4_WITH_PHDR bt_if_print
+            202,                                     // LINKTYPE_AX25_KISS
+            203, 204, 205, 206,                      // LAPD / PPP_WITH_DIR / C_HDLC_WITH_DIR / FRELAY_WITH_DIR
+            209,                                     // LINKTYPE_IPMB_LINUX
+            215,                                     // LINKTYPE_IEEE802_15_4_NONASK_PHY
+            220,                                     // LINKTYPE_USB_LINUX_MMAPPED usb_linux_64_byte_if_print
+            224, 225,                                // FC_2 / FC_2_WITH_FRAME_DELIMS
+            226,                                     // LINKTYPE_IPNET         ipnet_if_print
+            227,                                     // LINKTYPE_CAN_SOCKETCAN
+            229,                                     // LINKTYPE_IPV6          raw_if_print
+            230,                                     // LINKTYPE_IEEE802_15_4_NOFCS ieee802_15_4_if_print
+            231,                                     // LINKTYPE_DBUS
+            235, 236, 237,                           // DVB_CI / MUX27010 / STANAG_5066_D_PDU
+            239,                                     // LINKTYPE_NFLOG         nflog_if_print
+            240,                                     // LINKTYPE_NETANALYZER   netanalyzer_if_print
+            241,                                     // LINKTYPE_NETANALYZER_TRANSPARENT
+            242,                                     // LINKTYPE_IPOIB         ipoib_if_print
+            243,                                     // LINKTYPE_MPEG_2_TS
+            244, 245,                                // NG40 / NFC_LLCP
+            247,                                     // LINKTYPE_INFINIBAND
+            248,                                     // LINKTYPE_SCTP
+            249,                                     // LINKTYPE_USBPCAP
+            250,                                     // LINKTYPE_RTAC_SERIAL
+            251,                                     // LINKTYPE_BLUETOOTH_LE_LL
+            253,                                     // LINKTYPE_NETLINK
+            254,                                     // LINKTYPE_BLUETOOTH_LINUX_MONITOR
+            255,                                     // LINKTYPE_BLUETOOTH_BREDR_BB
+            256,                                     // LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR
+            257,                                     // LINKTYPE_PROFIBUS_DL
+            258,                                     // LINKTYPE_PKTAP         pktap_if_print
+            259,                                     // LINKTYPE_EPON
+            260,                                     // LINKTYPE_IPMI_HPM_2
+            261, 262,                                // ZWAVE_R1_R2 / ZWAVE_R3
+            263,                                     // LINKTYPE_WATTSTOPPER_DLM
+            264,                                     // LINKTYPE_ISO_14443
+            265,                                     // LINKTYPE_RDS
+            266,                                     // LINKTYPE_USB_DARWIN
+            268,                                     // LINKTYPE_SDLC
+            270,                                     // LINKTYPE_LORATAP
+            271,                                     // LINKTYPE_VSOCK         vsock_if_print
+            272,                                     // LINKTYPE_NORDIC_BLE
+            273,                                     // LINKTYPE_DOCSIS31_XRA31
+            274,                                     // LINKTYPE_ETHERNET_MPACKET
+            275                                      // LINKTYPE_DISPLAYPORT_AUX
+        };
+        uint32 network <values=net_values>;        /* data link type */
+} PCAPHEADER;
+
+typedef struct 
+{
+    uchar Byte[6];
+} MACaddr<read=MACname>;
+
+typedef struct 
+{
+        MACaddr DstMac<name="Destination MAC">;
+        MACaddr SrcMac<name="Source MAC">;
+        uint16 L3type<name="Layer 3 Protocol",values=etype_values>;
+} Layer_2 <size=14>;
+
+typedef struct 
+{
+        // Tier B: all eight 802.1p traffic classes and both DEI states.  Both
+        // are bitfields, so their sets come from ffcompile's value miner, fed
+        // by the tests at the end of this struct.
+        uint16 priority:3;
+        uint16 dei:1;
+        uint16 id:12<name="Vlan Id">;
+        uint16 L3type<name="Layer 3 Protocol",values=vlan_etype_values>;
+        if (priority != 0 && priority != 1 && priority != 2 && priority != 3 &&
+            priority != 4 && priority != 5 && priority != 6 && priority != 7)
+            Warning("Impossible 802.1p priority");
+        if (dei != 0 && dei != 1)
+            Warning("Impossible DEI bit");
+} Dot1q <size=4>;
+
+typedef struct 
+{
+    uchar Byte[4];
+} IPv4addr<read=IPv4addrName>;
+
+string IPv4addrName(IPv4addr &IP)
+{
+    string strReturn;
+    SPrintf(strReturn,"%d.%d.%d.%d",IP.Byte[0],IP.Byte[1],IP.Byte[2],IP.Byte[3]);
+    return strReturn;
+}
+
+// ADDED: the 128-bit address of an IPv6 header.  Free for exactly the reasons
+// IPv4addr.Byte is (diversity axis "IPv4addr.Byte"): ::, ::1, fe80::/10,
+// ff00::/8 and the global range are each classified differently before any
+// transport dissection runs.
+typedef struct
+{
+    uchar Byte[16];
+} IPv6addr;
+
+// ===========================================================================
+// payload_wellformedness: the application layer.  Which codec applies is
+// decided by the PORT PAIR (AppCodec above) and the LENGTH by the transport
+// header, exactly as constraints.PCAPRECORD.AppData requires: "the port
+// selects the codec and the header fields set the length, so the payload is
+// computed from both".  Nothing below constrains a port or a length.
+// ===========================================================================
+
+// RFC 1035 message -> print-domain.c domain_print() (UDP/TCP 53, mDNS 5353).
+// VERIFIED against tcpdump 4.99.6: dissects as "4660+ A? example.com. (29)".
+typedef struct (uint32 plen)
+{
+    local uint32 dns_qd = 0;
+    local uint32 dns_ar = 0;
+    if (plen >= 29)
+        dns_qd = 1;
+    if (plen >= 40)
+        dns_ar = 1;                     // room for an EDNS0 OPT RR as well
+    local int evil_dns = SetEvilBit(IsParsing());
+    uint16 dns_id;                                      // transaction id, free
+    uint16 dns_flags = { 0x0100, 0x0000, 0x8180, 0x8183, 0x8182, 0x0120,
+                         0x2800, 0x8400, 0x0400, 0x8580, 0x9080 };
+    uint16 dns_qdcount = { (uint16)dns_qd };
+    uint16 dns_ancount = { 0 };
+    uint16 dns_nscount = { 0 };
+    uint16 dns_arcount = { (uint16)dns_ar };
+    if (dns_qd > 0) {
+        ubyte dns_l1 = { 7 };
+        uchar dns_lab1[7] = { "example", "testdom", "abcdefg" };
+        ubyte dns_l2 = { 3 };
+        uchar dns_lab2[3] = { "com", "net", "org" };
+        ubyte dns_root = { 0 };
+        uint16 dns_qtype = { 1, 2, 5, 6, 12, 15, 16, 28, 33, 35, 41, 43, 46,
+                             48, 52, 65, 99, 250, 251, 252, 255 };
+        uint16 dns_qclass = { 1, 3, 4, 254, 255 };
+    }
+    if (dns_ar > 0) {
+        // EDNS0 pseudo-RR: root name, type OPT, "class" = UDP payload size.
+        ubyte dns_oroot = { 0 };
+        uint16 dns_otype = { 41 };
+        uint16 dns_osize = { 512, 1232, 4096 };
+        uint32 dns_ottl;                                // extended rcode/flags
+        uint16 dns_ordlen = { 0 };
+    }
+    SetEvilBit(evil_dns);
+} DNS_MSG;
+
+// RFC 5905 fixed 48-byte header -> print-ntp.c ntp_print() (UDP 123).
+typedef struct
+{
+    local int evil_ntp = SetEvilBit(IsParsing());
+    ubyte ntp_li_vn_mode = { 0x1b, 0x1c, 0x23, 0x24, 0xe3, 0xdb, 0x25, 0x1e,
+                             0x0b, 0x0c, 0x16 };        // LI/VN/mode 1..6
+    SetEvilBit(evil_ntp);
+    ubyte ntp_stratum = { 0, 1, 2, 3, 4, 15, 16, 17 };
+    ubyte ntp_poll;
+    ubyte ntp_precision;
+    uint32 ntp_rootdelay;
+    uint32 ntp_rootdisp;
+    uint32 ntp_refid;
+    uint64 ntp_reftime;
+    uint64 ntp_origtime;
+    uint64 ntp_rxtime;
+    uint64 ntp_txtime;
+} NTP_MSG;
+
+// RFC 2131 -> print-bootp.c bootp_print() (UDP 67/68).
+typedef struct (uint32 plen)
+{
+    local int evil_bp = SetEvilBit(IsParsing());
+    ubyte bp_op = { 1, 2 };
+    ubyte bp_htype = { 1, 6, 7, 11, 15, 16 };
+    ubyte bp_hlen = { 6 };
+    SetEvilBit(evil_bp);
+    ubyte bp_hops;
+    uint32 bp_xid;
+    uint16 bp_secs;
+    uint16 bp_flags = { 0x0000, 0x8000 };
+    IPv4addr bp_ciaddr;
+    IPv4addr bp_yiaddr;
+    IPv4addr bp_siaddr;
+    IPv4addr bp_giaddr;
+    uchar bp_chaddr[16];
+    uchar bp_sname[64];
+    uchar bp_file[128];
+    local int evil_bc = SetEvilBit(IsParsing());
+    uint32 bp_cookie = { 0x63825363 };                  // the DHCP magic cookie
+    SetEvilBit(evil_bc);
+    // TLV option list, terminated by option 255 (bootp_print's option loop)
+    local uint32 bp_left = plen - 240;
+    if (bp_left >= 3) {
+        ubyte bp_o53 = { 53 };
+        ubyte bp_o53len = { 1 };
+        ubyte bp_msgtype = { 1, 2, 3, 4, 5, 6, 7, 8 };
+        bp_left -= 3;
+    }
+    if (bp_left >= 6) {
+        ubyte bp_o55 = { 55 };
+        ubyte bp_o55len = { 4 };
+        uchar bp_prl[4] = { "\x01\x03\x06\x0f", "\x01\x1c\x02\x03" };
+        bp_left -= 6;
+    }
+    if (bp_left >= 1) {
+        ubyte bp_end = { 255 };
+        bp_left -= 1;
+    }
+} BOOTP_MSG;
+
+// RFC 1350 -> print-tftp.c tftp_print() (UDP 69).
+typedef struct (uint32 plen)
+{
+    local int evil_tf = SetEvilBit(IsParsing());
+    uint16 tftp_opcode = { 1, 2, 3, 4, 5, 6 };
+    SetEvilBit(evil_tf);
+    if (tftp_opcode < 3 && plen >= 16) {
+        uchar tftp_name[8] = { "file.txt", "boot.cfg" };
+        ubyte tftp_nul = { 0 };
+        uchar tftp_mode[5] = { "octet" };
+        ubyte tftp_nul2 = { 0 };
+    }
+} TFTP_MSG;
+
+// SNMPv1/v2c GetRequest, BER encoded -> print-snmp.c snmp_print() (UDP 161/162).
+// 40 bytes: SEQUENCE { version, community, PDU { reqid, err, erridx,
+// varbindlist { varbind { OID, NULL } } } }, with every length byte exact.
+typedef struct
+{
+    local int evil_sn = SetEvilBit(IsParsing());
+    ubyte snmp_seq = { 0x30 };
+    ubyte snmp_seqlen = { 0x26 };
+    ubyte snmp_vert = { 0x02 };
+    ubyte snmp_verl = { 0x01 };
+    ubyte snmp_ver = { 0x00, 0x01, 0x03 };
+    ubyte snmp_commt = { 0x04 };
+    ubyte snmp_comml = { 0x06 };
+    uchar snmp_comm[6] = { "public", "secret" };
+    ubyte snmp_pdu = { 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8 };
+    ubyte snmp_pdulen = { 0x19 };
+    ubyte snmp_ridt = { 0x02 };
+    ubyte snmp_ridl = { 0x04 };
+    SetEvilBit(evil_sn);
+    uint32 snmp_rid;
+    local int evil_s2 = SetEvilBit(IsParsing());
+    ubyte snmp_est = { 0x02 };
+    ubyte snmp_esl = { 0x01 };
+    ubyte snmp_es = { 0x00, 0x01, 0x02, 0x05 };
+    ubyte snmp_eit = { 0x02 };
+    ubyte snmp_eil = { 0x01 };
+    ubyte snmp_ei = { 0x00 };
+    ubyte snmp_vbl = { 0x30 };
+    ubyte snmp_vbll = { 0x0b };
+    ubyte snmp_vb = { 0x30 };
+    ubyte snmp_vbln = { 0x09 };
+    ubyte snmp_oidt = { 0x06 };
+    ubyte snmp_oidl = { 0x05 };
+    uchar snmp_oid[5] = { "\x2b\x06\x01\x02\x01", "\x2b\x06\x01\x04\x01" };
+    ubyte snmp_nullt = { 0x05 };
+    ubyte snmp_nulll = { 0x00 };
+    SetEvilBit(evil_s2);
+} SNMP_MSG;
+
+// RFC 5424 -> print-syslog.c syslog_print() (UDP 514).
+typedef struct
+{
+    local int evil_sl = SetEvilBit(IsParsing());
+    uchar sl_open[1] = { "<" };
+    uchar sl_pri[2] = { "34", "13", "86", "99", "165" };
+    uchar sl_close[1] = { ">" };
+    SetEvilBit(evil_sl);
+} SYSLOG_MSG;
+
+// RFC 2453 -> print-rip.c rip_print() (UDP 520).
+typedef struct (uint32 plen)
+{
+    local int evil_rp = SetEvilBit(IsParsing());
+    ubyte rip_cmd = { 1, 2, 5, 6, 9, 10, 11 };
+    ubyte rip_ver = { 1, 2 };
+    SetEvilBit(evil_rp);
+    uint16 rip_resv = { 0 };
+    local uint32 rip_n = (plen - 4) / 20;
+    local uint32 rip_i = 0;
+    while (rip_i < rip_n) {
+        uint16 rip_family = { 2, 0, 0xFFFF };           // 0xFFFF = authentication
+        uint16 rip_tag;
+        IPv4addr rip_addr;
+        IPv4addr rip_mask;
+        IPv4addr rip_nexthop;
+        uint32 rip_metric = { 1, 2, 5, 16 };
+        rip_i += 1;
+    }
+} RIP_MSG;
+
+// RFC 4271 -> print-bgp.c bgp_print() (TCP 179).  One message spanning the
+// whole segment payload: 16-byte marker, length, type, type-specific body.
+typedef struct (uint32 plen)
+{
+    local int evil_bg = SetEvilBit(IsParsing());
+    uchar bgp_marker[16] = { "\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" };
+    uint16 bgp_len = { (uint16)plen };
+    ubyte bgp_type = { 1, 2, 3, 4, 5 };
+    SetEvilBit(evil_bg);
+    if (bgp_type == 1 && plen >= 29) {
+        local int evil_bo = SetEvilBit(IsParsing());
+        ubyte bgp_version = { 4 };
+        SetEvilBit(evil_bo);
+        uint16 bgp_myas;
+        uint16 bgp_holdtime;
+        IPv4addr bgp_id;
+        local int evil_bl = SetEvilBit(IsParsing());
+        ubyte bgp_optlen = { (ubyte)Cap(plen - 29, 255) };
+        SetEvilBit(evil_bl);
+    }
+    if (bgp_type == 2 && plen >= 23) {
+        local int evil_bu = SetEvilBit(IsParsing());
+        uint16 bgp_withdrawn_len = { 0 };
+        uint16 bgp_attr_len = { 0 };
+        SetEvilBit(evil_bu);
+    }
+    if (bgp_type == 3 && plen >= 21) {
+        ubyte bgp_errcode = { 1, 2, 3, 4, 5, 6 };
+        ubyte bgp_errsub = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    }
+} BGP_MSG;
+
+// RFC 9110 request -> print-http.c http_print() (TCP 80/8080).
+// VERIFIED against tcpdump 4.99.6: prints "HTTP: GET / HTTP/1.1".
+typedef struct
+{
+    local int evil_ht = SetEvilBit(IsParsing());
+    uchar http_req[16] = { "GET / HTTP/1.1\r\n", "HEAD / HTTP/1.0\n",
+                           "POST /a HTTP/1.1" };
+    uchar http_host[13] = { "Host: x.com\r\n" };
+    uchar http_end[2] = { "\r\n" };
+    SetEvilBit(evil_ht);
+} HTTP_MSG;
+
+// -> print-smtp.c smtp_print() (TCP 25): a CRLF-terminated command line.
+typedef struct
+{
+    local int evil_sm = SetEvilBit(IsParsing());
+    uchar smtp_cmd[18] = { "EHLO example.com\r\n", "MAIL FROM:<a@b>\r\n\n" };
+    SetEvilBit(evil_sm);
+} SMTP_MSG;
+
+// RFC 854 -> print-telnet.c telnet_print() (TCP 23): IAC option negotiation.
+typedef struct
+{
+    local int evil_tl = SetEvilBit(IsParsing());
+    ubyte tn_iac = { 0xFF };
+    ubyte tn_cmd = { 0xFB, 0xFC, 0xFD, 0xFE, 0xFA, 0xF0, 0xF1, 0xF9 };
+    SetEvilBit(evil_tl);
+    ubyte tn_opt = { 0x00, 0x01, 0x03, 0x18, 0x1F, 0x20, 0x21, 0x22, 0x24, 0x27 };
+} TELNET_MSG;
+
+// RFC 5880 fixed 24-byte control packet -> print-bfd.c bfd_print() (UDP 3784).
+typedef struct
+{
+    local int evil_bf = SetEvilBit(IsParsing());
+    ubyte bfd_vers_diag = { 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27 };
+    ubyte bfd_flags = { 0xc0, 0x40, 0x80, 0x00, 0xc8, 0x44 };
+    ubyte bfd_detectmult = { 1, 3, 5 };
+    ubyte bfd_length = { 24 };
+    SetEvilBit(evil_bf);
+    uint32 bfd_mydisc;
+    uint32 bfd_yourdisc;
+    uint32 bfd_desmin;
+    uint32 bfd_reqmin;
+    uint32 bfd_echomin;
+} BFD_MSG;
+
+// RFC 7348 8-byte header -> print-vxlan.c vxlan_print() (UDP 4789).
+typedef struct
+{
+    local int evil_vx = SetEvilBit(IsParsing());
+    ubyte vx_flags = { 0x08 };
+    SetEvilBit(evil_vx);
+    ubyte vx_resv[3];
+    ubyte vx_vni[3];
+    ubyte vx_resv2;
+} VXLAN_MSG;
+
+// The application payload itself.  Structured prefix per codec, then the
+// original's AppData array for whatever is left - which for a port with no
+// registered dissector (codec 0) is the entire payload, free bytes as the
+// JSON's content_is_free says.
+typedef struct (uint16 codec, uint32 plen)
+{
+    local int64 app_start = FTell();
+    switch (codec) {
+        case 1:
+            if (plen >= 29) { DNS_MSG dns(plen); }
+            break;
+        case 2:
+            if (plen >= 48) { NTP_MSG ntp; }
+            break;
+        case 3:
+            if (plen >= 241) { BOOTP_MSG bootp(plen); }
+            break;
+        case 4:
+            if (plen >= 2) { TFTP_MSG tftp(plen); }
+            break;
+        case 5:
+            if (plen >= 40) { SNMP_MSG snmp; }
+            break;
+        case 6:
+            if (plen >= 8) { SYSLOG_MSG syslog; }
+            break;
+        case 7:
+            if (plen >= 4) { RIP_MSG rip(plen); }
+            break;
+        case 8:
+            if (plen >= 19) { BGP_MSG bgp(plen); }
+            break;
+        case 9:
+            if (plen >= 31) { HTTP_MSG http; }
+            break;
+        case 10:
+            if (plen >= 18) { SMTP_MSG smtp; }
+            break;
+        case 11:
+            if (plen >= 3) { TELNET_MSG telnet; }
+            break;
+        case 12:
+            if (plen >= 24) { BFD_MSG bfd; }
+            break;
+        case 13:
+            if (plen >= 8) { VXLAN_MSG vxlan; }
+            break;
+        default:
+            break;
+    }
+    local uint32 app_used = FTell() - app_start;
+    if (app_used < plen) {
+        BYTE AppData[plen - app_used]<name="Application Data">;
+    }
+} APPDATA;
+
+// ===========================================================================
+// Transport-header emitters.  Everything here is sized from a length field
+// that was already written (dependencies 12, 13 and 14), so the byte count is
+// exact in both directions.
+// ===========================================================================
+
+// IPv4 option list -> print-ip.c ip_optprint().  Its LENGTH comes from
+// ip_hdr_len (the option-carrying values 6..15 of that nibble are what open
+// this parser at all); the list is filled to match, never the reverse.
+typedef struct (uint32 n)
+{
+    local uint32 opt_left = n;
+    if (opt_left >= 4) {
+        local int evil_o1 = SetEvilBit(IsParsing());
+        ubyte opt_kind = { 148, 7, 68, 130, 131, 137, 136, 25 };
+        ubyte opt_len = { 4 };
+        SetEvilBit(evil_o1);
+        uint16 opt_data;
+        opt_left -= 4;
+    }
+    while (opt_left > 0) {
+        ubyte opt_pad = { 1, 1, 1, 0 };          // NOP, and occasionally EOL
+        opt_left -= 1;
+    }
+} IPV4OPTS;
+
+// TCP option list -> print-tcp.c's option loop.  Sized from tcp_hdr_len
+// (dependency 14: "the TCP option list length is derived from the data offset,
+// never the reverse").
+typedef struct (uint32 n)
+{
+    local uint32 to_left = n;
+    if (to_left >= 4) {
+        local int evil_t1 = SetEvilBit(IsParsing());
+        ubyte to_mss_kind = { 2 };
+        ubyte to_mss_len = { 4 };
+        SetEvilBit(evil_t1);
+        uint16 to_mss;                            // MSS value, free
+        to_left -= 4;
+    }
+    if (to_left >= 3) {
+        local int evil_t2 = SetEvilBit(IsParsing());
+        ubyte to_ws_kind = { 3 };
+        ubyte to_ws_len = { 3 };
+        SetEvilBit(evil_t2);
+        ubyte to_ws_shift;                        // window scale, free
+        to_left -= 3;
+    }
+    if (to_left >= 2) {
+        local int evil_t3 = SetEvilBit(IsParsing());
+        ubyte to_sackok_kind = { 4 };
+        ubyte to_sackok_len = { 2 };
+        SetEvilBit(evil_t3);
+        to_left -= 2;
+    }
+    if (to_left >= 10) {
+        local int evil_t4 = SetEvilBit(IsParsing());
+        ubyte to_ts_kind = { 8 };
+        ubyte to_ts_len = { 10 };
+        SetEvilBit(evil_t4);
+        uint32 to_tsval;
+        uint32 to_tsecr;
+        to_left -= 10;
+    }
+    if (to_left >= 10) {
+        local int evil_t5 = SetEvilBit(IsParsing());
+        ubyte to_sack_kind = { 5 };
+        ubyte to_sack_len = { 10 };
+        SetEvilBit(evil_t5);
+        uint32 to_sack_left;
+        uint32 to_sack_right;
+        to_left -= 10;
+    }
+    while (to_left > 0) {
+        ubyte to_pad = { 1, 1, 1, 0 };            // NOP, and occasionally EOL
+        to_left -= 1;
+    }
+} TCPOPTS;
+
+// Layer_4.Crap: Tier A payload_wellformedness.  Despite the original's name
+// this is the rest of the TCP header - flags, window, checksum, urgent
+// pointer and options.  PIN THE ENVELOPE, FREE THE CONTENTS: the layout is
+// fixed, the flags byte stays free across all 256 combinations and the window,
+// checksum and urgent pointer are free 16-bit numbers inside it.
+typedef struct (uint32 n)
+{
+    ubyte tcp_flags;                              // Tier C within the envelope
+    uint16 tcp_window;
+    uint16 tcp_cksum;                             // 0 means "not computed"
+    uint16 tcp_urgptr;
+    if (n > 7) {
+        TCPOPTS tcp_options(n - 7);
+    }
+} TCPTAIL;
+
+// A nested IPv4 datagram with an opaque transport, for the tunnelling
+// protocols (IPPROTO_IPV4, GRE, IPComp) -> a second pass through print-ip.c
+// ip_print() and print-ip-demux.c ip_demux_print().
+typedef struct (uint32 avail)
+{
+    local int evil_i4 = SetEvilBit(IsParsing());
+    uchar in4_ver_ihl[1] = { "\x45" };
+    SetEvilBit(evil_i4);
+    ubyte in4_tos;
+    local int evil_i4l = SetEvilBit(IsParsing());
+    uint16 in4_total_length = { (uint16)avail };
+    SetEvilBit(evil_i4l);
+    uint16 in4_id;
+    uint16 in4_flags = { 0, 0, 0x4000, 0x2000 };
+    ubyte in4_ttl;
+    ubyte in4_proto = { 6, 17, 1, 2, 47, 50, 89, 103, 132 };
+    uint16 in4_cksum;
+    IPv4addr in4_src;
+    IPv4addr in4_dst;
+    if (avail > 20) {
+        BYTE in4_payload[avail - 20];
+    }
+} IPV4_MIN;
+
+// A nested IPv6 datagram with an opaque payload, for IPPROTO_IPV6 tunnelling
+// and the raw IPv6 link types -> print-ip6.c ip6_print().
+typedef struct (uint32 avail)
+{
+    local int evil_i6 = SetEvilBit(IsParsing());
+    uchar in6_ver_tc[1] = { "\x60", "\x6e" };
+    SetEvilBit(evil_i6);
+    ubyte in6_flow[3];
+    local int evil_i6l = SetEvilBit(IsParsing());
+    uint16 in6_plen = { (uint16)(avail - 40) };
+    SetEvilBit(evil_i6l);
+    ubyte in6_nxt = { 6, 17, 58, 0, 43, 44, 50, 51, 59, 60, 89, 132, 135, 136 };
+    ubyte in6_hlim;
+    IPv6addr in6_src;
+    IPv6addr in6_dst;
+    if (avail > 40) {
+        BYTE in6_payload[avail - 40];
+    }
+} IPV6_MIN;
+
+// An RSVP object list -> the class switch in rsvp_obj_print().  Each object
+// is a 4-byte header (length, class, c-type) and a body whose length the
+// header declares, so the lengths below are exact.
+typedef struct (uint32 n)
+{
+    local uint32 ro_left = n;
+    if (ro_left >= 12)
+    {
+        local int evil_r1 = SetEvilBit(IsParsing());
+        uint16 ro1_len = { 12 };
+        ubyte  ro1_class = { 1 };                 // SESSION
+        ubyte  ro1_ctype = { 1 };
+        SetEvilBit(evil_r1);
+        IPv4addr ro1_dest;
+        ubyte  ro1_proto = { 6, 17 };
+        ubyte  ro1_flags;
+        uint16 ro1_port;
+        ro_left -= 12;
+    }
+    if (ro_left >= 12)
+    {
+        local int evil_r2 = SetEvilBit(IsParsing());
+        uint16 ro2_len = { 12 };
+        ubyte  ro2_class = { 3, 4, 11 };          // RSVP_HOP / INTEGRITY / SCOPE
+        ubyte  ro2_ctype = { 1 };
+        SetEvilBit(evil_r2);
+        IPv4addr ro2_addr;
+        uint32 ro2_lih;
+        ro_left -= 12;
+    }
+    if (ro_left >= 8)
+    {
+        local int evil_r3 = SetEvilBit(IsParsing());
+        uint16 ro3_len = { 8 };
+        ubyte  ro3_class = { 5, 8, 9, 12, 13, 15, 16, 19, 20, 21, 25, 30, 42 };
+        ubyte  ro3_ctype = { 1, 2 };
+        SetEvilBit(evil_r3);
+        uint32 ro3_val;
+        ro_left -= 8;
+    }
+} RSVP_OBJS;
+
+// An OSPF LSA header -> ospf_print_lsa()/ospf_print_lshdr() in print-ospf.c.
+typedef struct
+{
+    uint16   lsa_age;
+    ubyte    lsa_options = { 0x02, 0x12, 0x22, 0x42 };
+    local int evil_ls = SetEvilBit(IsParsing());
+    ubyte    lsa_type = { 1, 2, 3, 4, 5, 7, 9, 10, 11 };
+    SetEvilBit(evil_ls);
+    IPv4addr lsa_lsid;
+    IPv4addr lsa_advrtr;
+    uint32   lsa_seq;
+    uint16   lsa_cksum;
+    uint16   lsa_length = { 20, 24, 28, 36 };
+} OSPF_LSA_HDR;
+
+// IPv6 neighbour-discovery options -> icmp6_opt_print() in print-icmp6.c,
+// which has a case per option type.
+typedef struct (uint32 n)
+{
+    local uint32 nd_left = n;
+    if (nd_left >= 8)
+    {
+        local int evil_nd = SetEvilBit(IsParsing());
+        ubyte nd_opt_type = { 1, 2, 3, 4, 5, 7, 8, 24, 25, 31 };
+        ubyte nd_opt_len = { 1 };                 // in units of 8 octets
+        SetEvilBit(evil_nd);
+        MACaddr nd_opt_lladdr;                    // 6 bytes: 8 with the header
+        nd_left -= 8;
+    }
+    if (nd_left >= 8)
+    {
+        local int evil_n2 = SetEvilBit(IsParsing());
+        ubyte nd_opt2_type = { 5, 24, 25, 31, 1, 2 };
+        ubyte nd_opt2_len = { 1 };
+        SetEvilBit(evil_n2);
+        ubyte nd_opt2_data[6];
+        nd_left -= 8;
+    }
+} ND_OPTS;
+
+// Every IP protocol the template does not model as TCP or UDP.  The original
+// read this region as one opaque array (Layer_4.packet, Tier C); each case
+// below emits the minimum well-formed header its printer needs to get past its
+// own entry test, and leaves every other byte free.  The default case is the
+// original's opaque array, which is what an unmodelled protocol number still
+// produces.
+typedef struct (uint32 proto, uint32 avail)
+{
+    local int64 o_start = FTell();
+    switch (proto) {
+        case 1:                                   // ICMP      print-icmp.c
+            if (avail >= 8) {
+                local int evil_ic = SetEvilBit(IsParsing());
+                ubyte icmp_type = { 0, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15,
+                                    16, 17, 18, 30, 31, 37, 38, 39, 40, 41, 42, 43 };
+                SetEvilBit(evil_ic);
+                ubyte icmp_code = { 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 15 };
+                uint16 icmp_cksum;
+                uint16 icmp_id;
+                uint16 icmp_seq;
+            }
+            break;
+        case 2:                                   // IGMP      print-igmp.c
+            if (avail >= 8) {
+                local int evil_ig = SetEvilBit(IsParsing());
+                ubyte igmp_type = { 0x11, 0x12, 0x16, 0x17, 0x22, 0x13, 0x1e, 0x1f, 0x40 };
+                SetEvilBit(evil_ig);
+                ubyte igmp_code;
+                uint16 igmp_cksum;
+                IPv4addr igmp_group;
+            }
+            break;
+        case 4:                                   // IPv4-in-IP ip_print()
+            if (avail >= 21) {
+                IPV4_MIN ipip(avail);
+            }
+            break;
+        case 8:                                   // EGP       print-egp.c
+            if (avail >= 14) {
+                local int evil_eg = SetEvilBit(IsParsing());
+                ubyte egp_version = { 2 };
+                ubyte egp_type = { 1, 2, 3, 5, 8, 80 };
+                SetEvilBit(evil_eg);
+                ubyte egp_code;
+                ubyte egp_status;
+                uint16 egp_cksum;
+                uint16 egp_as;
+                uint16 egp_seq;
+                uint16 egp_hello;
+                uint16 egp_poll;
+            }
+            break;
+        case 9:                                   // IGRP      print-igrp.c
+            if (avail >= 12) {
+                local int evil_gr = SetEvilBit(IsParsing());
+                ubyte igrp_vop = { 0x11, 0x12, 0x13, 0x15 };
+                SetEvilBit(evil_gr);
+                ubyte igrp_edition;
+                uint16 igrp_as;
+                uint16 igrp_ninterior;
+                uint16 igrp_nsystem;
+                uint16 igrp_nexterior;
+                uint16 igrp_cksum;
+            }
+            break;
+        case 33:                                  // DCCP      print-dccp.c
+            if (avail >= 16) {
+                uint16 dccp_sport;
+                uint16 dccp_dport;
+                ubyte dccp_doff = { 4, 5, 6 };
+                ubyte dccp_ccval;
+                uint16 dccp_cksum;
+                local int evil_dc = SetEvilBit(IsParsing());
+                ubyte dccp_type = { 0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38 };
+                SetEvilBit(evil_dc);
+                ubyte dccp_seq[5];
+            }
+            break;
+        case 41:                                  // IPv6-in-IP ip6_print()
+            if (avail >= 41) {
+                IPV6_MIN ip6ip(avail);
+            }
+            break;
+        case 46:                                  // RSVP      print-rsvp.c
+            if (avail >= 20) {
+                local int evil_rs = SetEvilBit(IsParsing());
+                ubyte rsvp_vers_flags = { 0x10 };
+                ubyte rsvp_type = { 1, 1, 2, 2, 3, 4, 5, 6, 7, 12, 13, 20, 21, 25 };
+                SetEvilBit(evil_rs);
+                uint16 rsvp_cksum;
+                ubyte rsvp_ttl;
+                ubyte rsvp_resv;
+                local int evil_rl = SetEvilBit(IsParsing());
+                uint16 rsvp_length = { (uint16)avail };
+                SetEvilBit(evil_rl);
+                RSVP_OBJS rsvp_objs(avail - 8);
+            }
+            break;
+        case 47:                                  // GRE       print-gre.c
+            if (avail >= 4) {
+                local int evil_gre = SetEvilBit(IsParsing());
+                uint16 gre_flags = { 0x0000, 0x2000, 0x1000, 0x3000, 0x8000, 0xa000 };
+                uint16 gre_proto = { 0x0800, 0x86dd, 0x6558, 0x880b, 0x8847, 0x0806 };
+                SetEvilBit(evil_gre);
+                if (gre_flags == 0x0000 && gre_proto == 0x0800 && avail >= 25) {
+                    IPV4_MIN gre_inner(avail - 4);
+                }
+            }
+            break;
+        case 50:                                  // ESP       print-esp.c
+            if (avail >= 8) {
+                uint32 esp_spi;
+                uint32 esp_seq;
+            }
+            break;
+        case 51:                                  // AH        print-ah.c
+            if (avail >= 12) {
+                ubyte ah_nexthdr = { 6, 17, 1, 50, 59 };
+                local int evil_ah = SetEvilBit(IsParsing());
+                ubyte ah_len = { 1 };
+                SetEvilBit(evil_ah);
+                uint16 ah_resv;
+                uint32 ah_spi;
+                uint32 ah_seq;
+            }
+            break;
+        case 59:                                  // IPv6 no-next-header
+            break;
+        case 88:                                  // EIGRP     print-eigrp.c
+            if (avail >= 24) {
+                local int evil_ei = SetEvilBit(IsParsing());
+                ubyte eigrp_version = { 2 };
+                ubyte eigrp_opcode = { 1, 3, 4, 5, 10 };
+                SetEvilBit(evil_ei);
+                uint16 eigrp_cksum;
+                uint32 eigrp_flags;
+                uint32 eigrp_seq;
+                uint32 eigrp_ack;
+                uint16 eigrp_vrid;
+                uint16 eigrp_as;
+                local int evil_et = SetEvilBit(IsParsing());
+                uint16 eigrp_tlvtype = { 0x0001, 0x0102, 0x0103, 0x0104, 0x0105 };
+                uint16 eigrp_tlvlen = { (uint16)(avail - 20) };
+                SetEvilBit(evil_et);
+            }
+            break;
+        case 89:                                  // OSPF      print-ospf.c
+            if (avail >= 24) {
+                local int evil_os = SetEvilBit(IsParsing());
+                ubyte ospf_version = { 2 };
+                ubyte ospf_type = { 1, 1, 2, 3, 4, 5 };
+                uint16 ospf_length = { (uint16)avail };
+                SetEvilBit(evil_os);
+                IPv4addr ospf_routerid;
+                IPv4addr ospf_areaid;
+                uint16 ospf_cksum;
+                local int evil_oa = SetEvilBit(IsParsing());
+                uint16 ospf_autype = { 0, 1, 2 };
+                SetEvilBit(evil_oa);
+                uint64 ospf_auth;
+                if (ospf_type == 1 && avail >= 44) {
+                    IPv4addr ospf_hello_mask;     // Hello
+                    uint16   ospf_hello_interval = { 10, 30, 40 };
+                    ubyte    ospf_hello_options = { 0x02, 0x12, 0x42, 0x00 };
+                    ubyte    ospf_hello_priority;
+                    uint32   ospf_hello_dead = { 40, 120 };
+                    IPv4addr ospf_hello_dr;
+                    IPv4addr ospf_hello_bdr;
+                    if (avail >= 48) { IPv4addr ospf_hello_neighbor; }
+                } else if (ospf_type == 2 && avail >= 32) {
+                    uint16 ospf_dd_mtu = { 1500, 1476, 9000 };   // DB Description
+                    ubyte  ospf_dd_options = { 0x02, 0x12, 0x42 };
+                    ubyte  ospf_dd_flags = { 0x07, 0x02, 0x03, 0x00 };
+                    uint32 ospf_dd_seq;
+                    if (avail >= 52) { OSPF_LSA_HDR ospf_dd_lsa; }
+                } else if (ospf_type == 3 && avail >= 36) {
+                    uint32   ospf_lsr_type = { 1, 2, 3, 4, 5, 7 };  // LS Request
+                    IPv4addr ospf_lsr_lsid;
+                    IPv4addr ospf_lsr_advrtr;
+                } else if (ospf_type == 4 && avail >= 48) {
+                    uint32 ospf_lsu_count = { 1 };               // LS Update
+                    OSPF_LSA_HDR ospf_lsu_lsa;
+                } else if (ospf_type == 5 && avail >= 44) {
+                    OSPF_LSA_HDR ospf_ack_lsa;                   // LS Ack
+                }
+            }
+            break;
+        case 103:                                 // PIM       print-pim.c
+            if (avail >= 4) {
+                local int evil_pi = SetEvilBit(IsParsing());
+                ubyte pim_vers_type = { 0x20, 0x20, 0x21, 0x22, 0x23, 0x23, 0x24,
+                                        0x25, 0x26, 0x27, 0x28, 0x29, 0x13, 0x14 };
+                SetEvilBit(evil_pi);
+                ubyte pim_resv;
+                uint16 pim_cksum;
+                if (pim_vers_type == 0x20 && avail >= 12) {
+                    // Hello: option TLVs
+                    local int evil_ph = SetEvilBit(IsParsing());
+                    uint16 pim_opt_type = { 1, 2, 3, 4, 18, 19, 20, 21, 22, 24 };
+                    uint16 pim_opt_len = { 2 };
+                    SetEvilBit(evil_ph);
+                    uint16 pim_opt_val;
+                    if (avail >= 20) {
+                        local int evil_p2 = SetEvilBit(IsParsing());
+                        uint16 pim_opt2_type = { 20, 21, 22, 24, 2 };
+                        uint16 pim_opt2_len = { 4 };
+                        SetEvilBit(evil_p2);
+                        uint32 pim_opt2_val;
+                    }
+                } else if (pim_vers_type == 0x23 && avail >= 22) {
+                    // Join/Prune: an encoded unicast upstream neighbour, then
+                    // one group record with one encoded source
+                    local int evil_pj = SetEvilBit(IsParsing());
+                    ubyte  pim_jp_family = { 1 };
+                    ubyte  pim_jp_enctype = { 0 };
+                    SetEvilBit(evil_pj);
+                    IPv4addr pim_jp_upstream;
+                    ubyte  pim_jp_resv;
+                    local int evil_pg = SetEvilBit(IsParsing());
+                    ubyte  pim_jp_ngroups = { 1 };
+                    SetEvilBit(evil_pg);
+                    uint16 pim_jp_holdtime = { 210, 0, 65535 };
+                    local int evil_pk = SetEvilBit(IsParsing());
+                    ubyte  pim_jp_gfamily = { 1 };
+                    ubyte  pim_jp_genctype = { 0 };
+                    SetEvilBit(evil_pk);
+                    ubyte  pim_jp_gmasklen = { 32, 24, 4 };
+                    IPv4addr pim_jp_group;
+                    if (avail >= 26) {
+                        uint16 pim_jp_njoin = { 0, 1 };
+                        uint16 pim_jp_nprune = { 0, 1 };
+                    }
+                } else if (pim_vers_type == 0x21 && avail >= 12) {
+                    uint32 pim_reg_flags = { 0x00000000, 0x80000000 };  // Register
+                    if (avail >= 33) { IPV4_MIN pim_reg_inner(avail - 8); }
+                } else if (pim_vers_type == 0x22 && avail >= 24) {
+                    ubyte    pim_rs_family = { 1 };   // Register-Stop
+                    ubyte    pim_rs_enctype = { 0 };
+                    ubyte    pim_rs_resv;
+                    ubyte    pim_rs_masklen = { 32 };
+                    IPv4addr pim_rs_group;
+                    ubyte    pim_rs_family2 = { 1 };
+                    ubyte    pim_rs_enctype2 = { 0 };
+                    IPv4addr pim_rs_source;
+                }
+            }
+            break;
+        case 108:                                 // IPComp    print-ipcomp.c
+            if (avail >= 4) {
+                ubyte ipcomp_nexthdr = { 6, 17, 4 };
+                ubyte ipcomp_flags;
+                uint16 ipcomp_cpi = { 2, 3, 4 };
+            }
+            break;
+        case 112:                                 // VRRP      print-vrrp.c
+            if (avail >= 8) {
+                local int evil_vr = SetEvilBit(IsParsing());
+                ubyte vrrp_vers_type = { 0x21, 0x31, 0x11 };
+                SetEvilBit(evil_vr);
+                ubyte vrrp_vrid;
+                ubyte vrrp_prio;
+                local int evil_vn = SetEvilBit(IsParsing());
+                ubyte vrrp_naddr = { 1 };
+                ubyte vrrp_authtype = { 0, 1, 2 };
+                SetEvilBit(evil_vn);
+                ubyte vrrp_advint;
+                uint16 vrrp_cksum;
+                if (avail >= 12) {
+                    IPv4addr vrrp_addr;
+                }
+            }
+            break;
+        case 113:                                 // PGM       print-pgm.c
+            if (avail >= 16) {
+                uint16 pgm_sport;
+                uint16 pgm_dport;
+                local int evil_pg = SetEvilBit(IsParsing());
+                ubyte pgm_type = { 0, 1, 2, 4, 8, 9, 10, 12, 13, 14 };
+                SetEvilBit(evil_pg);
+                ubyte pgm_options;
+                uint16 pgm_cksum;
+                ubyte pgm_gsid[6];
+                uint16 pgm_tsdulen;
+            }
+            break;
+        case 132:                                 // SCTP      print-sctp.c
+            if (avail >= 16) {
+                uint16 sctp_sport;
+                uint16 sctp_dport;
+                uint32 sctp_vtag;
+                uint32 sctp_cksum;
+                if (avail >= 20) {
+                    local int evil_sc = SetEvilBit(IsParsing());
+                    ubyte sctp_chunk_type = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                                              11, 12, 13, 14, 15, 64, 128, 192 };
+                    SetEvilBit(evil_sc);
+                    ubyte sctp_chunk_flags;
+                    local int evil_sl = SetEvilBit(IsParsing());
+                    uint16 sctp_chunk_len = { (uint16)(avail - 12) };
+                    SetEvilBit(evil_sl);
+                }
+            }
+            break;
+        case 58:                                  // ICMPv6    print-icmp6.c
+            if (avail >= 8) {
+                local int evil_i6c = SetEvilBit(IsParsing());
+                ubyte icmp6_type = { 1, 2, 3, 4, 128, 129, 130, 131, 132, 133,
+                                     134, 135, 136, 137, 138, 139, 140, 141,
+                                     142, 143, 144, 145, 146, 147, 148, 157 };
+                SetEvilBit(evil_i6c);
+                ubyte icmp6_code = { 0, 1, 2, 3, 4, 5, 6 };
+                uint16 icmp6_cksum;
+                if (icmp6_type == 128 || icmp6_type == 129) {
+                    uint16 icmp6_echo_id;         // echo request / reply
+                    uint16 icmp6_echo_seq;
+                } else if (icmp6_type == 134 && avail >= 16) {
+                    ubyte  icmp6_ra_hoplimit;     // router advertisement
+                    ubyte  icmp6_ra_flags = { 0x00, 0x80, 0x40, 0xc0, 0x08 };
+                    uint16 icmp6_ra_lifetime;
+                    uint32 icmp6_ra_reachable;
+                    uint32 icmp6_ra_retrans;
+                    if (avail >= 24) { ND_OPTS nd_opts(avail - 16); }
+                } else if ((icmp6_type == 135 || icmp6_type == 136) && avail >= 24) {
+                    uint32   icmp6_nd_flags;      // neighbour solicit / advert
+                    IPv6addr icmp6_nd_target;
+                    if (avail >= 32) { ND_OPTS nd_opts(avail - 24); }
+                } else if (icmp6_type >= 130 && icmp6_type <= 132 && avail >= 24) {
+                    uint16   icmp6_mld_maxresp;   // MLD query / report / done
+                    uint16   icmp6_mld_resv;
+                    IPv6addr icmp6_mld_group;
+                } else if (icmp6_type == 2) {
+                    uint32 icmp6_ptb_mtu = { 1280, 1500, 68 };
+                } else {
+                    uint32 icmp6_body;
+                }
+            }
+            break;
+        case 0:                                   // IPv6 hop-by-hop options
+        case 60:                                  // IPv6 destination options
+            if (avail >= 8) {                     // print-hbhopt.c hbhopt_print
+                ubyte hbh_nxt = { 6, 17, 58, 59, 44, 43 };
+                local int evil_hb = SetEvilBit(IsParsing());
+                ubyte hbh_len = { 0 };            // (length in 8-octet units) - 1
+                ubyte hbh_optt = { 0, 1, 5, 194, 195 };
+                ubyte hbh_optl = { 4 };
+                SetEvilBit(evil_hb);
+                uint32 hbh_optd;
+            }
+            break;
+        case 43:                                  // IPv6 routing header
+            if (avail >= 8) {                     // print-rt6.c rt6_print
+                ubyte rt6_nxt = { 6, 17, 58, 59 };
+                local int evil_rt = SetEvilBit(IsParsing());
+                ubyte rt6_len = { 0, 2 };
+                ubyte rt6_type = { 0, 1, 2, 3, 4 };
+                SetEvilBit(evil_rt);
+                ubyte rt6_segleft;
+                uint32 rt6_resv;
+            }
+            break;
+        case 44:                                  // IPv6 fragment header
+            if (avail >= 8) {                     // print-frag6.c frag6_print
+                ubyte frag6_nxt = { 6, 17, 58, 59 };
+                ubyte frag6_resv;
+                uint16 frag6_offlg = { 0x0001, 0x0000, 0x0008, 0x0009, 0x0100 };
+                uint32 frag6_ident;
+            }
+            break;
+        case 55:                                  // MOBILE    print-mobile.c
+            if (avail >= 8) {
+                local int evil_mo = SetEvilBit(IsParsing());
+                ubyte mob_proto = { 4 };
+                ubyte mob_flags = { 0x00, 0x80 };
+                SetEvilBit(evil_mo);
+                uint16 mob_cksum;
+                IPv4addr mob_dst;
+            }
+            break;
+        default:
+            break;
+    }
+    local uint32 o_used = FTell() - o_start;
+    if (o_used < avail) {
+        // The original's opaque transport array (line 114).  Its contents are
+        // free; the protocol number that selected this branch is what decides
+        // which printer reads them.
+        BYTE packet[avail - o_used]<name="Unknown Layer 4 Data">;
+    }
+} L4OTHER;
+
+typedef struct (ushort VER_HDR,uint16 total_length,uint L4proto,uint32 avail)
+{    
+    local uint16 ip_hdr_length = VER_HDR*4;
+
+    if (L4proto == 0x11 && avail >= 8) // UDP
+    {
+        // Tier C, declared bare: the port pair IS the dissector space
+        // (diversity axes Layer_4.SrcPort / Layer_4.DstPort).  The payload is
+        // derived from whatever value they took, below.
+        uint16 SrcPort<name="Source Port">;
+        uint16 DstPort<name="Destination Port">;
+        // Tier A calculated_value: 8 + the payload that follows (dependency 13
+        // also ties it to total_length, which is how `avail` was computed).
+        local uint16 udp_len_values[] = { (uint16)avail };
+        local int evil_ul = SetEvilBit(IsParsing());
+        uint16 udp_hdr_len<name="Datagram Length",values=udp_len_values>;
+        SetEvilBit(evil_ul);
+        // Tier C: RFC 768 makes this optional over IPv4 and zero means "not
+        // computed", so both a right and a wrong checksum stay reachable.
+        uint16 ChkSum<name="Checksum">;
+        local uint32 AppDataLen = 0;              // original line 170
+        if (udp_hdr_len > 8)
+            AppDataLen = udp_hdr_len - 8;
+        if (AppDataLen > avail - 8)
+            AppDataLen = avail - 8;               // a real file's bogus length
+        if (AppDataLen > 0)
+        {
+            APPDATA udp_app(AppCodec(SrcPort,DstPort),AppDataLen);
+        }
+    }
+    else if (L4proto == 0x6 && avail >= 20) // TCP
+    {
+        uint16 SrcPort<name="Source Port">;
+        uint16 DstPort<name="Destination Port">;
+        uint32 SEQ;                               // Tier C: relative-sequence,
+        uint32 ACK;                               // retransmission analysis
+        // Tier A calculated_value, legal span 5..15.  ffcompile accepts no
+        // value set on a bitfield, so the set comes from its value miner, fed
+        // by the validity test at the end of this struct.
+        local int evil_th = SetEvilBit(IsParsing());
+        uchar tcp_hdr_len:4;
+        SetEvilBit(evil_th);
+        uchar Reserved:4;                         // Tier C: ECN nonce / AE bits
+        local uint32 tcp_hdr_bytes = tcp_hdr_len*4;
+        if (tcp_hdr_bytes > avail)
+            tcp_hdr_bytes = avail;                // frame too small for the
+        if (tcp_hdr_bytes < 20)                   // header this field declares
+            tcp_hdr_bytes = 20;
+        // original line 110: BYTE Crap[tcp_hdr_len*4-13]
+        TCPTAIL Crap(tcp_hdr_bytes - 13);
+        local uint32 AppDataLen = avail - tcp_hdr_bytes;   // original line 162
+        if (AppDataLen > 0)
+        {
+            APPDATA tcp_app(AppCodec(SrcPort,DstPort),AppDataLen);
+        }
+        if (tcp_hdr_len != 5 && tcp_hdr_len != 6 && tcp_hdr_len != 7 &&
+            tcp_hdr_len != 8 && tcp_hdr_len != 9 && tcp_hdr_len != 10 &&
+            tcp_hdr_len != 11 && tcp_hdr_len != 12 && tcp_hdr_len != 13 &&
+            tcp_hdr_len != 14 && tcp_hdr_len != 15)
+            Warning("Bogus TCP header length");
+    }
+    else
+    {
+          // original line 114, now routed through the per-protocol emitters;
+          // its default case is still the opaque array, under its own name.
+          L4OTHER other(L4proto,avail);
+    }
+    
+} Layer_4;
+
+string L4protoName(BYTE val)
+{
+    if (val == 0x06)
+    {
+        return "TCP";
+    }
+    else if (val == 0x11)
+    {
+        return "UDP";
+    }
+    else
+    {
+        return "Unknown";
+    }
+}
+
+typedef struct (uint16 proto_type, uint32 avail)
+{
+     // Tier A fixed_value 4 and Tier A calculated_value 5..15.  Both sets come
+     // from ffcompile's value miner, fed by the two validity tests at the end
+     // of this struct, because the grammar accepts no init list on a bitfield.
+     local int evil_vi = SetEvilBit(IsParsing());
+     uchar version:4;
+     uchar ip_hdr_len:4;
+     SetEvilBit(evil_vi);
+     local int hdr_length = ip_hdr_len*4;
+     local uint32 hdr_emit = hdr_length;
+     if (hdr_emit > avail)
+         hdr_emit = avail;                        // frame too small for the
+     if (hdr_emit < 20)                           // header this nibble declares
+         hdr_emit = 20;
+     local uint32 maxbody = avail - hdr_emit;
+     BYTE DiffServField;                          // Tier C: 64 DSCP x 4 ECN
+     // Tier A calculated_value = ip_hdr_len*4 + everything the datagram
+     // carries (dependencies 12 and 13).  The datagram SIZE is the free choice
+     // the diversity axis asks for; the fields below fill it exactly.
+     local uint16 tl_values[] = {
+         (uint16)(hdr_emit + Cap(0, maxbody)),    (uint16)(hdr_emit + Cap(1, maxbody)),
+         (uint16)(hdr_emit + Cap(8, maxbody)),    (uint16)(hdr_emit + Cap(20, maxbody)),
+         (uint16)(hdr_emit + Cap(21, maxbody)),   (uint16)(hdr_emit + Cap(28, maxbody)),
+         (uint16)(hdr_emit + Cap(37, maxbody)),   (uint16)(hdr_emit + Cap(48, maxbody)),
+         (uint16)(hdr_emit + Cap(64, maxbody)),   (uint16)(hdr_emit + Cap(100, maxbody)),
+         (uint16)(hdr_emit + Cap(128, maxbody)),  (uint16)(hdr_emit + Cap(256, maxbody)),
+         (uint16)(hdr_emit + Cap(512, maxbody)),  (uint16)(hdr_emit + Cap(1024, maxbody)),
+         (uint16)(hdr_emit + Cap(1480, maxbody)), (uint16)(hdr_emit + Cap(4096, maxbody)),
+         (uint16)(hdr_emit + Cap(16384, maxbody)),(uint16)(hdr_emit + Cap(65515, maxbody))
+     };
+     local int evil_tl = SetEvilBit(IsParsing());
+     uint16 total_length<values=tl_values>;
+     SetEvilBit(evil_tl);
+     local uint32 ipbody = 0;
+     if (total_length > hdr_emit)
+         ipbody = total_length - hdr_emit;
+     if (ipbody > maxbody)
+         ipbody = maxbody;                        // a real file's bogus length
+     if (proto_type == 0x0800)    // IP
+     {
+        uint16 Identification;                    // Tier C: the reassembly key
+        // Tier B bitmask_constraint: the reserved/DF/MF bits plus the free
+        // 13-bit fragment offset.  A set offset or MF is what opens the
+        // reassembly path in print-ip.c that no whole datagram reaches.
+        uint16 Flags = { 0, 0, 0, 0, 0x4000, 0x4000, 0x2000, 0x8000,
+                         0x2001, 0x0001, 0x1FFF, 0x6000 };
+        BYTE   TTL;                               // Tier C: 0 and 1 are flagged
+        // Tier B enumerated_values: the IANA protocol number, which selects the
+        // transport printer.  Complete set, with preferred_value honoured as a
+        // weighting.  Three values are ADDED (55 MOBILE, 77 ND, 113 PGM), each
+        // of which has its own printer in tcpdump and none of which the
+        // registry snapshot in the JSON listed.
+        // ffcompile maps BYTE to a signed char, so the values above 127 carry
+        // an explicit cast; the bytes written are unchanged.
+        local BYTE l4proto_values[] = {
+            6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,            // TCP
+            17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17,  // UDP
+            1, 1, 1, 1, (BYTE)132, (BYTE)132, (BYTE)132,
+            47, 47, 47,                           // ICMP / SCTP / GRE
+            0, 2, 4, 8, 9, 27, 33, 41, 43, 44, 46, 50, 51, 55, 58, 59, 60,
+            77, 88, 89, 94, 97, 103, 108, 112, 113, 115, 124, (BYTE)133,
+            (BYTE)136, (BYTE)137, (BYTE)138, (BYTE)139, (BYTE)140, (BYTE)141,
+            (BYTE)142, (BYTE)143, (BYTE)253, (BYTE)254, (BYTE)255 };
+        // py010parser's metadata regex keeps at most two keyvals and only
+        // honours "values" as the last of them, so the original's
+        // read=L4protoName display attribute is dropped here rather than the
+        // value set; L4protoName itself is kept below.
+        BYTE   L4proto<name="Layer 4 Protocol",values=l4proto_values>;
+        // Tier C: measured NOT validated by default in any reader, so a right
+        // and a wrong checksum must both stay reachable (diversity axis).
+        uint16 HdrChecksum;
+        IPv4addr SRC_IP<name="Source IP">;
+        IPv4addr DST_IP<name="Dest IP">;
+        if (hdr_emit > 20)
+        {
+            IPV4OPTS Options(hdr_emit - 20);      // ADDED: ip_hdr_len > 5
+        }
+        Layer_4 L4(ip_hdr_len,total_length,L4proto,ipbody)<name="Layer 4">;
+     }
+     else
+     {
+        // original line 87: BYTE Unknown[hdr_length-4]
+        local uint32 unk = 0;
+        if (hdr_emit > 4)
+            unk = hdr_emit - 4;
+        BYTE Unknown[unk];
+      }
+     if (version != 4)
+         Warning("Layer 3 is not an IPv4 header");
+     if (ip_hdr_len != 5 && ip_hdr_len != 6 && ip_hdr_len != 7 &&
+         ip_hdr_len != 8 && ip_hdr_len != 9 && ip_hdr_len != 10 &&
+         ip_hdr_len != 11 && ip_hdr_len != 12 && ip_hdr_len != 13 &&
+         ip_hdr_len != 14 && ip_hdr_len != 15)
+         Warning("Bogus IPv4 header length");
+} Layer_3;
+
+// ===========================================================================
+// ADDED network-layer emitters.  The original declares Layer_3 only for
+// EtherTypes 0x0800 and 0x8100 and then references its fields unconditionally
+// (the template_parse_requirement note on Layer_3.version), so every other
+// EtherType in the Tier B set was unrepresentable.  One emitter per EtherType
+// that tcpdump has a printer for; the rest fall through to the opaque case,
+// which is what ethertype_print's default does with them anyway.
+// ===========================================================================
+
+// RFC 826 / RFC 903 -> print-arp.c arp_print()  (EtherType 0x0806 / 0x8035)
+typedef struct (uint32 avail)
+{
+    local int evil_ar = SetEvilBit(IsParsing());
+    uint16 arp_hrd = { 1, 6, 15, 16, 17, 18, 23, 24, 27 };
+    uint16 arp_pro = { 0x0800, 0x86dd, 0x8035, 0x0806 };
+    ubyte  arp_hln = { 6 };
+    ubyte  arp_pln = { 4 };
+    uint16 arp_op  = { 1, 2, 3, 4, 8, 9, 10 };
+    SetEvilBit(evil_ar);
+    MACaddr  arp_sha;
+    IPv4addr arp_spa;
+    MACaddr  arp_tha;
+    IPv4addr arp_tpa;
+} ARP_PACKET;
+
+// RFC 8200 -> print-ip6.c ip6_print(), and through it the transport printers
+// plus print-icmp6.c, which no IPv4 datagram can reach.
+typedef struct (uint32 avail)
+{
+    local uint32 v6body = 0;
+    if (avail > 40)
+        v6body = avail - 40;
+    local int evil_v6 = SetEvilBit(IsParsing());
+    uchar ip6_vtc[1] = { "\x60", "\x61", "\x6f", "\x65" };
+    SetEvilBit(evil_v6);
+    ubyte ip6_flow[3];                            // flow label, free
+    local uint16 v6plen_values[] = { (uint16)v6body };
+    local int evil_v6l = SetEvilBit(IsParsing());
+    uint16 ip6_plen<values=v6plen_values>;
+    SetEvilBit(evil_v6l);
+    ubyte ip6_nxt = { 6, 6, 6, 6, 6, 6, 17, 17, 17, 17, 17, 17,
+                      58, 58, 58, 58, 0, 43, 44, 50, 51, 59, 60, 89,
+                      132, 135, 136, 4, 41, 47, 103, 112, 1 };
+    ubyte ip6_hlim;
+    IPv6addr ip6_src;
+    IPv6addr ip6_dst;
+    if (v6body > 0)
+    {
+        if (ip6_nxt == 6 && v6body >= 20)
+        {
+            Layer_4 L4(5,(uint16)(v6body + 40),6,v6body);
+        }
+        else if (ip6_nxt == 17 && v6body >= 8)
+        {
+            Layer_4 L4(5,(uint16)(v6body + 40),17,v6body);
+        }
+        else
+        {
+            L4OTHER v6other(ip6_nxt,v6body);
+        }
+    }
+} IPV6_DGRAM;
+
+// RFC 3032 -> print-mpls.c mpls_print()  (EtherType 0x8847 / 0x8848)
+typedef struct (uint32 avail)
+{
+    // A label stack: 4 bytes per entry, bottom-of-stack bit in the last one,
+    // then the payload the stack carries.
+    local int evil_mp = SetEvilBit(IsParsing());
+    ubyte mpls_lbl_hi[2];
+    ubyte mpls_lbl_exp_s = { 0x01, 0x09, 0x11, 0x21, 0x31, 0x03 };  // S bit set
+    SetEvilBit(evil_mp);
+    ubyte mpls_ttl;
+    if (avail >= 25)
+    {
+        IPV4_MIN mpls_inner(avail - 4);           // mpls_print -> ip_print
+    }
+} MPLS_STACK;
+
+// IEEE 802.1AB -> print-lldp.c lldp_print()  (EtherType 0x88CC)
+typedef struct (uint32 avail)
+{
+    // TLVs: 7-bit type, 9-bit length.  Chassis ID, Port ID, TTL then End.
+    local int evil_ll = SetEvilBit(IsParsing());
+    uint16 lldp_t1 = { 0x0205 };                  // type 1, length 5
+    ubyte  lldp_t1sub = { 1, 2, 3, 4, 5, 6, 7 };
+    ubyte  lldp_t1id[4];
+    uint16 lldp_t2 = { 0x0405 };                  // type 2, length 5
+    ubyte  lldp_t2sub = { 1, 2, 3, 4, 5, 6, 7 };
+    ubyte  lldp_t2id[4];
+    uint16 lldp_t3 = { 0x0602 };                  // type 3, length 2
+    uint16 lldp_ttl = { 120, 0, 65535 };
+    SetEvilBit(evil_ll);
+    // The optional TLVs, each its own case in lldp_print()
+    if (avail >= 26)
+    {
+        local int evil_l4 = SetEvilBit(IsParsing());
+        uint16 lldp_t4 = { 0x0804, 0x0a04, 0x0c04 };   // port descr / name / descr
+        SetEvilBit(evil_l4);
+        uchar  lldp_t4val[4];
+    }
+    if (avail >= 32)
+    {
+        local int evil_l7 = SetEvilBit(IsParsing());
+        uint16 lldp_t7 = { 0x0e04 };               // system capabilities
+        SetEvilBit(evil_l7);
+        uint16 lldp_caps = { 0x0014, 0x0004, 0x0020, 0x0080 };
+        uint16 lldp_encaps = { 0x0004, 0x0014 };
+    }
+    if (avail >= 40)
+    {
+        // organisationally specific: the IEEE 802.1 and 802.3 OUIs both have
+        // their own subtype parsers
+        local int evil_l8 = SetEvilBit(IsParsing());
+        uint16 lldp_t127 = { 0xfe06 };
+        ubyte  lldp_oui1 = { 0x00 };
+        ubyte  lldp_oui2 = { 0x80, 0x12 };
+        ubyte  lldp_oui3 = { 0xc2, 0x0f, 0x5e };
+        ubyte  lldp_osub = { 1, 2, 3, 4, 5, 6, 7, 8 };
+        SetEvilBit(evil_l8);
+        ubyte  lldp_oval[2];
+    }
+    local int evil_le = SetEvilBit(IsParsing());
+    uint16 lldp_end = { 0x0000 };                 // type 0, length 0
+    SetEvilBit(evil_le);
+} LLDP_PDU;
+
+// RFC 2516 -> print-pppoe.c pppoe_print()  (EtherType 0x8863 / 0x8864)
+typedef struct (uint32 avail)
+{
+    local int evil_pe = SetEvilBit(IsParsing());
+    ubyte  pppoe_vt = { 0x11 };                   // version 1, type 1
+    ubyte  pppoe_code = { 0x00, 0x09, 0x07, 0x19, 0x65, 0xa7 };
+    uint16 pppoe_session;
+    local uint16 pppoe_len_values[] = { (uint16)Cap(avail - 6, 65535) };
+    uint16 pppoe_len<values=pppoe_len_values>;
+    SetEvilBit(evil_pe);
+    if (pppoe_code == 0x00 && avail >= 28)
+    {
+        local int evil_pp = SetEvilBit(IsParsing());
+        uint16 pppoe_ppp_proto = { 0x0021, 0x0057, 0xc021, 0x8021, 0xc023, 0xc223 };
+        SetEvilBit(evil_pp);
+        if (pppoe_ppp_proto == 0x0021)
+        {
+            IPV4_MIN pppoe_inner(avail - 8);      // ppp_print -> ip_print
+        }
+    }
+} PPPOE_FRAME;
+
+// IEEE 802.1X -> print-eap.c eapol_print()  (EtherType 0x888E)
+typedef struct (uint32 avail)
+{
+    local int evil_ea = SetEvilBit(IsParsing());
+    ubyte  eapol_ver = { 1, 2, 3 };
+    ubyte  eapol_type = { 0, 1, 2, 3, 4, 5 };
+    local uint16 eapol_len_values[] = { (uint16)Cap(avail - 4, 65535) };
+    uint16 eapol_len<values=eapol_len_values>;
+    if (eapol_type == 0 && avail >= 9)
+    {
+        ubyte eap_code = { 1, 2, 3, 4 };
+        ubyte eap_id;
+        uint16 eap_length = { (uint16)Cap(avail - 4, 65535) };
+        ubyte eap_type = { 1, 2, 3, 4, 13, 21, 25, 43 };
+    }
+    SetEvilBit(evil_ea);
+} EAPOL_FRAME;
+
+// IEEE 1588 -> print-ptp.c ptp_print()  (EtherType 0x88F7)
+typedef struct (uint32 avail)
+{
+    local int evil_pt = SetEvilBit(IsParsing());
+    ubyte  ptp_type = { 0x00, 0x01, 0x02, 0x03, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d };
+    ubyte  ptp_ver = { 0x02 };
+    local uint16 ptp_len_values[] = { (uint16)Cap(avail, 65535) };
+    uint16 ptp_len<values=ptp_len_values>;
+    SetEvilBit(evil_pt);
+    ubyte  ptp_domain;
+    ubyte  ptp_resv;
+    uint16 ptp_flags;
+    uint64 ptp_correction;
+    uint32 ptp_resv2;
+    ubyte  ptp_clockid[8];
+    uint16 ptp_portid;
+    uint16 ptp_seqid;
+    ubyte  ptp_control = { 0, 1, 2, 3, 4, 5 };
+    ubyte  ptp_logmsgint;
+} PTP_MSG;
+
+// IEEE 802.1ag -> print-cfm.c cfm_print()  (EtherType 0x8902)
+typedef struct (uint32 avail)
+{
+    local int evil_cf = SetEvilBit(IsParsing());
+    ubyte cfm_mdlevel_ver;                        // 3 bits level, 5 bits version
+    ubyte cfm_opcode = { 1, 2, 3, 4, 5, 33, 35, 37, 39, 41, 42, 43, 45, 47 };
+    ubyte cfm_flags;
+    ubyte cfm_first_tlv = { 4, 0, 70 };
+    SetEvilBit(evil_cf);
+} CFM_PDU;
+
+// IEEE 802.3 Slow Protocols -> print-slow.c slow_print()  (EtherType 0x8809)
+typedef struct (uint32 avail)
+{
+    local int evil_sp = SetEvilBit(IsParsing());
+    ubyte slow_subtype = { 1, 2, 3 };             // LACP, Marker, OAM
+    SetEvilBit(evil_sp);
+    if (slow_subtype == 3 && avail >= 4)
+    {
+        ubyte slow_oam_flags[2];
+        ubyte slow_oam_code = { 0, 1, 2, 3, 4 };
+    }
+    else if (avail >= 4)
+    {
+        local int evil_sv = SetEvilBit(IsParsing());
+        ubyte slow_version = { 1 };
+        ubyte slow_tlv_type = { 1, 2, 3, 0 };
+        ubyte slow_tlv_len = { 20 };
+        SetEvilBit(evil_sv);
+    }
+} SLOW_PDU;
+
+// ATA over Ethernet -> print-aoe.c aoe_print()  (EtherType 0x88A2)
+typedef struct (uint32 avail)
+{
+    local int evil_ao = SetEvilBit(IsParsing());
+    ubyte  aoe_ver_flags = { 0x10, 0x14, 0x18, 0x1c };
+    SetEvilBit(evil_ao);
+    ubyte  aoe_error = { 0, 1, 2, 3, 4, 5, 6 };
+    uint16 aoe_major;
+    ubyte  aoe_minor;
+    local int evil_ac = SetEvilBit(IsParsing());
+    ubyte  aoe_command = { 0, 1, 2, 3 };
+    SetEvilBit(evil_ac);
+    uint32 aoe_tag;
+} AOE_PDU;
+
+// IPX -> print-ipx.c ipx_print()  (EtherType 0x8137)
+typedef struct (uint32 avail)
+{
+    local int evil_ix = SetEvilBit(IsParsing());
+    uint16 ipx_cksum = { 0xFFFF };
+    local uint16 ipx_len_values[] = { (uint16)Cap(avail, 65535) };
+    uint16 ipx_length<values=ipx_len_values>;
+    SetEvilBit(evil_ix);
+    ubyte  ipx_tc;
+    ubyte  ipx_type = { 0, 1, 2, 4, 5, 17 };
+    ubyte  ipx_dst[12];
+    ubyte  ipx_src[12];
+} IPX_PKT;
+
+// DEC/ECTP -> print-loopback.c loopback_print()  (EtherType 0x9000)
+typedef struct (uint32 avail)
+{
+    uint16 ectp_skipcount = { 0, 2, 4, 8 };
+    local int evil_ec = SetEvilBit(IsParsing());
+    uint16 ectp_function = { 1, 2, 3 };
+    SetEvilBit(evil_ec);
+} ECTP_PDU;
+
+// DECnet Phase IV -> print-decnet.c decnet_print()  (EtherType 0x6003)
+typedef struct (uint32 avail)
+{
+    LittleEndian();                               // DECnet is little-endian
+    local uint16 dn_len_values[] = { (uint16)Cap(avail - 2, 65535) };
+    local int evil_dn = SetEvilBit(IsParsing());
+    uint16 dn_length<values=dn_len_values>;
+    // RMF_SHORT data, RMF_LONG data, and the control messages decnet_print
+    // has a case for each of
+    ubyte  dn_flags = { 0x02, 0x02, 0x06, 0x09, 0x0b, 0x0d, 0x11, 0x13, 0x0f };
+    SetEvilBit(evil_dn);
+    if (dn_flags == 0x02 && avail >= 9)
+    {
+        uint16 dn_sh_dstnode;                     // short data header
+        uint16 dn_sh_srcnode;
+        ubyte  dn_sh_forward;
+        if (avail >= 14)
+        {
+            // an NSP message rides inside it
+            local int evil_dns = SetEvilBit(IsParsing());
+            ubyte  dn_nsp_flags = { 0x18, 0x60, 0x68, 0x28, 0x38, 0x48, 0x08 };
+            SetEvilBit(evil_dns);
+            uint16 dn_nsp_dstaddr;
+            uint16 dn_nsp_srcaddr;
+        }
+    }
+    else if (dn_flags == 0x06 && avail >= 24)
+    {
+        ubyte dn_lg_resv[2];                      // long data header
+        ubyte dn_lg_dstarea;
+        ubyte dn_lg_dstsub;
+        ubyte dn_lg_dstid[6];
+        ubyte dn_lg_srcresv[2];
+        ubyte dn_lg_srcarea;
+        ubyte dn_lg_srcsub;
+        ubyte dn_lg_srcid[6];
+        ubyte dn_lg_nl2;
+        ubyte dn_lg_visit;
+        ubyte dn_lg_class;
+        ubyte dn_lg_pt;
+    }
+    else if (avail >= 10)
+    {
+        ubyte  dn_ctl_srcnode[2];                 // control message
+        ubyte  dn_ctl_info;
+        uint16 dn_ctl_blksize = { 576, 1498 };
+        ubyte  dn_ctl_rest[2];
+    }
+    BigEndian();
+} DECNET_PDU;
+
+// AppleTalk DDP -> print-atalk.c atalk_print()  (EtherType 0x809B)
+typedef struct (uint32 avail)
+{
+    local int evil_at = SetEvilBit(IsParsing());
+    uint16 ddp_lenhops = { 0x001d, 0x0020, 0x0030 };
+    SetEvilBit(evil_at);
+    uint16 ddp_cksum;
+    uint16 ddp_dnet;
+    uint16 ddp_snet;
+    ubyte  ddp_dnode;
+    ubyte  ddp_snode;
+    ubyte  ddp_dport;
+    ubyte  ddp_sport;
+    ubyte  ddp_type = { 1, 2, 3, 4, 5, 6, 7 };
+} ATALK_DDP;
+
+// AppleTalk AARP -> print-atalk.c aarp_print()  (EtherType 0x80F3)
+typedef struct (uint32 avail)
+{
+    local int evil_aa = SetEvilBit(IsParsing());
+    uint16 aarp_hrd = { 1 };
+    uint16 aarp_pro = { 0x809b };
+    ubyte  aarp_hln = { 6 };
+    ubyte  aarp_pln = { 4 };
+    uint16 aarp_op = { 1, 2, 3 };
+    SetEvilBit(evil_aa);
+    MACaddr aarp_sha;
+    ubyte   aarp_spa[4];
+    MACaddr aarp_tha;
+    ubyte   aarp_tpa[4];
+} AARP_PDU;
+
+// IEEE 802.3 MPCP -> print-mpcp.c mpcp_print()  (EtherType 0x8808)
+typedef struct (uint32 avail)
+{
+    local int evil_mc = SetEvilBit(IsParsing());
+    uint16 mpcp_opcode = { 1, 2, 3, 4, 5 };
+    SetEvilBit(evil_mc);
+    uint32 mpcp_timestamp;
+} MPCP_PDU;
+
+// IS-IS TLV list -> the TLV switch in isis_print(), which has a case per code.
+typedef struct (uint32 n)
+{
+    local uint32 tlv_left = n;
+    if (tlv_left >= 4)
+    {
+        local int evil_v1 = SetEvilBit(IsParsing());
+        ubyte tlv1_code = { 1, 129, 132, 134, 10, 2, 6, 128, 137 };
+        ubyte tlv1_len = { 2 };
+        SetEvilBit(evil_v1);
+        ubyte tlv1_val[2];
+        tlv_left -= 4;
+    }
+    if (tlv_left >= 4)
+    {
+        local int evil_v2 = SetEvilBit(IsParsing());
+        ubyte tlv2_code = { 129, 132, 137, 22, 135, 235, 236, 237, 240, 8 };
+        ubyte tlv2_len = { 2 };
+        SetEvilBit(evil_v2);
+        ubyte tlv2_val[2];
+        tlv_left -= 4;
+    }
+} ISIS_TLVS;
+
+// ISO/OSI network layer -> print-isoclns.c isoclns_print(), the largest printer
+// in tcpdump.  ADDED EtherType 0xFEFE: the JSON's EtherType list is marked
+// completeness "partial" and this value is how an OSI PDU rides Ethernet II.
+typedef struct (uint32 avail)
+{
+    local int evil_is = SetEvilBit(IsParsing());
+    ubyte iso_nlpid = { 0x83, 0x81, 0x82, 0x8e, 0xcc, 0x00 };
+    SetEvilBit(evil_is);
+    if (iso_nlpid == 0x83 && avail >= 10)
+    {
+        // IS-IS common header, then one of its PDU types
+        local int evil_i2 = SetEvilBit(IsParsing());
+        ubyte isis_hlen = { 27, 27, 27, 33, 20, 17, 8 };
+        ubyte isis_version = { 1 };
+        ubyte isis_sysidlen = { 0, 6 };
+        ubyte isis_pdutype = { 15, 15, 16, 18, 18, 20, 17, 24, 25, 26, 27 };
+        ubyte isis_version2 = { 1 };
+        SetEvilBit(evil_i2);
+        ubyte isis_resv;
+        ubyte isis_maxarea = { 0, 3 };
+        if ((isis_pdutype == 15 || isis_pdutype == 16) && avail >= 27)
+        {
+            ubyte  iih_circuit_type = { 1, 2, 3 };  // LAN IIH
+            ubyte  iih_source_id[6];
+            uint16 iih_holding_time = { 30, 10, 1200 };
+            local uint16 iih_len_values[] = { (uint16)Cap(avail, 65535) };
+            local int evil_i5 = SetEvilBit(IsParsing());
+            uint16 iih_pdu_len<values=iih_len_values>;
+            SetEvilBit(evil_i5);
+            ubyte  iih_priority;
+            ubyte  iih_lan_id[7];
+            if (avail >= 31) { ISIS_TLVS isis_tlvs(avail - 27); }
+        }
+        else if ((isis_pdutype == 18 || isis_pdutype == 20) && avail >= 27)
+        {
+            local uint16 lsp_len_values[] = { (uint16)Cap(avail, 65535) };
+            local int evil_i6 = SetEvilBit(IsParsing());
+            uint16 lsp_pdu_len<values=lsp_len_values>;
+            SetEvilBit(evil_i6);
+            uint16 lsp_lifetime = { 1200, 0, 65535 };
+            ubyte  lsp_id[8];
+            uint32 lsp_seq;
+            uint16 lsp_cksum;
+            ubyte  lsp_typeblock = { 0x03, 0x01, 0x0b, 0x43 };
+            if (avail >= 31) { ISIS_TLVS isis_tlvs(avail - 27); }
+        }
+    }
+    else if (iso_nlpid == 0x81 && avail >= 20)
+    {
+        // CLNP (ISO 8473) fixed part
+        local int evil_i3 = SetEvilBit(IsParsing());
+        ubyte clnp_length = { 33 };
+        ubyte clnp_version = { 1 };
+        SetEvilBit(evil_i3);
+        ubyte clnp_ttl;
+        ubyte clnp_type = { 0x1c, 0x1d, 0x01 };
+        uint16 clnp_segmentlen = { (uint16)Cap(avail - 1, 65535) };
+        uint16 clnp_cksum;
+    }
+} ISOCLNS_PDU;
+
+// ===========================================================================
+// EtherType -> network-layer printer dispatch (print-ether.c ethertype_print).
+// Called from every link layer that carries an EtherType.
+// ===========================================================================
+typedef struct (uint16 etype, uint32 avail)
+{
+    switch (etype) {
+        case 0x0800:                                        // ip_print
+            if (avail >= 20) { Layer_3 L3(0x0800,avail)<name="Layer 3">; }
+            break;
+        case 0x86dd:                                        // ip6_print
+            if (avail >= 40) { IPV6_DGRAM ip6(avail); }
+            break;
+        case 0x0806:                                        // arp_print
+        case 0x8035:                                        // arp_print (RARP)
+            if (avail >= 28) { ARP_PACKET arp(avail); }
+            break;
+        case 0x8847:                                        // mpls_print
+        case 0x8848:
+            if (avail >= 4) { MPLS_STACK mpls(avail); }
+            break;
+        case 0x88cc:                                        // lldp_print
+            if (avail >= 20) { LLDP_PDU lldp(avail); }
+            break;
+        case 0x8863:                                        // pppoe_print
+        case 0x8864:
+            if (avail >= 6) { PPPOE_FRAME pppoe(avail); }
+            break;
+        case 0x888e:                                        // eapol_print
+            if (avail >= 4) { EAPOL_FRAME eapol(avail); }
+            break;
+        case 0x88f7:                                        // ptp_print
+            if (avail >= 34) { PTP_MSG ptp(avail); }
+            break;
+        case 0x8902:                                        // cfm_print
+            if (avail >= 4) { CFM_PDU cfm(avail); }
+            break;
+        case 0x8809:                                        // slow_print
+            if (avail >= 4) { SLOW_PDU slow(avail); }
+            break;
+        case 0x88a2:                                        // aoe_print
+            if (avail >= 10) { AOE_PDU aoe(avail); }
+            break;
+        case 0x8137:                                        // ipx_print
+            if (avail >= 30) { IPX_PKT ipx(avail); }
+            break;
+        case 0x9000:                                        // loopback_print
+            if (avail >= 4) { ECTP_PDU ectp(avail); }
+            break;
+        case 0x6003:                                        // decnet_print
+            if (avail >= 3) { DECNET_PDU decnet(avail); }
+            break;
+        case 0x809b:                                        // atalk_print
+            if (avail >= 13) { ATALK_DDP ddp(avail); }
+            break;
+        case 0x80f3:                                        // aarp_print
+            if (avail >= 28) { AARP_PDU aarp(avail); }
+            break;
+        case 0x8808:                                        // mpcp_print
+            if (avail >= 6) { MPCP_PDU mpcp(avail); }
+            break;
+        case 0xfefe:                                        // isoclns_print
+            if (avail >= 2) { ISOCLNS_PDU iso(avail); }
+            break;
+        default:
+            // Every other EtherType in the Tier B set: ethertype_print's
+            // default, a hex dump of bytes it does not interpret.  Routed
+            // through Layer_3's own else branch so that the original's
+            // Unknown field (line 87) is still generated.
+            if (avail >= 20) { Layer_3 L3(etype,avail)<name="Layer 3">; }
+            break;
+    }
+} L3DISPATCH;
+
+// IEEE 802.2 LLC, and the SNAP header that carries an EtherType inside it
+// -> print-llc.c llc_print().  Reached from FDDI, Token Ring, 802.11, ATM,
+// IP-over-FC and from an Ethernet frame whose "EtherType" is 1500 or below and
+// is therefore an IEEE 802.3 length.
+typedef struct (uint32 avail)
+{
+    if (avail < 3)
+    {
+        uchar llc_trunc[avail];                   // llc_print's trunc path
+        return 0;
+    }
+    local int evil_lc = SetEvilBit(IsParsing());
+    ubyte llc_dsap = { 0xaa, 0xaa, 0xaa, 0x42, 0xe0, 0xf0, 0xfe, 0x06, 0x98, 0x7e, 0x00 };
+    ubyte llc_ssap = { 0xaa, 0xaa, 0xaa, 0x42, 0xe0, 0xf0, 0xfe, 0x06 };
+    ubyte llc_ctrl = { 0x03, 0x03, 0x03, 0x00, 0x11, 0x7f, 0xaf, 0xbf, 0xe3, 0x13 };
+    SetEvilBit(evil_lc);
+    if (llc_dsap == 0xaa && llc_ssap == 0xaa && llc_ctrl == 0x03 && avail >= 8)
+    {
+        ubyte snap_oui1 = { 0x00 };
+        ubyte snap_oui2 = { 0x00, 0x00, 0x00, 0x80 };
+        ubyte snap_oui3 = { 0x00, 0x00, 0x00, 0xf8, 0xc2 };
+        uint16 snap_etype<values=etype_values>;
+        L3DISPATCH snap_l3(snap_etype,avail - 8);
+    }
+} LLC_SNAP;
+
+// ===========================================================================
+// Link-layer framings.  PCAPHEADER.network selects which of tcpdump's
+// if_printers runs on every record in the file, so one emitter per framing is
+// what turns each of those printers from "entered and bailed" into a parse
+// that reaches the network layer.  Every emitter consumes at most `avail`;
+// PCAPRECORD pads the rest as link-layer padding.
+// ===========================================================================
+
+// LINKTYPE_ETHERNET (1) -> ether_if_print.  The original's own shape, with the
+// 802.1Q branch extended to the stacked tags and the 802.3-length branch
+// added.
+typedef struct (uint32 avail)
+{
+    local uint32 eth_left = avail;
+    if (avail < 14)
+    {
+        uchar eth_trunc[avail];                   // ether_if_print's trunc path
+    }
+    else
+    {
+        Layer_2 L2 <name="Layer 2">;
+        len_before_l3 += 14;
+        eth_left -= 14;
+        if (L2.L3type == 0x8100 || L2.L3type == 0x88a8 || L2.L3type == 0x9100)
+        {
+            if (eth_left >= 4)
+            {
+                Dot1q d1q <name="802.1Q Vitual LAN">;
+                len_before_l3 += 4;
+                eth_left -= 4;
+                if ((d1q.L3type == 0x8100 || d1q.L3type == 0x88a8) && eth_left >= 4)
+                {
+                    Dot1q d1q2 <name="Stacked VLAN">;
+                    len_before_l3 += 4;
+                    eth_left -= 4;
+                    L3DISPATCH l3(d1q2.L3type,eth_left);
+                }
+                else
+                {
+                    L3DISPATCH l3(d1q.L3type,eth_left);
+                }
+            }
+        }
+        else if (L2.L3type <= 1500)
+        {
+            LLC_SNAP llc(eth_left);               // IEEE 802.3 length, not a type
+        }
+        else
+        {
+            L3DISPATCH l3(L2.L3type,eth_left);
+        }
+    }
+} ETH_FRAME;
+
+// LINKTYPE_RAW (101) / IPV4 (228) / IPV6 (229) -> raw_if_print, which switches
+// on the version nibble.  This is the original's network==101 branch.
+typedef struct (uint32 avail, uint32 want6)
+{
+    if (want6 == 0)
+    {
+        if (avail >= 20) { Layer_3 L3(0x0800,avail)<name="Layer 3">; }
+        else { uchar raw_trunc[avail]; }
+    }
+    else
+    {
+        if (avail >= 40) { IPV6_DGRAM ip6(avail); }
+        else { uchar raw_trunc[avail]; }
+    }
+} RAW_FRAME;
+
+// LINKTYPE_NULL (0) and LINKTYPE_LOOP (108) -> null_if_print.  Four bytes of
+// address family: host order for NULL, network order for LOOP.
+typedef struct (uint32 avail, uint32 netorder)
+{
+    if (avail < 4)
+    {
+        uchar null_trunc[avail];
+    }
+    else
+    {
+        if (netorder == 0) { LittleEndian(); }
+        local int evil_nu = SetEvilBit(IsParsing());
+        uint32 null_af = { 2, 2, 2, 24, 28, 30, 10, 17, 18, 26, 7 };
+        SetEvilBit(evil_nu);
+        BigEndian();
+        if (null_af == 2)
+        {
+            if (avail >= 24) { Layer_3 L3(0x0800,avail - 4)<name="Layer 3">; }
+        }
+        else if (avail >= 44)
+        {
+            IPV6_DGRAM ip6(avail - 4);
+        }
+    }
+} NULL_FRAME;
+
+// LINKTYPE_LINUX_SLL (113) -> sll_if_print.  16-byte cooked-mode header.
+typedef struct (uint32 avail)
+{
+    if (avail < 16)
+    {
+        uchar sll_trunc[avail];
+    }
+    else
+    {
+        uint16 sll_pkttype = { 0, 1, 2, 3, 4 };
+        uint16 sll_hatype = { 1, 6, 772, 776, 778, 824 };
+        uint16 sll_halen = { 6 };
+        ubyte  sll_addr[8];
+        uint16 sll_protocol<values=etype_values>;
+        if (sll_protocol <= 1500)
+        {
+            LLC_SNAP sll_llc(avail - 16);
+        }
+        else
+        {
+            L3DISPATCH sll_l3(sll_protocol,avail - 16);
+        }
+    }
+} SLL_FRAME;
+
+// LINKTYPE_LINUX_SLL2 (276) -> sll2_if_print.  20-byte v2 cooked-mode header.
+typedef struct (uint32 avail)
+{
+    if (avail < 20)
+    {
+        uchar sll2_trunc[avail];
+    }
+    else
+    {
+        uint16 sll2_protocol<values=etype_values>;
+        uint16 sll2_reserved = { 0 };
+        uint32 sll2_ifindex = { 1, 2, 3 };
+        uint16 sll2_hatype = { 1, 6, 772, 776, 778 };
+        ubyte  sll2_pkttype = { 0, 1, 2, 3, 4 };
+        ubyte  sll2_halen = { 6 };
+        ubyte  sll2_addr[8];
+        if (sll2_protocol <= 1500)
+        {
+            LLC_SNAP sll2_llc(avail - 20);
+        }
+        else
+        {
+            L3DISPATCH sll2_l3(sll2_protocol,avail - 20);
+        }
+    }
+} SLL2_FRAME;
+
+// LINKTYPE_PPP (9), PPP_HDLC (50), PPP_PPPD (166), PPP_WITH_DIR (204)
+// -> ppp_if_print / ppp_hdlc_if_print, and from there print-ppp.c's control
+// protocol parsers, which no IP packet reaches.
+typedef struct (uint32 avail)
+{
+    if (avail < 4)
+    {
+        uchar ppp_trunc[avail];
+    }
+    else
+    {
+        local int evil_pph = SetEvilBit(IsParsing());
+        ubyte ppp_addr = { 0xff };
+        ubyte ppp_ctrl = { 0x03 };
+        uint16 ppp_proto = { 0x0021, 0x0021, 0x0057, 0x0023, 0xc021, 0x8021,
+                             0xc023, 0xc223, 0x002b, 0x00fd, 0x8023, 0x8057,
+                             0xc025, 0xc027, 0x0031, 0x8031, 0x003d, 0x0049 };
+        SetEvilBit(evil_pph);
+        if (ppp_proto == 0x0021)
+        {
+            if (avail >= 24) { Layer_3 L3(0x0800,avail - 4)<name="Layer 3">; }
+        }
+        else if (ppp_proto == 0x0057)
+        {
+            if (avail >= 44) { IPV6_DGRAM ip6(avail - 4); }
+        }
+        else if (ppp_proto == 0x0023)
+        {
+            if (avail >= 6) { ISOCLNS_PDU iso(avail - 4); }
+        }
+        else if (avail >= 8)
+        {
+            // An LCP/IPCP/PAP/CHAP/CCP control packet: code, id, length
+            local int evil_ppc = SetEvilBit(IsParsing());
+            ubyte ppp_code = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            SetEvilBit(evil_ppc);
+            ubyte ppp_id;
+            local uint16 ppp_cp_len_values[] = { (uint16)Cap(avail - 4, 65535) };
+            uint16 ppp_cp_len<values=ppp_cp_len_values>;
+        }
+    }
+} PPP_FRAME;
+
+// LINKTYPE_C_HDLC (104) and C_HDLC_WITH_DIR (205) -> chdlc_if_print.
+typedef struct (uint32 avail)
+{
+    if (avail < 4)
+    {
+        uchar chdlc_trunc[avail];
+    }
+    else
+    {
+        local int evil_ch = SetEvilBit(IsParsing());
+        ubyte chdlc_addr = { 0x0f, 0x8f };
+        ubyte chdlc_ctrl = { 0x00 };
+        uint16 chdlc_proto = { 0x0800, 0x0800, 0x86dd, 0x8035, 0xfefe, 0x2000, 0x0806 };
+        SetEvilBit(evil_ch);
+        if (chdlc_proto == 0x0800)
+        {
+            if (avail >= 24) { Layer_3 L3(0x0800,avail - 4)<name="Layer 3">; }
+        }
+        else if (chdlc_proto == 0xfefe)
+        {
+            if (avail >= 6) { ISOCLNS_PDU iso(avail - 4); }
+        }
+        else
+        {
+            L3DISPATCH chdlc_l3(chdlc_proto,avail - 4);
+        }
+    }
+} CHDLC_FRAME;
+
+// LINKTYPE_PPP_ETHER (51) -> pppoe_if_print.
+typedef struct (uint32 avail)
+{
+    if (avail < 6)
+    {
+        uchar pppoel_trunc[avail];
+    }
+    else
+    {
+        PPPOE_FRAME pppoe(avail);
+    }
+} PPPOEL_FRAME;
+
+// 802.11 tagged information elements -> parse_elements() in print-802_11.c,
+// which has a case per element id.  Filled to whatever space the frame leaves.
+typedef struct (uint32 n)
+{
+    local uint32 ie_left = n;
+    if (ie_left >= 3)
+    {
+        local int evil_ie = SetEvilBit(IsParsing());
+        ubyte ie_ssid_id = { 0 };
+        ubyte ie_ssid_len = { 1 };
+        SetEvilBit(evil_ie);
+        uchar ie_ssid[1];
+        ie_left -= 3;
+    }
+    if (ie_left >= 4)
+    {
+        local int evil_i2 = SetEvilBit(IsParsing());
+        ubyte ie_rates_id = { 1 };
+        ubyte ie_rates_len = { 2 };
+        SetEvilBit(evil_i2);
+        uchar ie_rates[2] = { "\x82\x84", "\x8c\x98" };
+        ie_left -= 4;
+    }
+    if (ie_left >= 3)
+    {
+        local int evil_i3 = SetEvilBit(IsParsing());
+        ubyte ie_ds_id = { 3 };
+        ubyte ie_ds_len = { 1 };
+        SetEvilBit(evil_i3);
+        ubyte ie_ds_chan = { 1, 6, 11, 36 };
+        ie_left -= 3;
+    }
+    if (ie_left >= 3)
+    {
+        // one further element, from the ids parse_elements() names
+        local int evil_i4 = SetEvilBit(IsParsing());
+        ubyte ie_x_id = { 5, 7, 42, 45, 48, 50, 61, 127, 191, 221 };
+        ubyte ie_x_len = { 1 };
+        SetEvilBit(evil_i4);
+        ubyte ie_x_data;
+        ie_left -= 3;
+    }
+} D11_IES;
+
+// LINKTYPE_IEEE802_11 (105) -> ieee802_11_if_print, and the data frames on to
+// print-llc.c.  24-byte MAC header, 26 for QoS data.
+typedef struct (uint32 avail)
+{
+    if (avail < 24)
+    {
+        uchar d11_trunc[avail];
+    }
+    else
+    {
+        local int evil_d1 = SetEvilBit(IsParsing());
+        ubyte d11_fc0 = { 0x08, 0x08, 0x88, 0x80, 0x40, 0x50, 0xb0, 0x00,
+                          0x10, 0x20, 0xc0, 0xd4, 0xb4, 0xa0, 0x30 };
+        SetEvilBit(evil_d1);
+        ubyte d11_fc1 = { 0x00, 0x01, 0x02, 0x03, 0x41 };
+        uint16  d11_duration;
+        MACaddr d11_addr1;
+        MACaddr d11_addr2;
+        MACaddr d11_addr3;
+        uint16  d11_seq;
+        local uint32 d11_left = avail - 24;
+        if (d11_fc0 == 0x88 && d11_left >= 2)
+        {
+            uint16 d11_qos;                       // QoS control
+            d11_left -= 2;
+        }
+        if ((d11_fc0 == 0x08 || d11_fc0 == 0x88) && d11_left >= 8)
+        {
+            LLC_SNAP d11_llc(d11_left);
+        }
+        else if ((d11_fc0 == 0x80 || d11_fc0 == 0x50) && d11_left >= 12)
+        {
+            // Beacon / probe response: the fixed parameters, then the tagged
+            // information elements (parse_elements() in print-802_11.c).
+            uint64 d11_timestamp;
+            uint16 d11_interval;
+            uint16 d11_caps;
+            if (d11_left >= 15)
+            {
+                D11_IES d11_ies(d11_left - 12);
+            }
+        }
+        else if (d11_fc0 == 0x00 && d11_left >= 4)
+        {
+            uint16 d11_caps;                      // association request
+            uint16 d11_listen;
+            if (d11_left >= 7) { D11_IES d11_ies(d11_left - 4); }
+        }
+        else if (d11_fc0 == 0x20 && d11_left >= 10)
+        {
+            uint16 d11_caps;                      // reassociation request
+            uint16 d11_listen;
+            MACaddr d11_curap;
+            if (d11_left >= 13) { D11_IES d11_ies(d11_left - 10); }
+        }
+        else if ((d11_fc0 == 0x10 || d11_fc0 == 0x30) && d11_left >= 6)
+        {
+            uint16 d11_caps;                      // association response
+            uint16 d11_status;
+            uint16 d11_aid;
+            if (d11_left >= 9) { D11_IES d11_ies(d11_left - 6); }
+        }
+        else if (d11_fc0 == 0xb0 && d11_left >= 6)
+        {
+            uint16 d11_auth_alg = { 0, 1, 2, 3 }; // authentication
+            uint16 d11_auth_seq = { 1, 2, 3, 4 };
+            uint16 d11_auth_status;
+        }
+        else if ((d11_fc0 == 0xa0 || d11_fc0 == 0xc0) && d11_left >= 2)
+        {
+            uint16 d11_reason = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 15, 17 };
+        }
+        else if (d11_fc0 == 0x40 && d11_left >= 3)
+        {
+            D11_IES d11_ies(d11_left);            // probe request: IEs only
+        }
+    }
+} DOT11_FRAME;
+
+// LINKTYPE_IEEE802_11_RADIOTAP (127) -> ieee802_11_radio_if_print: an 8-byte
+// radiotap header with no present bits, then the 802.11 frame.
+typedef struct (uint32 avail)
+{
+    if (avail < 8)
+    {
+        uchar rt_trunc[avail];
+    }
+    else
+    {
+        LittleEndian();
+        local int evil_rt = SetEvilBit(IsParsing());
+        ubyte  rt_version = { 0 };
+        ubyte  rt_pad = { 0 };
+        uint16 rt_len = { 8 };
+        uint32 rt_present = { 0 };
+        SetEvilBit(evil_rt);
+        BigEndian();
+        if (avail >= 32) { DOT11_FRAME d11(avail - 8); }
+    }
+} RADIOTAP_FRAME;
+
+// LINKTYPE_IEEE802_11_PRISM (119) -> prism_if_print: a 144-byte Prism monitor
+// header, then the 802.11 frame.
+typedef struct (uint32 avail)
+{
+    if (avail < 144)
+    {
+        uchar pr_trunc[avail];
+    }
+    else
+    {
+        LittleEndian();
+        local int evil_pr = SetEvilBit(IsParsing());
+        uint32 pr_msgcode = { 0x00000041, 0x00000044 };
+        uint32 pr_msglen = { 144 };
+        SetEvilBit(evil_pr);
+        uchar  pr_devname[16];
+        ubyte  pr_items[120];
+        BigEndian();
+        if (avail >= 168) { DOT11_FRAME d11(avail - 144); }
+    }
+} PRISM_FRAME;
+
+// LINKTYPE_IEEE802_11_AVS (163) -> ieee802_11_radio_avs_if_print.
+typedef struct (uint32 avail)
+{
+    if (avail < 64)
+    {
+        uchar avs_trunc[avail];
+    }
+    else
+    {
+        local int evil_av = SetEvilBit(IsParsing());
+        uint32 avs_version = { 0x80211001, 0x80211002 };
+        uint32 avs_length = { 64 };
+        SetEvilBit(evil_av);
+        ubyte  avs_rest[56];
+        if (avail >= 88) { DOT11_FRAME d11(avail - 64); }
+    }
+} AVS_FRAME;
+
+// LINKTYPE_FDDI (10) -> fddi_if_print, then print-llc.c.  13-byte header.
+typedef struct (uint32 avail)
+{
+    if (avail < 13)
+    {
+        uchar fddi_trunc[avail];
+    }
+    else
+    {
+        ubyte   fddi_fc = { 0x50, 0x51, 0x57, 0x41, 0x4f, 0xc0, 0x10 };
+        MACaddr fddi_dst;
+        MACaddr fddi_src;
+        if (avail >= 21) { LLC_SNAP fddi_llc(avail - 13); }
+    }
+} FDDI_FRAME;
+
+// LINKTYPE_IEEE802_5 (6) -> token_if_print, then print-llc.c.  14-byte header
+// plus the optional routing information field.
+typedef struct (uint32 avail)
+{
+    if (avail < 14)
+    {
+        uchar tr_trunc[avail];
+    }
+    else
+    {
+        ubyte   tr_ac;
+        ubyte   tr_fc = { 0x40, 0x00, 0x80, 0xc0 };
+        MACaddr tr_dst;
+        MACaddr tr_src;
+        if (avail >= 22) { LLC_SNAP tr_llc(avail - 14); }
+    }
+} TOKEN_FRAME;
+
+// LINKTYPE_ATM_RFC1483 (100) and ATM_CLIP (106) -> atm_if_print / cip_if_print,
+// both of which read an LLC/SNAP header first.
+typedef struct (uint32 avail)
+{
+    if (avail < 8)
+    {
+        uchar atm_trunc[avail];
+    }
+    else
+    {
+        LLC_SNAP atm_llc(avail);
+    }
+} ATM_FRAME;
+
+// LINKTYPE_SUNATM (123) -> sunatm_if_print: a 4-byte pseudo-header, then
+// either LLC/SNAP or a signalling PDU.
+typedef struct (uint32 avail)
+{
+    if (avail < 4)
+    {
+        uchar sa_trunc[avail];
+    }
+    else
+    {
+        local int evil_sa = SetEvilBit(IsParsing());
+        ubyte  sa_flags = { 0x00, 0x08, 0x80, 0x88, 0x01, 0x09 };
+        SetEvilBit(evil_sa);
+        ubyte  sa_vpi;
+        uint16 sa_vci = { 5, 16, 32, 100 };
+        if (avail >= 12) { LLC_SNAP sa_llc(avail - 4); }
+    }
+} SUNATM_FRAME;
+
+// LINKTYPE_SLIP (8) -> sl_if_print: a 16-byte SLIP pseudo-header, then IP.
+typedef struct (uint32 avail)
+{
+    if (avail < 16)
+    {
+        uchar sl_trunc[avail];
+    }
+    else
+    {
+        local int evil_sp = SetEvilBit(IsParsing());
+        ubyte sl_dir = { 0, 1 };
+        SetEvilBit(evil_sp);
+        ubyte sl_hdr[15];
+        if (avail >= 36) { Layer_3 L3(0x0800,avail - 16)<name="Layer 3">; }
+    }
+} SLIP_FRAME;
+
+// LINKTYPE_IPNET (226) -> ipnet_if_print: a 24-byte Solaris ipnet header.
+typedef struct (uint32 avail)
+{
+    if (avail < 24)
+    {
+        uchar in_trunc[avail];
+    }
+    else
+    {
+        local int evil_in = SetEvilBit(IsParsing());
+        ubyte  in_version = { 2 };
+        ubyte  in_family = { 2, 2, 26 };
+        SetEvilBit(evil_in);
+        uint16 in_htype;
+        local uint32 in_plen_values[] = { avail - 24 };
+        uint32 in_pktlen<values=in_plen_values>;
+        uint32 in_ifindex;
+        uint32 in_grifindex;
+        uint32 in_zsrc;
+        uint32 in_zdst;
+        if (in_family == 2)
+        {
+            if (avail >= 44) { Layer_3 L3(0x0800,avail - 24)<name="Layer 3">; }
+        }
+        else if (avail >= 64)
+        {
+            IPV6_DGRAM ip6(avail - 24);
+        }
+    }
+} IPNET_FRAME;
+
+// LINKTYPE_NFLOG (239) -> nflog_if_print: a 4-byte header, then TLVs, the
+// payload TLV (type 9) being the one that opens the network layer.
+typedef struct (uint32 avail)
+{
+    if (avail < 8)
+    {
+        uchar nf_trunc[avail];
+    }
+    else
+    {
+        local int evil_nf = SetEvilBit(IsParsing());
+        ubyte  nf_family = { 2, 2, 10 };
+        ubyte  nf_version = { 0 };
+        SetEvilBit(evil_nf);
+        uint16 nf_resid;
+        LittleEndian();                           // the TLVs are host-endian
+        local int evil_nt = SetEvilBit(IsParsing());
+        uint16 nf_tlvlen = { 4 };
+        uint16 nf_tlvtype = { 9 };                // NFULA_PAYLOAD
+        SetEvilBit(evil_nt);
+        BigEndian();
+        if (nf_family == 2)
+        {
+            if (avail >= 28) { Layer_3 L3(0x0800,avail - 8)<name="Layer 3">; }
+        }
+        else if (avail >= 48)
+        {
+            IPV6_DGRAM ip6(avail - 8);
+        }
+    }
+} NFLOG_FRAME;
+
+// LINKTYPE_PFLOG (117) -> pflog_if_print: a 64-byte OpenBSD pf log header
+// whose first byte is its own length and whose second is the address family.
+typedef struct (uint32 avail)
+{
+    if (avail < 64)
+    {
+        uchar pf_trunc[avail];
+    }
+    else
+    {
+        local int evil_pf = SetEvilBit(IsParsing());
+        ubyte pf_length = { 64, 61, 45, 100 };
+        ubyte pf_af = { 2, 2, 24, 28, 30 };
+        SetEvilBit(evil_pf);
+        ubyte pf_action = { 0, 1, 2, 4, 5, 6, 7, 8 };
+        ubyte pf_reason = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
+        uchar pf_ifname[16];
+        uchar pf_ruleset[16];
+        uint32 pf_rulenr;
+        uint32 pf_subrulenr;
+        uint32 pf_uid;
+        uint32 pf_pid;
+        uint32 pf_ruleuid;
+        uint32 pf_rulepid;
+        ubyte  pf_dir = { 0, 1, 2 };
+        ubyte  pf_pad[3];
+        if (pf_length == 64 && pf_af == 2)
+        {
+            if (avail >= 84) { Layer_3 L3(0x0800,avail - 64)<name="Layer 3">; }
+        }
+    }
+} PFLOG_FRAME;
+
+// LINKTYPE_NETANALYZER (240) and NETANALYZER_TRANSPARENT (241)
+// -> netanalyzer_if_print / netanalyzer_transparent_if_print: a 4-byte (or
+// 4 + 8 preamble) pseudo-header, then an Ethernet frame.
+typedef struct (uint32 avail, uint32 transparent)
+{
+    local uint32 na_hdr = 4;
+    if (transparent != 0)
+        na_hdr = 12;
+    if (avail < na_hdr)
+    {
+        uchar na_trunc[avail];
+    }
+    else
+    {
+        ubyte na_dummy[4];
+        if (transparent != 0)
+        {
+            local int evil_na = SetEvilBit(IsParsing());
+            uchar na_preamble[8] = { "\x55\x55\x55\x55\x55\x55\x55\xd5" };
+            SetEvilBit(evil_na);
+        }
+        ETH_FRAME na_eth(avail - na_hdr);
+    }
+} NETANALYZER_FRAME;
+
+// LINKTYPE_PPI (192) -> ppi_if_print: an 8-byte PPI header naming an inner
+// DLT, which is dispatched through a second if_printer.
+typedef struct (uint32 avail)
+{
+    if (avail < 8)
+    {
+        uchar ppi_trunc[avail];
+    }
+    else
+    {
+        LittleEndian();
+        local int evil_pp = SetEvilBit(IsParsing());
+        ubyte  ppi_version = { 0 };
+        ubyte  ppi_flags = { 0 };
+        uint16 ppi_len = { 8 };
+        uint32 ppi_dlt = { 1, 1, 105, 127, 9, 12 };
+        SetEvilBit(evil_pp);
+        BigEndian();
+        if (ppi_dlt == 1)
+        {
+            ETH_FRAME ppi_eth(avail - 8);
+        }
+        else if (ppi_dlt == 105)
+        {
+            DOT11_FRAME ppi_d11(avail - 8);
+        }
+        else if (avail >= 28)
+        {
+            Layer_3 L3(0x0800,avail - 8)<name="Layer 3">;
+        }
+    }
+} PPI_FRAME;
+
+// LINKTYPE_APPLE_IP_OVER_IEEE1394 (138) -> ap1394_if_print: an 18-byte
+// FireWire header ending in an EtherType.
+typedef struct (uint32 avail)
+{
+    if (avail < 18)
+    {
+        uchar fw_trunc[avail];
+    }
+    else
+    {
+        ubyte  fw_dhost[8];
+        ubyte  fw_shost[8];
+        uint16 fw_type<values=etype_values>;
+        L3DISPATCH fw_l3(fw_type,avail - 18);
+    }
+} AP1394_FRAME;
+
+// LINKTYPE_IP_OVER_FC (122) -> ipfc_if_print: a 16-byte Fibre Channel header,
+// then print-llc.c.
+typedef struct (uint32 avail)
+{
+    if (avail < 16)
+    {
+        uchar fc_trunc[avail];
+    }
+    else
+    {
+        ubyte fc_dhost[8];
+        ubyte fc_shost[8];
+        if (avail >= 24) { LLC_SNAP fc_llc(avail - 16); }
+    }
+} IPFC_FRAME;
+
+// LINKTYPE_IEEE802_15_4_WITHFCS (195), NONASK_PHY (215) and NOFCS (230)
+// -> ieee802_15_4_if_print.
+typedef struct (uint32 avail)
+{
+    if (avail < 10)
+    {
+        uchar z_trunc[avail];
+    }
+    else
+    {
+        LittleEndian();                           // 802.15.4 is little-endian
+        local int evil_z = SetEvilBit(IsParsing());
+        uint16 z_fcf = { 0x8841, 0x8841, 0x8841, 0xcc41, 0x8c41, 0x0841,
+                         0x8800, 0x8008, 0x8843, 0xcc43, 0x0802, 0x8802,
+                         0x9841, 0xa841 };
+        SetEvilBit(evil_z);
+        ubyte  z_seq;
+        // Dependency: the addressing fields present are the ones the address
+        // modes in the frame control field declare, and their widths follow
+        // from those modes - never the other way round.
+        local uint32 z_ftype   = z_fcf & 7;
+        local uint32 z_dstmode = (z_fcf >> 10) & 3;
+        local uint32 z_srcmode = (z_fcf >> 14) & 3;
+        local uint32 z_pancomp = (z_fcf >> 6) & 1;
+        local uint32 z_need = 3;
+        if (z_dstmode == 2)
+            z_need += 4;
+        if (z_dstmode == 3)
+            z_need += 10;
+        if (z_srcmode != 0)
+        {
+            if (z_pancomp == 0)
+                z_need += 2;
+            if (z_srcmode == 2)
+                z_need += 2;
+            if (z_srcmode == 3)
+                z_need += 8;
+        }
+        if (avail >= z_need)
+        {
+            if (z_dstmode != 0)
+            {
+                uint16 z_dstpan;
+                if (z_dstmode == 2) { uint16 z_dst; }
+                if (z_dstmode == 3) { ubyte z_dst8[8]; }
+            }
+            if (z_srcmode != 0)
+            {
+                if (z_pancomp == 0) { uint16 z_srcpan; }
+                if (z_srcmode == 2) { uint16 z_src; }
+                if (z_srcmode == 3) { ubyte z_src8[8]; }
+            }
+            if (z_ftype == 0 && avail >= z_need + 4)
+            {
+                uint16 z_superframe = { 0xcfff, 0x4fff, 0x8fff };   // beacon
+                ubyte  z_gts = { 0x00 };
+                ubyte  z_pending = { 0x00 };
+            }
+            if (z_ftype == 3 && avail >= z_need + 1)
+            {
+                ubyte z_cmdid = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };      // MAC command
+            }
+        }
+        BigEndian();
+    }
+} DOT15_FRAME;
+
+// LINKTYPE_LTALK (114) -> ltalk_if_print, then print-atalk.c.
+typedef struct (uint32 avail)
+{
+    if (avail < 3)
+    {
+        uchar lt_trunc[avail];
+    }
+    else
+    {
+        ubyte lt_dst;
+        ubyte lt_src;
+        local int evil_lt = SetEvilBit(IsParsing());
+        ubyte lt_type = { 0x01, 0x02, 0x81, 0x82, 0x85 };
+        SetEvilBit(evil_lt);
+    }
+} LTALK_FRAME;
+
+// LINKTYPE_BLUETOOTH_HCI_H4_WITH_PHDR (201) -> bt_if_print.
+typedef struct (uint32 avail)
+{
+    if (avail < 5)
+    {
+        uchar bt_trunc[avail];
+    }
+    else
+    {
+        local int evil_bt = SetEvilBit(IsParsing());
+        uint32 bt_direction = { 0, 1 };
+        ubyte  bt_pkttype = { 1, 2, 3, 4 };
+        SetEvilBit(evil_bt);
+    }
+} BT_FRAME;
+
+// LINKTYPE_USB_LINUX (189) -> usb_linux_48_byte_if_print.
+typedef struct (uint32 avail)
+{
+    if (avail < 48)
+    {
+        uchar usb_trunc[avail];
+    }
+    else
+    {
+        LittleEndian();
+        uint64 usb_id;
+        local int evil_ub = SetEvilBit(IsParsing());
+        ubyte  usb_event_type = { 0x43, 0x53, 0x45 };      // 'C', 'S', 'E'
+        ubyte  usb_transfer_type = { 0, 1, 2, 3 };
+        SetEvilBit(evil_ub);
+        ubyte  usb_endpoint;
+        ubyte  usb_device;
+        uint16 usb_busid;
+        ubyte  usb_setup_flag;
+        ubyte  usb_data_flag;
+        uint64 usb_ts_sec;
+        uint32 usb_ts_usec;
+        uint32 usb_status;
+        uint32 usb_urb_len;
+        uint32 usb_data_len;
+        BigEndian();
+    }
+} USB_FRAME;
+
+// LINKTYPE_SYMANTEC_FIREWALL (99) -> symantec_if_print: a 44-byte header whose
+// bytes 6..7 are the EtherType.
+typedef struct (uint32 avail)
+{
+    if (avail < 44)
+    {
+        uchar sy_trunc[avail];
+    }
+    else
+    {
+        ubyte  sy_stuff1[6];
+        uint16 sy_etype<values=etype_values>;
+        ubyte  sy_stuff2[36];
+        L3DISPATCH sy_l3(sy_etype,avail - 44);
+    }
+} SYMANTEC_FRAME;
+
+// LINKTYPE_FRELAY (107) and FRELAY_WITH_DIR (206) -> fr_if_print.
+typedef struct (uint32 avail)
+{
+    if (avail < 4)
+    {
+        uchar fr_trunc[avail];
+    }
+    else
+    {
+        local int evil_fr = SetEvilBit(IsParsing());
+        ubyte fr_dlci1 = { 0x04, 0x08, 0x0c, 0x10, 0xfc };
+        ubyte fr_dlci2 = { 0x41, 0x81, 0xc1, 0x21 };
+        ubyte fr_nlpid = { 0xcc, 0x08, 0x81, 0x82, 0x83, 0x8e, 0x00, 0xb1 };
+        SetEvilBit(evil_fr);
+        if (fr_nlpid == 0xcc)
+        {
+            if (avail >= 23) { Layer_3 L3(0x0800,avail - 3)<name="Layer 3">; }
+        }
+        else if (fr_nlpid == 0x8e)
+        {
+            if (avail >= 43) { IPV6_DGRAM ip6(avail - 3); }
+        }
+    }
+} FR_FRAME;
+
+// LINKTYPE_JUNIPER_ETHER (178), JUNIPER_PPP (179) and JUNIPER_CHDLC (181)
+// -> juniper_ether_if_print and friends, via juniper_parse_header(), which
+// refuses anything that does not start with the three-byte "MGC" magic.
+// ADDED: these are registered LINKTYPE assignments that the JSON's registry
+// snapshot omitted, and they are the only route to print-juniper.c.
+typedef struct (uint32 avail)
+{
+    if (avail < 4)
+    {
+        uchar jnx_trunc[avail];
+    }
+    else
+    {
+        local int evil_jx = SetEvilBit(IsParsing());
+        uchar jnx_magic[3] = { "\x4d\x47\x43" };     // "MGC"
+        ubyte jnx_flags = { 0x00, 0x01, 0x02, 0x03 };  // no extension TLVs
+        SetEvilBit(evil_jx);
+        ETH_FRAME jnx_eth(avail - 4);
+    }
+} JUNIPER_FRAME;
+
+// PCAPHEADER.network -> the link-layer framing, i.e. which of tcpdump's
+// if_printers reads the frame (print.c's printers table).  Structure rule
+// "mutually_exclusive": exactly one framing applies per capture.
+typedef struct (uint32 lt, uint32 avail)
+{
+    switch (lt) {
+        case 1:                                   ETH_FRAME eth(avail);            break;
+        case 101:                                 RAW_FRAME raw(avail,0);          break;
+        case 228:                                 RAW_FRAME raw(avail,0);          break;
+        case 229:                                 RAW_FRAME raw(avail,1);          break;
+        case 0:                                   NULL_FRAME nul(avail,0);         break;
+        case 108:                                 NULL_FRAME nul(avail,1);         break;
+        case 113:                                 SLL_FRAME sll(avail);            break;
+        case 276:                                 SLL2_FRAME sll2(avail);          break;
+        case 9:
+        case 50:
+        case 166:
+        case 204:                                 PPP_FRAME ppp(avail);            break;
+        case 104:
+        case 205:                                 CHDLC_FRAME chdlc(avail);        break;
+        case 51:                                  PPPOEL_FRAME pppoel(avail);      break;
+        case 105:                                 DOT11_FRAME d11(avail);          break;
+        case 127:                                 RADIOTAP_FRAME rt(avail);        break;
+        case 119:                                 PRISM_FRAME pr(avail);           break;
+        case 163:                                 AVS_FRAME avs(avail);            break;
+        case 10:                                  FDDI_FRAME fddi(avail);          break;
+        case 6:                                   TOKEN_FRAME tr(avail);           break;
+        case 100:
+        case 106:                                 ATM_FRAME atm(avail);            break;
+        case 123:                                 SUNATM_FRAME sa(avail);          break;
+        case 8:                                   SLIP_FRAME sl(avail);            break;
+        case 226:                                 IPNET_FRAME ipnet(avail);        break;
+        case 239:                                 NFLOG_FRAME nf(avail);           break;
+        case 117:                                 PFLOG_FRAME pf(avail);           break;
+        case 240:                                 NETANALYZER_FRAME na(avail,0);   break;
+        case 241:                                 NETANALYZER_FRAME na(avail,1);   break;
+        case 192:                                 PPI_FRAME ppi(avail);            break;
+        case 138:                                 AP1394_FRAME fw(avail);          break;
+        case 122:                                 IPFC_FRAME ipfc(avail);          break;
+        case 195:
+        case 215:
+        case 230:                                 DOT15_FRAME z(avail);            break;
+        case 114:                                 LTALK_FRAME lt(avail);           break;
+        case 187:
+        case 201:                                 BT_FRAME bt(avail);              break;
+        case 189:
+        case 220:                                 USB_FRAME usb(avail);            break;
+        case 99:                                  SYMANTEC_FRAME sy(avail);        break;
+        case 107:
+        case 206:                                 FR_FRAME fr(avail);              break;
+        case 178:
+        case 179:
+        case 181:                                 JUNIPER_FRAME jnx(avail);        break;
+        default:
+            // Dependency 2, the template's own rule: every other link type is
+            // read as if it had the 14-byte Ethernet header the original gives
+            // it.  Each still reaches its own printer's header parse.
+            ETH_FRAME eth(avail);
+            break;
+    }
+} LINKFRAME;
+
+typedef struct (uint32 network, uint32 vminor) {
+        // MEASURED DEPENDENCY, not in the JSON: libpcap interchanged incl_len
+        // and orig_len at file version 2.3, and sf-pcap.c:397 still undoes
+        // that for every file that declares a lower minor - so with minor 0, 1
+        // or 2 the two fields must be written in the opposite order or every
+        // record is read with its lengths exchanged and skipped.  Minor 3 is
+        // MAYBE_SWAPPED, which leaves them alone as long as incl_len <=
+        // orig_len, which the repair below guarantees.
+        local uint32 lengths_swapped = 0;
+        if (vminor < 3)
+            lengths_swapped = 1;
+        if (file_swapped != 0)
+            BigEndian();       // the record header follows the magic's order
+        time_t ts_sec;         /* timestamp seconds */
+        uint32 ts_usec;        /* timestamp microseconds */
+        // Tier A calculated_value, and the strictest field in the format: one
+        // byte either way and every reader refuses the whole file.  The frame
+        // SIZE it records is the free choice the diversity axis asks for, so
+        // it is chosen here from a multi-scale set and every emitter below
+        // fills exactly this many bytes - in the parse direction it is the
+        // file's own value that drives them.  Cap() holds the set inside the
+        // engine's MAX_FILE_SIZE, which is the only reason any bound appears.
+        local uint32 room = 0;
+        if (rec_budget < 60000)
+            room = 60000 - rec_budget;
+        local uint32 incl_values[] = {
+            Cap(0, room),     Cap(1, room),     Cap(20, room),    Cap(28, room),
+            Cap(42, room),    Cap(46, room),    Cap(54, room),
+            Cap(60, room),    Cap(60, room),    Cap(64, room),    Cap(64, room),
+            Cap(74, room),    Cap(74, room),    Cap(90, room),    Cap(90, room),
+            Cap(110, room),   Cap(110, room),   Cap(128, room),   Cap(128, room),
+            Cap(160, room),   Cap(192, room),   Cap(192, room),   Cap(256, room),
+            Cap(256, room),   Cap(320, room),   Cap(400, room),   Cap(400, room),
+            Cap(576, room),   Cap(576, room),   Cap(768, room),   Cap(1024, room),
+            Cap(1024, room),  Cap(1280, room),  Cap(1514, room),  Cap(1514, room),
+            Cap(1600, room),  Cap(2048, room),  Cap(3000, room),  Cap(4096, room),
+            Cap(6000, room),  Cap(9000, room),  Cap(12000, room), Cap(16000, room)
+        };
+        local int evil_incl = SetEvilBit(IsParsing());
+        local int64 pos_incl = FTell();
+        uint32 incl_len<values=incl_values>;   /* number of octets of packet saved in file */
+        SetEvilBit(evil_incl);
+        // Tier C, declared bare.  Only repaired below, and only when the free
+        // value it drew would make the record self-inconsistent - a capture
+        // length larger than the on-the-wire length, which cannot happen on a
+        // real network and which makes print.c:354 skip the record entirely.
+        local int64 pos_orig = FTell();
+        uint32 orig_len;       /* actual length of packet */
+        BigEndian();
+
+        len_before_l3 = 0;
+        local int64 frame_start = FTell();
+        LINKFRAME frame(network,incl_len);
+        local uint32 frame_used = FTell() - frame_start;
+        // original lines 176-177: incl_len - len_before_l3 - L3.total_length,
+        // computed here from the bytes actually emitted so that every framing,
+        // network layer and payload above shares one rule.
+        if (frame_used < incl_len) {
+            uchar padding[incl_len - frame_used]<name="Layer 2 Padding">;
+        }
+        else if (frame_used > incl_len) {
+            // Safety net for the one invariant the whole file depends on: if
+            // any emitter above wrote more than it was given, incl_len is
+            // corrected to the bytes actually present rather than leaving the
+            // record chain desynchronised.
+            local int64 over_end = FTell();
+            FSeek(pos_incl);
+            local uint32 incl_fix[] = { frame_used };
+            local int evil_fix = SetEvilBit(IsParsing());
+            uint32 incl_len<values=incl_fix>;
+            SetEvilBit(evil_fix);
+            FSeek(over_end);
+        }
+        LittleEndian();
+        if (file_swapped != 0)
+            BigEndian();       // the repair writes two record header fields,
+                               // so it needs the order the magic declared
+        local int64 rec_end = FTell();
+        // The repair.  Two things make a record unreadable rather than merely
+        // odd, and both are a relation between these two fields, not a bound
+        // on either: orig_len below incl_len (print.c:354 skips the record)
+        // and orig_len above MAXIMUM_SNAPLEN (same check).  And when the
+        // declared minor version is below 3, libpcap exchanges the pair
+        // (sf-pcap.c:397), so there the two must be equal or the exchanged
+        // capture length no longer matches the bytes present and the record
+        // chain desynchronises.
+        local uint32 need_repair = 0;
+        if (orig_len < incl_len || orig_len > 262144)
+            need_repair = 1;
+        if (lengths_swapped != 0 && orig_len != incl_len)
+            need_repair = 1;
+        if (need_repair != 0) {
+            FSeek(pos_orig);
+            local uint32 orig_values[] = { incl_len, incl_len, incl_len,
+                                           incl_len + 1, incl_len + 40,
+                                           incl_len + 1000, 262144 };
+            local uint32 orig_equal[] = { incl_len };
+            local int evil_orig = SetEvilBit(IsParsing());
+            if (lengths_swapped != 0)
+            {
+                uint32 orig_len<values=orig_equal>;
+            }
+            else
+            {
+                // A value above incl_len is what marks a sliced capture, which
+                // a dissector annotates differently (diversity axis orig_len).
+                uint32 orig_len<values=orig_values>;
+            }
+            SetEvilBit(evil_orig);
+            FSeek(rec_end);
+        }
+        rec_budget += 16 + incl_len;
+        if (incl_len > max_incl)
+            max_incl = incl_len;
+        if (file_swapped != 0)
+            BigEndian();       // leave the order the next record header needs
+} PCAPRECORD <read=ReadPCAPRECORD,comment=PCAPcomments>;
+
+string PCAPcomments(PCAPRECORD &P)
+{
+    local uint16 L4_proto = P.L3.L4proto;
+    string strReturn;
+    local uint16 AppDataLen = 0;
+    if (L4_proto == 0x6)
+    {
+        AppDataLen = P.L3.total_length - P.L3.ip_hdr_len*4 - P.L4.tcp_hdr_len*4;
+    }
+    else if (L4_proto == 0x11)
+    {
+        AppDataLen = P.L4.udp_hdr_len - 8;
+    }   
+    SPrintf(strReturn,"%s:%d -> %s:%d  %s %s",IPv4addrName(P.L3.SRC_IP),P.L4.SrcPort,IPv4addrName(P.L3.DST_IP),P.L4.DstPort,L4protoName(L4_proto), AppDataLen > 0 ? "***" : "");
+    return strReturn;
+}
+string ReadPCAPRECORD(PCAPRECORD &record)
+{
+	string strReturn;
+	
+	SPrintf(strReturn, "%s.%06u", TimeTToString(record.ts_sec), record.ts_usec);
+	return strReturn;
+}
+
+string MACname(MACaddr &addr)
+{
+    string strReturn;
+    SPrintf(strReturn,"%.02x:%.02x:%.02x:%.02x:%.02x:%.02x",addr.Byte[0],addr.Byte[1],addr.Byte[2],addr.Byte[3],addr.Byte[4],addr.Byte[5]);
+    return strReturn;
+}
+
+// Define the headers
+LittleEndian();
+PCAPHEADER header;
+
+// Structure rules "cardinality", "contiguous" and "last_element": zero or more
+// records, nothing between them, nothing after the last one.  The loop ends on
+// FEof or when the output budget is spent - never by shrinking a record.
+while( !FEof(0.05) && rec_budget < 60000 )
+{
+	PCAPRECORD record(header.network,header.version_minor) <name="Frame">;
+}
+
+// snaplen, declared bare above, repaired for the same reason orig_len is: a
+// snaplen below the largest record makes libpcap hand tcpdump only that many
+// bytes of every frame (sf-pcap.c:634), so every payload above would be
+// invisible.  One value in the set is deliberately left below it, because that
+// truncation path is itself worth reaching.
+local int64 eof_pos = FTell();
+if (file_swapped != 0) {
+    BigEndian();
+} else {
+    LittleEndian();
+}
+if (header.snaplen < max_incl || header.snaplen > 262144) {
+    FSeek(pos_snaplen);
+    local uint32 snap_values[] = { 65535, 262144, max_incl, max_incl,
+                                   max_incl + 1, max_incl + 4096, 0,
+                                   max_incl - 1 };
+    local int evil_snap = SetEvilBit(IsParsing());
+    uint32 snaplen<values=snap_values>;
+    SetEvilBit(evil_snap);
+    FSeek(eof_pos);
+}

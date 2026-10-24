@@ -1,0 +1,3100 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: JPG.bt
+//   Authors: Ibrahim Onaran
+//    E-mail: onaran AT gmail DOT com
+//   Version: 1.6.4
+//   Purpose: Template for JPG image files. 
+//  Category: Image
+// File Mask: *.jpg,*.jpeg
+//  ID Bytes: FF D8 FF
+//   History: 
+//   1.6.4 2018-12-20 Denis Anisimov: COMPSOS bug fixed.
+//   1.6.3 2018-01-04 I Onaran: Changed author information.
+//   1.6.2 2016-11-29 Bartosz Dziewonski: Search for end of file marker forwards rather than backwards.
+//                    Data after the marker may contain bytes that look just like the marker itself.
+//                    Also, use FindFirst() for better performance.
+//   1.6.1 2016-10-18 Bartosz Dziewonski: Don't fail when garbage bytes are present
+//                    between JPEG sections.
+//   1.6   2016-10-18 SweetScape: Handle when end of file marker is not found.
+//   1.5   2016-01-28 Pergamon: Added Sof3 support and set padded bytes color to silver.
+//   1.4.1 2016-06-14 Bartosz Dziewonski: Don't fail when parsing IFD where the offset of data for
+//                    final entry is before the structure offset.
+//   1.4   2016-01-28 SweetScape: Updated header for repository submission, added open attribute.
+//   1.3   2014-11-03 SweetScape: Fixed using FTell instead of Ftell. 
+//   1.2   2012-10-04 dxp: Added JPEG-LS marker structure.
+//   1.1   2009-03-14 Kuang-che Wu: Fix parse fail if encounter unknown APP1,
+//                    fix uShort typo,
+//                    parse inlined EXIF data correctly,
+//                    recognize more sections and fields, especially EXIF tags, GPS tags, and CIFF tags
+//                    and many improvements.
+//   1.0   Mor FTP:   Initial release.
+//
+// This is a detailed JPEG File analysis.
+// Features
+//  1. Huffmann and quantization tables.
+//  2. Exif (APP1) information including jpeg and other thubnail images
+//  3. SOS, SOF0, JIFF and APP0 sections
+//
+// Note : This code doesn't parse all known sections. The reson is the application sections
+//  contain camera specific information and this information sometimes is not public or
+//  related to the camera and not important for image display softwares.
+//
+// New Features: Parses MakerNote for casio qv-r62
+//
+// references:
+// JPEG		http://www.w3.org/Graphics/JPEG/itu-t81.pdf
+// JFIF		http://www.w3.org/Graphics/JPEG/jfif3.pdf
+// EXIF		http://www.exif.org/Exif2-2.PDF
+// CIFF		http://xyrion.org/ciff/CIFFspecV1R04.pdf
+// exiftool	http://www.sno.phy.queensu.ca/~phil/exiftool/
+// JPEG-LS	http://www.itu.int/rec/T-REC-T.87-199806-I/en
+//--------------------------------------
+
+//=== REWRITE NOTE ============================================================
+// Generative rewrite of templates_originals/jpg-orig.bt, driven by
+// llm_learned_specification/opus5-tiered/llm_reterived_constraints_jpg-llm_opus5-tiered.json.
+// Every original typedef, field name, field order, enum and comment is kept;
+// the additions are marked ADDED and each names the decoder branch it reaches.
+// The measured decoder is libjpeg-turbo 3.2.0 driven as `djpeg <file>`, which
+// is the same decoder every measured_gate in the JSON was established against.
+//
+// TIER DISCIPLINE
+//   Tier A  pinned inside SetEvilBit(IsParsing()).  The guard must be
+//     IsParsing() and not false: while GENERATING the two are identical, so no
+//     Tier A field ever takes the 1/128 out-of-set value; while PARSING it is
+//     the only escape that lets a computed field accept a real file's own
+//     number.  With a literal false this template parses none of the files in
+//     testcases/jpg.
+//   Tier B  the complete valid_values set, weighted by preferred_value, and
+//     NOT guarded, so the evil bit still reaches each decoder rejection path
+//     ("Bogus DHT index", "Unsupported JPEG data precision", ...).
+//   Tier C  bare.  No value set, no <min=>, no <max=>.
+//
+// PLAN-THEN-EMIT
+//   JPEG is written strictly in order and every szSection covers only the body
+//   that follows it, so nothing needs backpatching.  What DOES need deciding up
+//   front is the frame/scan plan, because the scan's byte count is a function
+//   of the frame geometry, the sampling factors, the scan's component count,
+//   the restart interval and the Huffman tables - all of which are emitted in
+//   earlier segments.  jpg_plan() below makes every one of those choices once,
+//   then each segment emits its part of it, and the entropy-coded segment is
+//   built from the result.  Nothing is narrowed to suit a precomputed payload:
+//   the payload is rebuilt for whatever geometry was drawn.
+//
+// OUTPUT BUDGET - the only size-control mechanism
+//   JpegFileEnd = FileSize() is the original's own line.  In the parse
+//   direction it is the real file size; in the generate direction FormatFuzzer
+//   draws it uniformly from [current, MAX_FILE_SIZE] and then forbids writing
+//   past it, which makes it exactly the running budget the JSON's output_budget
+//   rules ask for (96 KB of marker segments, scaled to the 64 KB the runtime
+//   allows).  Segments are added while the budget lasts; the entropy-coded
+//   segment is truncated at a byte boundary if what remains cannot hold it,
+//   which libjpeg reports as "premature end of data segment" and still decodes.
+//   No dimension, component count, sampling factor, table size or restart
+//   interval is ever capped to control size.
+//=============================================================================
+
+// Tier C fields and the per-call-site lookahead sets below must not be pulled
+// onto values ffcompile mined from the template's own literals.
+const local byte   ReadByteInitValues[0];
+const local ubyte  ReadUByteInitValues[0];
+const local ushort ReadUShortInitValues[0];
+const local uint   ReadUIntInitValues[0];
+const local string ReadBytesInitValues[0];
+
+// set left to right for both endian
+LittleEndian(); BitfieldLeftToRight();
+BigEndian(); BitfieldLeftToRight();
+
+local quad JpegFileEnd = 0;
+local int colorId = 0;
+local int colorSelect = 0;
+local DWORD clr = 0;
+local DWORD jetMap[6*3] = { // blue, red green
+	0x0000cc,0x0000ff,0x0033ff,0x0066ff,0x0099ff,0x00ccff,
+	0x00ffff,0x33ffcc,0x66ff99,0x99ff66,0xccff33,0xffff00,
+	0xffcc00,0xff9900,0xff6600,0xff3300,0xff0000,0xcc0000
+};
+local char CameraMake[32];
+local char CameraModel[40];
+
+local string stack_IFD_dirtype = "";
+
+enum IFD_dirtype {
+	IFD_TYPE_EXIF = 1,
+	IFD_TYPE_GEOTAG,
+	IFD_TYPE_CASIO_QV_R62,
+};
+
+// ------------------------------------------------------------
+// helper functions
+void Stack_push(string &s, int x)
+{
+	s += (char)x;
+}
+
+void Stack_pop(string &s)
+{
+	s = SubStr(s, 0, Strlen(s) - 1);
+}
+
+int Stack_top(string &s)
+{
+	return s[Strlen(s) - 1];
+}
+
+string ReadStringN(int64 pos, int n)
+{
+	local uchar s[n];
+	ReadBytes(s, pos, n);
+	return s;
+}
+
+// ------------------------------------------------------------
+
+void ChangeColor(byte bChangeColor) {
+	if(bChangeColor == 1) {colorSelect++; colorId = 0;}
+	clr = jetMap[(colorSelect%3)*6+(colorId%6)];
+	SetBackColor(clr);
+	//Printf("clrIdx = [%d %d], RGB(%d,%d,%d)\n",colorSelect,colorId,(clr>>16),(clr>>8)&0x00FF,clr&0x0000FF);
+	colorId++;
+}
+
+// ------------------------------------------------------------
+// JPEG
+typedef enum <WORD> tagID
+{
+	M_SOF0  = 0xFFC0, // Start Of Frame N
+	M_SOF1,// N indicates which compression process
+	M_SOF2,// Only SOF0-SOF2 are now in common use
+	M_SOF3,
+	M_DHT, //Huffman Table
+	M_SOF5,
+	M_SOF6,
+	M_SOF7,
+	M_JPG,
+	M_SOF9,
+	M_SOF10,
+	M_SOF11,
+	M_DAC = 0xffcc,
+	M_SOF13,
+	M_SOF14,
+	M_SOF15,
+	M_RST0 = 0xffd0,
+	M_RST1, M_RST2, M_RST3, M_RST4, M_RST5, M_RST6, M_RST7,
+	M_SOI = 0xFFD8, // Start Of Image
+	M_EOI,// End Of Image
+	M_SOS,// Start Of Scan (begins compressed data)
+	M_DQT,
+	M_DNL,
+	M_DRI,
+	M_DHP,
+	M_EXP,
+	M_APP0 = 0xFFE0, // Jfif marker
+	M_APP1,// Exif marker
+	M_APP2,
+	M_APP3,
+	M_APP4,
+	M_APP5,
+	M_APP6,
+	M_APP7,
+	M_APP8,
+	M_APP9,
+	M_APP10,
+	M_APP11,
+	M_APP12,
+	M_APP13,
+	M_APP14,
+	M_APP15,
+	M_JPG0 = 0xfff0,
+	M_JPG1, M_JPG2, M_JPG3, M_JPG4, M_JPG5, M_JPG6, M_JPGLS,
+	M_JPG8, M_JPG9, M_JPG10, M_JPG11, M_JPG12, M_JPG13, M_JPG14, M_JPG15,
+	M_COMM = 0xFFFE  // Comment
+} M_ID <format=hex>;
+
+
+// ------------------------------------------------------------
+// EXIF tags
+
+typedef enum <WORD> tagExifTag {
+	///////////////////////////////////			Format            Comp  Description
+	InteropIndex               = 0x0001,
+	InteropVersion             = 0x0002,
+	SubfileType                = 0x00fe,
+	OldSubfileType             = 0x00ff,
+	ImageWidth                 = 0x0100,
+	ImageHeight                = 0x0101,
+	BitsPerSample              = 0x0102,
+	Compression                = 0x0103,
+	PhotometricInterpretation  = 0x0106,
+	Thresholding               = 0x0107,
+	CellWidth                  = 0x0108,
+	CellLength                 = 0x0109,
+	FillOrder                  = 0x010a,
+	DocumentName               = 0x010d,
+	ImageDescription           = 0x010e,
+	Make                       = 0x010f,
+	Model                      = 0x0110,
+	StripOffsets               = 0x0111,
+	Orientation                = 0x0112,
+	SamplesPerPixel            = 0x0115,
+	RowsPerStrip               = 0x0116,
+	StripByteCounts            = 0x0117,
+	MinSampleValue             = 0x0118,
+	MaxSampleValue             = 0x0119,
+	XResolution                = 0x011a,
+	YResolution                = 0x011b,
+	PlanarConfiguration        = 0x011c,
+	PageName                   = 0x011d,
+	XPosition                  = 0x011e,
+	YPosition                  = 0x011f,
+	FreeOffsets                = 0x0120,
+	FreeByteCounts             = 0x0121,
+	GrayResponseUnit           = 0x0122,
+	GrayResponseCurve          = 0x0123,
+	T4Options                  = 0x0124,
+	T6Options                  = 0x0125,
+	ResolutionUnit             = 0x0128,
+	PageNumber                 = 0x0129,
+	ColorResponseUnit          = 0x012c,
+	TransferFunction           = 0x012d,
+	Software                   = 0x0131,
+	ModifyDate                 = 0x0132,
+	Artist                     = 0x013b,
+	HostComputer               = 0x013c,
+	Predictor                  = 0x013d,
+	WhitePoint                 = 0x013e,
+	PrimaryChromaticities      = 0x013f,
+	ColorMap                   = 0x0140,
+	HalftoneHints              = 0x0141,
+	TileWidth                  = 0x0142,
+	TileLength                 = 0x0143,
+	TileOffsets                = 0x0144,
+	TileByteCounts             = 0x0145,
+	BadFaxLines                = 0x0146,
+	CleanFaxData               = 0x0147,
+	ConsecutiveBadFaxLines     = 0x0148,
+	SubIFD                     = 0x014a,
+	InkSet                     = 0x014c,
+	InkNames                   = 0x014d,
+	NumberofInks               = 0x014e,
+	DotRange                   = 0x0150,
+	TargetPrinter              = 0x0151,
+	ExtraSamples               = 0x0152,
+	SampleFormat               = 0x0153,
+	SMinSampleValue            = 0x0154,
+	SMaxSampleValue            = 0x0155,
+	TransferRange              = 0x0156,
+	ClipPath                   = 0x0157,
+	XClipPathUnits             = 0x0158,
+	YClipPathUnits             = 0x0159,
+	Indexed                    = 0x015a,
+	JPEGTables                 = 0x015b,
+	OPIProxy                   = 0x015f,
+	GlobalParametersIFD        = 0x0190,
+	ProfileType                = 0x0191,
+	FaxProfile                 = 0x0192,
+	CodingMethods              = 0x0193,
+	VersionYear                = 0x0194,
+	ModeNumber                 = 0x0195,
+	Decode                     = 0x01b1,
+	DefaultImageColor          = 0x01b2,
+	JPEGProc                   = 0x0200,
+	ThumbnailOffset            = 0x0201,
+	ThumbnailLength            = 0x0202,
+	JPEGRestartInterval        = 0x0203,
+	JPEGLosslessPredictors     = 0x0205,
+	JPEGPointTransforms        = 0x0206,
+	JPEGQTables                = 0x0207,
+	JPEGDCTables               = 0x0208,
+	JPEGACTables               = 0x0209,
+	YCbCrCoefficients          = 0x0211,
+	YCbCrSubSampling           = 0x0212,
+	YCbCrPositioning           = 0x0213,
+	ReferenceBlackWhite        = 0x0214,
+	StripRowCounts             = 0x022f,
+	ApplicationNotes           = 0x02bc,
+	RelatedImageFileFormat     = 0x1000,
+	RelatedImageWidth          = 0x1001,
+	RelatedImageLength         = 0x1002,
+	ImageID                    = 0x800d,
+	WangAnnotation             = 0x80a4,
+	Matteing                   = 0x80e3,
+	DataType                   = 0x80e4,
+	ImageDepth                 = 0x80e5,
+	TileDepth                  = 0x80e6,
+	Model2                     = 0x827d,
+	CFARepeatPatternDim        = 0x828d,
+	CFAPattern2                = 0x828e,
+	BatteryLevel               = 0x828f,
+	Copyright                  = 0x8298,
+	ExposureTime               = 0x829a,
+	FNumber                    = 0x829d,
+	PixelScale                 = 0x830e,
+	IPTC_NAA                   = 0x83bb,
+	IntergraphPacketData       = 0x8474,
+	IntergraphFlagRegisters    = 0x847f,
+	IntergraphMatrix           = 0x8480,
+	ModelTiePoint              = 0x8482,
+	Site                       = 0x84e0,
+	ColorSequence              = 0x84e1,
+	IT8Header                  = 0x84e2,
+	RasterPadding              = 0x84e3,
+	BitsPerRunLength           = 0x84e4,
+	BitsPerExtendedRunLength   = 0x84e5,
+	ColorTable                 = 0x84e6,
+	ImageColorIndicator        = 0x84e7,
+	BackgroundColorIndicator   = 0x84e8,
+	ImageColorValue            = 0x84e9,
+	BackgroundColorValue       = 0x84ea,
+	PixelIntensityRange        = 0x84eb,
+	TransparencyIndicator      = 0x84ec,
+	ColorCharacterization      = 0x84ed,
+	HCUsage                    = 0x84ee,
+	IPTC_NAA2                  = 0x8568,
+	ModelTransform             = 0x85d8,
+	PhotoshopSettings          = 0x8649,
+	ExifOffset                 = 0x8769,
+	ICC_Profile                = 0x8773,
+	ImageLayer                 = 0x87ac,
+	GeoTiffDirectory           = 0x87af,
+	GeoTiffDoubleParams        = 0x87b0,
+	GeoTiffAsciiParams         = 0x87b1,
+	ExposureProgram            = 0x8822,
+	SpectralSensitivity        = 0x8824,
+	GPSInfo                    = 0x8825,
+	ISO                        = 0x8827,
+	OptoElectricConvFactor     = 0x8828,
+	Interlace                  = 0x8829,
+	TimeZoneOffset             = 0x882a,
+	SelfTimerMode              = 0x882b,
+	FaxRecvParams              = 0x885c,
+	FaxSubAddress              = 0x885d,
+	FaxRecvTime                = 0x885e,
+	ExifVersion                = 0x9000,
+	DateTimeOriginal           = 0x9003,
+	CreateDate                 = 0x9004,
+	ComponentsConfiguration    = 0x9101,
+	CompressedBitsPerPixel     = 0x9102,
+	ShutterSpeedValue          = 0x9201,
+	ApertureValue              = 0x9202,
+	BrightnessValue            = 0x9203,
+	ExposureCompensation       = 0x9204,
+	MaxApertureValue           = 0x9205,
+	SubjectDistance            = 0x9206,
+	MeteringMode               = 0x9207,
+	LightSource                = 0x9208,
+	Flash                      = 0x9209,
+	FocalLength                = 0x920a,
+	FlashEnergy                = 0x920b,
+	SpatialFrequencyResponse   = 0x920c,
+	Noise                      = 0x920d,
+	FocalPlaneXResolution      = 0x920e,
+	FocalPlaneYResolution      = 0x920f,
+	FocalPlaneResolutionUnit   = 0x9210,
+	ImageNumber                = 0x9211,
+	SecurityClassification     = 0x9212,
+	ImageHistory               = 0x9213,
+	SubjectLocation            = 0x9214,
+	ExposureIndex              = 0x9215,
+	TIFF_EPStandardID          = 0x9216,
+	SensingMethod              = 0x9217,
+	StoNits                    = 0x923f,
+	MakerNote                  = 0x927c,
+	UserComment                = 0x9286,
+	SubSecTime                 = 0x9290,
+	SubSecTimeOriginal         = 0x9291,
+	SubSecTimeDigitized        = 0x9292,
+	ImageSourceData            = 0x935c,
+	XPTitle                    = 0x9c9b,
+	XPComment                  = 0x9c9c,
+	XPAuthor                   = 0x9c9d,
+	XPKeywords                 = 0x9c9e,
+	XPSubject                  = 0x9c9f,
+	FlashpixVersion            = 0xa000,
+	ColorSpace                 = 0xa001,
+	ExifImageWidth             = 0xa002,
+	ExifImageLength            = 0xa003,
+	RelatedSoundFile           = 0xa004,
+	InteropOffset              = 0xa005,
+	FlashEnergy2               = 0xa20b,
+	SpatialFrequencyResponse2  = 0xa20c,
+	Noise2                     = 0xa20d,
+	FocalPlaneXResolution2     = 0xa20e,
+	FocalPlaneYResolution2     = 0xa20f,
+	FocalPlaneResolutionUnit2  = 0xa210,
+	ImageNumber2               = 0xa211,
+	SecurityClassification2    = 0xa212,
+	ImageHistory2              = 0xa213,
+	SubjectLocation2           = 0xa214,
+	ExposureIndex2             = 0xa215,
+	TIFF_EPStandardID2         = 0xa216,
+	SensingMethod2             = 0xa217,
+	FileSource                 = 0xa300,
+	SceneType                  = 0xa301,
+	CFAPattern                 = 0xa302,
+	CustomRendered             = 0xa401,
+	ExposureMode               = 0xa402,
+	WhiteBalance               = 0xa403,
+	DigitalZoomRatio           = 0xa404,
+	FocalLengthIn35mmFormat    = 0xa405,
+	SceneCaptureType           = 0xa406,
+	GainControl                = 0xa407,
+	Contrast                   = 0xa408,
+	Saturation                 = 0xa409,
+	Sharpness                  = 0xa40a,
+	DeviceSettingDescription   = 0xa40b,
+	SubjectDistanceRange       = 0xa40c,
+	ImageUniqueID              = 0xa420,
+	GDALMetadata               = 0xa480,
+	GDALNoData                 = 0xa481,
+	Gamma                      = 0xa500,
+	FilmProductCode            = 0xc350,
+	ImageSourceEK              = 0xc351,
+	CaptureConditionsPAR       = 0xc352,
+	CameraOwner                = 0xc353,
+	SerialNumber               = 0xc354,
+	UserSelectGroupTitle       = 0xc355,
+	DealerIDNumber             = 0xc356,
+	CaptureDeviceFID           = 0xc357,
+	EnvelopeNumber             = 0xc358,
+	FrameNumber                = 0xc359,
+	FilmCategory               = 0xc35a,
+	FilmGencode                = 0xc35b,
+	ModelAndVersion            = 0xc35c,
+	FilmSize                   = 0xc35d,
+	SBA_RGBShifts              = 0xc35e,
+	SBAInputImageColorspace    = 0xc35f,
+	SBAInputImageBitDepth      = 0xc360,
+	SBAExposureRecord          = 0xc361,
+	UserAdjSBA_RGBShifts       = 0xc362,
+	ImageRotationStatus        = 0xc363,
+	RollGuidElements           = 0xc364,
+	MetadataNumber             = 0xc365,
+	EditTagArray               = 0xc366,
+	Magnification              = 0xc367,
+	NativeXResolution          = 0xc36c,
+	NativeYResolution          = 0xc36d,
+	KodakEffectsIFD            = 0xc36e,
+	KodakBordersIFD            = 0xc36f,
+	NativeResolutionUnit       = 0xc37a,
+	SourceImageDirectory       = 0xc418,
+	SourceImageFileName        = 0xc419,
+	SourceImageVolumeName      = 0xc41a,
+	OceScanjobDesc             = 0xc427,
+	OceApplicationSelector     = 0xc428,
+	OceIDNumber                = 0xc429,
+	OceImageLogic              = 0xc42a,
+	Annotations                = 0xc44f,
+	PrintQuality               = 0xc46c,
+	ImagePrintStatus           = 0xc46e,
+	PrintIM                    = 0xc4a5,
+	DNGVersion                 = 0xc612,
+	DNGBackwardVersion         = 0xc613,
+	UniqueCameraModel          = 0xc614,
+	LocalizedCameraModel       = 0xc615,
+	CFAPlaneColor              = 0xc616,
+	CFALayout                  = 0xc617,
+	LinearizationTable         = 0xc618,
+	BlackLevelRepeatDim        = 0xc619,
+	BlackLevel                 = 0xc61a,
+	BlackLevelDeltaH           = 0xc61b,
+	BlackLevelDeltaV           = 0xc61c,
+	WhiteLevel                 = 0xc61d,
+	DefaultScale               = 0xc61e,
+	DefaultCropOrigin          = 0xc61f,
+	DefaultCropSize            = 0xc620,
+	ColorMatrix1               = 0xc621,
+	ColorMatrix2               = 0xc622,
+	CameraCalibration1         = 0xc623,
+	CameraCalibration2         = 0xc624,
+	ReductionMatrix1           = 0xc625,
+	ReductionMatrix2           = 0xc626,
+	AnalogBalance              = 0xc627,
+	AsShotNeutral              = 0xc628,
+	AsShotWhiteXY              = 0xc629,
+	BaselineExposure           = 0xc62a,
+	BaselineNoise              = 0xc62b,
+	BaselineSharpness          = 0xc62c,
+	BayerGreenSplit            = 0xc62d,
+	LinearResponseLimit        = 0xc62e,
+	DNGCameraSerialNumber      = 0xc62f,
+	DNGLensInfo                = 0xc630,
+	ChromaBlurRadius           = 0xc631,
+	AntiAliasStrength          = 0xc632,
+	ShadowScale                = 0xc633,
+	DNGPrivateData             = 0xc634,
+	MakerNoteSafety            = 0xc635,
+	CalibrationIlluminant1     = 0xc65a,
+	CalibrationIlluminant2     = 0xc65b,
+	BestQualityScale           = 0xc65c,
+	AliasLayerMetadata         = 0xc660,
+	OwnerName                  = 0xfde8,
+	SerialNumber2              = 0xfde9,
+	Lens                       = 0xfdea,
+	RawFile                    = 0xfe4c,
+	Converter                  = 0xfe4d,
+	WhiteBalance2              = 0xfe4e,
+	Exposure                   = 0xfe51,
+	Shadows                    = 0xfe52,
+	Brightness                 = 0xfe53,
+	Contrast2                  = 0xfe54,
+	Saturation2                = 0xfe55,
+	Sharpness2                 = 0xfe56,
+	Smoothness                 = 0xfe57,
+	MoireFilter                = 0xfe58,
+} ExifTag;
+
+enum <WORD> GeoTag {
+	GPSVersionID,
+	GPSLatitudeRef,
+	GPSLatitude,
+	GPSLongitudeRef,
+	GPSLongitude,
+	GPSAltitudeRef,
+	GPSAltitude,
+	GPSTimeStamp,
+	GPSSatellites,
+	GPSStatus,
+	GPSMeasureMode,
+	GPSDOP,
+	GPSSpeedRef,
+	GPSSpeed,
+	GPSTrackRef,
+	GPSTrack,
+	GPSImgDirectionRef,
+	GPSImgDirection,
+	GPSMapDatum,
+	GPSDestLatitudeRef,
+	GPSDestLatitude,
+	GPSDestLongitudeRef,
+	GPSDestLongitude,
+	GPSDestBearingRef,
+	GPSDestBearing,
+	GPSDestDistanceRef,
+	GPSDestDistance,
+	GPSProcessingMehotd,
+	GPSAreaInformation,
+	GPSDateStamp,
+	GPSDifferential,
+};
+
+// ------------------------------------------------------------
+// Casio tag
+typedef enum <WORD> tagCasioTag2 {
+	PreviewThumbnailDimensions	=	0x0002,//Numeric 	 2 values - x,y dimensions in pixels
+	PreviewThumbnailSize		=	0x0003,//Numeric 	Size in bytes
+	PreviewThumbnailOffset 		=	0x0004,//Numeric 	Offset of Preview Thumbnail
+	CSQualityMode			=	0x0008,//Numeric Lookup	1 = Fine 2 = Super Fine
+	CsImageSize			=	0x0009,//Numeric Lookup 	0 = 640 x 480 pixels 4 = 1600 x 1200 pixels 5 = 2048 x 1536 pixels 20 = 2288 x 1712 pixels 21 = 2592 x 1944 pixels 22 = 2304 x 1728 pixels 36 = 3008 x 2008 pixels
+	CSFocusMode 			=	0x000D,//Numeric Lookup 	0 = Normal 1 = Macro
+	CsIsoSensitivity 		=	0x0014,//Numeric Lookup 	3 = 50 4 = 64 6 = 100 9 = 200
+	CsWhiteBalance 			=	0x0019,//Numeric Lookup 	0 = Auto 1 = Daylight 2 = Shade 3 = Tungsten 4 = Fluorescent 5 = Manual
+	CsFocalLength			=	0x001D,//Numeric 	Units are tenths of a millimetre
+	CsSaturation			=	0x001F,//Numeric Lookup 	0 = -1 1 = Normal 2 = +1
+	CsContrast			=	0x0020,//Numeric Lookup 	0 = -1 1 = Normal 2 = +1
+	CsSharpness 			=	0x0021,//Numeric Lookup 	0 = -1 1 = Normal 2 = +1
+	CsPrintImageMatchingInfo 	=	0x0E00,//PIM 	See Print Image Matching for specification
+	CasioPreviewThumbnail 		=	0x2000,//Numeric 	Alternate thumbnail offset
+	CsWhiteBalanceBias 		=	0x2011,//Numeric
+	CsFlashMode 			=	0x2012,//Numeric Lookup 	12 = Flash 0 = Manual 1 = Auto? 4 = Flash?
+	CsObjectDistance 		=	0x2022,//Numeric 	Units are millimetres
+	CsFlashDistance 		=	0x2034,//Numeric 	0 = Off
+	CsRecordMode 			=	0x3000,//Numeric Lookup 	2 = Normal Mode
+	CsSelfTimer			=	0x3001,//Numeric Lookup 	1 = Off?
+	CsQuality 			=	0x3002,//Numeric Lookup 	3 = Fine
+	CsMeteringMode2			=	0x3003,//Numeric Lookup 	1 = Fixation 6 = Multi-Area Auto Focus
+	CsTimeZone 			=	0x3006,//String
+	CsBestshotMode 			=	0x3007,//Numeric Lookup 	0 = Off 1 = On?
+	CsCCDISOSensitivity 		=	0x3014,//Numeric
+	CsColourMode 			=	0x3015,//Numeric Lookup 	0 = Off
+	CsEnhancement 			=	0x3016,//Numeric Lookup 	0 = Off
+	CsFilter 			=	0x3017,//Numeric Lookup 	0 = Off
+} CasioTag2;
+
+
+// ------------------------------------------------------------
+// Canon CIFF
+typedef uint32 DC_UINT32;
+typedef int32 DC_SINT32;
+typedef float DC_FLOAT32;
+
+typedef struct tgCifDirEntry {
+	uint16 storage_method : 2; // 00 in heap, 01 in entry
+	uint16 data_type : 3;
+	uint16 id_code : 11 <format=hex>;
+	if (storage_method == kStg_InHeapSpace) {
+		DWORD sData; // Data Size (Bytes)
+		DWORD oData; // Data Offset
+	} else {
+		switch (data_type << 11 | id_code) {
+			case kTC_ImageFormat:
+				DC_UINT32 fileFormat;
+				DC_FLOAT32 targetCompressionRatio;
+				break;
+			default:
+				byte data[8];
+				break;
+		}
+	}
+} CifDirEntry <read=ReadCifDirEntry>;
+
+enum CIFFTagStg {
+	kStg_InHeapSpace,
+	kStg_InRecordEntry,
+	kStg_reversed2,
+	kStg_reversed3,
+};
+
+enum CIFFTagDataType {
+	kDT_BYTE	= 0x0000,
+	kDT_ASCII	= 0x0800,
+	kDT_WORD	= 0x1000,
+	kDT_DWORD	= 0x1800,
+	kDT_BYTE2	= 0x2000,
+	kDT_HeapTypeProperty1 = 0x2800,
+	kDT_HeapTypeProperty2 = 0x3000,
+};
+
+enum <uint16> CIFFTagType {
+	kTC_Null = 0,
+	kTC_Free,
+	kTC_ExFree,
+
+	kTC_Description =	0x0805,//kDT_ASCII | 0x0005,
+	kTC_ModelName =		0x080a,//kDT_ASCII | 0x000a,
+	kTC_FirmwareVersion =	0x080b,//kDT_ASCII | 0x000b,
+	kTC_ComponentVersion =	0x080c,//kDT_ASCII | 0x000c,
+	kTC_ROMOperationMode =	0x080d,//kDT_ASCII | 0x000d,
+	kTC_OwnerName =		0x0810,//kDT_ASCII | 0x0010,
+	kTC_ImageFileName =	0x0816,//kDT_ASCII | 0x0016,
+	kTC_ThumbnailFileName =	0x0817,//kDT_ASCII | 0x0017,
+
+	kTC_TargetImageType =	0x100a,//kDT_WORD | 0x000a,
+	kTC_SR_ReleaseMethod =	0x1010,//kDT_WORD | 0x0010,
+	kTC_SR_ReleaseTiming =	0x1011,//kDT_WORD | 0x0011,
+	kTC_ReleaseSetting =	0x1016,//kDT_WORD | 0x0016,
+	kTC_BodySensitivity =	0x101c,//kDT_WORD | 0x001c,
+
+	kTC_ImageFormat =	0x1803,//kDT_DWORD | 0x0003,
+	kTC_RecordID =		0x1804,//kDT_DWORD | 0x0004,
+	kTC_SelfTimerTime =	0x1806,//kDT_DWORD | 0x0006,
+	kTC_SR_TargetDistanceSetting = 0x1807,//kDT_DWORD | 0x0007,
+	kTC_BodyID =		0x180b,//kDT_DWORD | 0x000b,
+	kTC_CapturedTime =	0x180e,//kDT_DWORD | 0x000e,
+	kTC_ImageSpec =		0x1810,//kDT_DWORD | 0x0010,
+	kTC_SR_EF =		0x1813,//kDT_DWORD | 0x0013,
+	kTC_MI_EV =		0x1814,//kDT_DWORD | 0x0014,
+	kTC_SerialNumber =	0x1817,//kDT_DWORD | 0x0017,
+
+	kTC_CameraObject =	0x2807,//0x0007 | kDT_HeapTypeProperty1,
+	kTC_ShootingRecord =	0x3002,//0x0002 | kDT_HeapTypeProperty2,
+	kTC_MeasuredInfo =	0x3003,//0x0003 | kDT_HeapTypeProperty2,
+	kTC_CameraSpecification = 0x3004,//0x0004 | kDT_HeapTypeProperty2,
+};
+
+string ReadCifDirEntry(CifDirEntry &e)
+{
+	local string s;
+	local uint16 tc = e.data_type << 11 | e.id_code;
+	local CIFFTagType x = (CIFFTagType) tc;
+	local CIFFTagStg stg = (CIFFTagStg)e.storage_method;
+	local CIFFTagDataType dt = (CIFFTagDataType)(e.data_type << 11);
+	if (EnumToString(x) != "") {
+		SPrintf(s, "%s, %s",
+				EnumToString(stg),
+				EnumToString(x));
+	} else {
+		SPrintf(s, "%s, %s, 0x%x",
+				EnumToString(stg),
+				EnumToString(dt),
+				e.id_code);
+	}
+
+	return s;
+}
+
+typedef struct tgCDir {
+	ChangeColor(0);
+	//Printf("off %#Lx doff %#Lx dsz %#Lx\n",cifOffset , cDirOffset ,cDirSize);
+	local quad myOffset = cDirOffset;
+	local DWORD S = ReadInt(myOffset + cDirSize - 4);
+	FSeek(cDirOffset + S);
+	//Printf("S @ %#x = %#x FTell %#Lx",S,myOffset + cDirSize - 4,FTell());
+	WORD nDirEntry;
+	//Printf(" nEntry %#x\n",nDirEntry);
+	ChangeColor(0);
+	CifDirEntry dirEntries[nDirEntry]<optimize=false>;
+	DWORD szValues; // = S
+	local int i;
+	for(i=0;i<nDirEntry;i++) {
+		//Printf("%d. Entry %#x = [ %#x  %#x %#x]\n",i,dirEntries[i].Tag,dirEntries[i].Tag & 0xC000,dirEntries[i].Tag & 0x3800,dirEntries[i].Tag & 0x07FF);
+		if (dirEntries[i].storage_method == kStg_InHeapSpace) {
+			// Values are stored at a different location
+			FSeek(myOffset + dirEntries[i].oData);
+			ChangeColor(0);
+			//Printf("%d size %#x offset %#x clrIdx = [%d %d]\n",i,dirEntries[i].sData,dirEntries[i].oData,colorSelect,colorId);
+			switch(dirEntries[i].data_type << 11 | dirEntries[i].id_code) {
+				case kTC_ImageSpec:
+					struct {
+						DC_UINT32 imageWidth;
+						DC_UINT32 imageHeight;
+						DC_FLOAT32 pixelAspectRatio;
+						DC_SINT32 rotationAngle;
+						DC_UINT32 componentBitDepth;
+						DC_UINT32 colorBitDepth;
+						DC_UINT32 colorBW;
+					} DC_IMAGESPEC;
+					break;
+				default:
+					switch(dirEntries[i].data_type << 11) {
+						case kDT_BYTE:
+							struct {
+								byte bData[dirEntries[i].sData];
+							} strBytes;
+							break;
+						case kDT_ASCII:
+							struct {
+								char sData[dirEntries[i].sData];
+							} strStrings;
+							break;
+						case kDT_WORD:
+							struct {
+								WORD wData[dirEntries[i].sData>>1];
+							} str2Bytes;
+							break;
+						case kDT_DWORD:
+							union {
+								DWORD dwData[dirEntries[i].sData>>2];
+								DWORD flData[dirEntries[i].sData>>2];
+							} str4Bytes;
+							break;
+						case kDT_HeapTypeProperty1:
+						case kDT_HeapTypeProperty2:
+							cDirOffset = dirEntries[i].oData + myOffset;
+							cDirSize = dirEntries[i].sData;
+							struct CDIR subDir;
+							break;
+						default:
+							struct {
+								char uData[dirEntries[i].sData];
+							} strUnknown;
+							break;
+					}
+					break;
+			}
+		}
+		//else value is samaller than 8 byte so it is stored in sData and oData of CifDirEntry struct
+	}
+
+} CDIR;
+
+// ------------------------------------------------------------
+// JPEG APPx segments
+const local int dataFormatLength[13] = {0,1,1,2,4,8,1,1,2,4,8,4,8};
+
+typedef enum <WORD> tagDataFormat {
+	uByte = 1,
+	ascString,
+	uShort,
+	uLong1,
+	uRatio,
+	sByte,
+	undefined = 7,
+	sShort,
+	sLong = 9,
+	sRatio,
+	sFloat,
+	dFloat,
+} DataFormat;
+
+
+typedef struct tgDIRENTRY {
+	ChangeColor(0);
+	switch (Stack_top(stack_IFD_dirtype)) {
+		case IFD_TYPE_EXIF:
+			ExifTag tagNumber;
+			break;
+		case IFD_TYPE_GEOTAG:
+			GeoTag tagNumber;
+			break;
+		case IFD_TYPE_CASIO_QV_R62:
+			CasioTag2 tagNumber;
+			break;
+	}
+	DataFormat dataFormat;
+	DWORD nComponent;
+	local unsigned int j = 0;
+	local int length = -1;
+
+	if (1 <= dataFormat && dataFormat < 13)
+		length = dataFormatLength[dataFormat] * nComponent;
+	else {
+		//Warning("unknown dataFormat = %x", dataFormat);
+	}
+
+	if (1 <= dataFormat && dataFormat < 13 && 0 <= length && length <= 4) {
+		switch (tagNumber) {
+			case ExposureProgram:
+				enum <short> {
+					EP_Not_defined,
+					EP_Manual,
+					EP_Normal_program,
+					EP_Aperture_priority,
+					EP_Shutter_priority,
+					EP_Creative_program,
+					EP_Action_program,
+					EP_Portrait_mode,
+					EP_Landscape_mode,
+				} ExposureProgram;
+				break;
+			case MeteringMode:
+				enum <short> {
+					MM_unknown,
+					MM_Average,
+					MM_CenterWeightedAverage,
+					MM_Spot,
+					MM_MultiSpot,
+					MM_Pattern,
+					MM_Partial,
+					MM_other = 255,
+				} MeteringMode;
+				break;
+			case LightSource:
+				enum <short> {
+					LS_unknown,
+					LS_Daylight,
+					LS_Fluorescent,
+					LS_Tungsten,
+					LS_Flash,
+					LS_Fine_weather = 9,
+					LS_Cloudy_weather,
+					LS_Shade,
+					LS_Daylight_fluorescent,
+					LS_Day_white_fluorescent,
+					LS_Cool_white_fluorescent,
+					LS_White_fluorescent,
+					LS_Standard_light_A,
+					LS_Standard_light_B,
+					LS_Standard_light_C,
+					LS_D55,
+					LS_D65,
+					LS_D75,
+					LS_D50,
+					LS_ISO_studio_tungsten,
+					LS_other_light_scoure = 255,
+				} LightSource;
+				break;
+			case Flash:
+				short unused : 9;
+				short red_eye_mode : 1;
+				short flash_function : 1;
+				short flash_mode : 2;
+				short flash_return : 2;
+				short flash_fired : 1;
+				break;
+			case ExposureMode:
+				enum <short> {
+					EM_Auto_exposure,
+					EM_Manual_exposure,
+					EM_Auto_bracket,
+				} ExposureMode;
+				break;
+			case WhiteBalance:
+				enum <short> {
+					WB_Auto_white_balance,
+					WB_Manual_white_balance,
+				} WhiteBalance;
+				break;
+			case SceneCaptureType:
+				enum <short> {
+					SCT_Standard,
+					SCT_Landscape,
+					SCT_Portrait,
+					SCT_Night_scene,
+				} SceneCaptureType;
+				break;
+			case SubjectDistanceRange:
+				enum <short> {
+					SDR_unknown,
+					SDR_Macro,
+					SDR_Close_view,
+					SDR_Distant_view,
+				} SubjectDistanceRange;
+				break;
+			default:
+				switch (dataFormat) {
+					case uByte:
+						struct {
+							uchar oneByteData[nComponent];
+						} strAscii;
+						break;
+					case ascString:
+						struct StrAscii1 {
+							char oneByteData[nComponent];
+						} strAscii <read=ReadAscString1>;
+						break;
+					case undefined:
+						struct {
+							uchar oneByteData[nComponent];
+						} strAscii;
+						break;
+					case uShort:
+						for (j = 0; j < nComponent; j++)
+							ushort usValue;
+						break;
+					case uLong1:
+						if (nComponent == 1)
+							ulong ulValue;
+						break;
+					case sByte:
+						struct {
+							char sBValue[nComponent];
+						} strSByte;
+						break;
+					case sShort:
+						struct {
+							short sisValue[nComponent];
+						} strSShort;
+						break;
+					case sLong:
+						if (nComponent == 1)
+							ulong siLValue;
+						break;
+					case sFloat:
+						if (nComponent == 1)
+							float flValue;
+						break;
+				}
+				break;
+		}
+		if (length != 4)
+			uchar padding[4 - length];
+	} else {
+			DWORD offsetData;
+	}
+} DIRENTRY<read=ReadDirEntry>;
+
+string ReadDirEntry(DIRENTRY &entry) {
+	local char no[50];
+	SPrintf(no,"Tag# = 0x%x (%s)",entry.tagNumber, EnumToString(entry.tagNumber));
+	return no;
+}
+
+
+typedef struct tgIFD {
+	WORD nDirEntry;
+	DIRENTRY dirEntry[nDirEntry]<optimize=false>;
+	DWORD nextIFDoffset;
+	local int i = 0;
+	local int pos = FTell();
+	for(i=0;i<nDirEntry;i++) {
+		ChangeColor(0);
+		switch(dirEntry[i].tagNumber) {
+			case Make:
+				ReadBytes(CameraMake,offset + dirEntry[i].offsetData,dirEntry[i].nComponent);
+				Printf("Maker: %s\n",CameraMake);
+				break;
+			case Model:
+				ReadBytes(CameraModel,offset + dirEntry[i].offsetData,dirEntry[i].nComponent);
+				Printf("Model: %s\n",CameraModel);
+				break;
+		}
+
+
+		if (!(1 <= dirEntry[i].dataFormat && dirEntry[i].dataFormat < 13))
+			continue;
+		if (dataFormatLength[dirEntry[i].dataFormat] * dirEntry[i].nComponent <= 4) {
+			continue;
+		}
+
+		FSeek(offset + dirEntry[i].offsetData);
+		switch(dirEntry[i].tagNumber) {
+			default:
+				switch(dirEntry[i].dataFormat) {
+					case ascString:
+						struct StrAscii {
+							char oneByteData[dirEntry[i].nComponent];
+						} strAscii <read=ReadAscString>;
+						break;
+					case undefined:
+						struct {
+							uchar oneByteData[dirEntry[i].nComponent];
+						} strAscii;
+						break;
+					case uShort:
+						struct {
+							ushort usValue[dirEntry[i].nComponent];
+						} strUShort;
+						break;
+					case uLong1:
+						struct {
+							ulong ulValue[dirEntry[i].nComponent];
+						} strULong;
+						break;
+					case uRatio:
+						struct URatio {
+							struct {
+								DWORD num;
+								DWORD den;
+							} uRValue[dirEntry[i].nComponent];
+						} strURatio <read=ReadURatio>;
+						break;
+					case sByte:
+						struct {
+							char sBValue[dirEntry[i].nComponent];
+						} strSByte;
+						break;
+					case sShort:
+						struct {
+							short sisValue[dirEntry[i].nComponent];
+						} strSShort;
+						break;
+					case sLong:
+						struct {
+							ulong siLValue[dirEntry[i].nComponent];
+						} strSLong;
+						break;
+					case sRatio:
+						struct {
+							struct {
+								int num;
+								int den;
+							} siRValue[dirEntry[i].nComponent];
+						} strSRatio;
+						break;
+					case sFloat:
+						struct {
+							float flValue[dirEntry[i].nComponent];
+						} strsFloat;
+						break;
+					case dFloat:
+						struct {
+							double dFValue[dirEntry[i].nComponent];
+						} strdFloat;
+						break;
+				}
+		}
+	}
+
+	for(i=0;i<nDirEntry;i++) {
+		ChangeColor(0);
+		switch(dirEntry[i].tagNumber) {
+			case ExifOffset:
+				FSeek(offset + dirEntry[i].ulValue);
+				Stack_push(stack_IFD_dirtype, IFD_TYPE_EXIF);
+				struct IFD subDir;
+				Stack_pop(stack_IFD_dirtype);
+				break;
+			case GPSInfo:
+				FSeek(offset + dirEntry[i].ulValue);
+				Stack_push(stack_IFD_dirtype, IFD_TYPE_GEOTAG);
+				struct IFD subDir;
+				Stack_pop(stack_IFD_dirtype);
+				break;
+			case InteropOffset:
+				FSeek(offset + dirEntry[i].ulValue);
+				Stack_push(stack_IFD_dirtype, IFD_TYPE_EXIF);
+				struct IFD subDir;
+				Stack_pop(stack_IFD_dirtype);
+				break;
+			case MakerNote:
+				if(!Strncmp("CASIO COMPUTER CO.,LTD",CameraMake,22) &&
+						!Strncmp("QV-R62",CameraModel,6)) {
+					FSeek(offset + dirEntry[i].ulValue);
+					//struct {
+						char Header[6];
+						Stack_push(stack_IFD_dirtype, IFD_TYPE_CASIO_QV_R62);
+						struct IFD CasioIFD;
+						Stack_pop(stack_IFD_dirtype);
+					//} CasioMake;
+				}
+				break;
+			case CasioPreviewThumbnail:
+				FSeek(offset + dirEntry[i].ulValue);
+				Printf("Casio Thumbnail Offset = %#Lx\n",offset + dirEntry[i].ulValue);
+				local quad JpegFileEnd2 = JpegFileEnd;
+				JpegFileEnd = FTell() + dirEntry[i].nComponent;
+				struct JPGFILE CasioMakerThumbnail;
+				JpegFileEnd = JpegFileEnd2;
+				break;
+		}
+	}
+
+	FSeek(pos);
+} IFD;
+
+string ReadAscString1(StrAscii1 &s)
+{
+	return s.oneByteData;
+}
+string ReadAscString(StrAscii &s)
+{
+	return s.oneByteData;
+}
+
+string ReadURatio(URatio &ur)
+{
+	local int i;
+	local string s;
+	local string result = "";
+	for (i = 0; exists(ur.uRValue[i]); i++) {
+		SPrintf(s, "%d/%d", ur.uRValue[i].num, ur.uRValue[i].den);
+		result += s + " ";
+	}
+	return result;
+}
+
+
+typedef struct tagApp0 {
+	M_ID marker;
+	// Tier A calculated_value APP0.szSection = 2 + the body.
+	// The two thumbnail dimension bytes are Tier C diversity axes, so they are
+	// drawn HERE through bare lookaheads at their own offsets and the body size
+	// is computed from them (dependency 18).  When 3*x*y will not fit a JPEG
+	// segment the JFIF branch is simply not taken - structure rule 14's
+	// "emit NO thumbnail" - rather than shrinking the dimensions to fit.
+	local int a0xt = (int)ReadUByte(FTell() + 14);
+	local int a0yt = (int)ReadUByte(FTell() + 15);
+	local int a0thumb = 16 + 3 * a0xt * a0yt;
+	local int a0br = (int)(nextrnd() % 10);
+	if (a0br < 4 && (a0thumb > 60000 || a0thumb > JpegFileEnd - FTell())) a0br = 4;
+	local WORD a0sz = 20;
+	if (a0br < 2)      a0sz = (WORD)a0thumb;        // JFIF, with its thumbnail
+	else if (a0br < 4) a0sz = 16;                   // JFIF, no thumbnail
+	else if (a0br < 8) a0sz = (WORD)(18 + (nextrnd() % 24));   // JFXX
+	else               a0sz = (WORD)(18 + (nextrnd() % 40));   // unrecognised
+	// output_budget: a segment is only as long as what is left for it.  When
+	// the JFIF thumbnail will not fit, the BRANCH changes - shrinking
+	// szSection would leave the thumbnail array overrunning the segment.
+	local int64 a0room = JpegFileEnd - FTell();
+	if (a0sz > a0room && a0br < 4) {
+		a0br = 8;
+		a0sz = 20;
+	}
+	if (a0sz > a0room) a0sz = 20;
+	if (a0sz > a0room) a0sz = 16;
+	local int evil_a0 = SetEvilBit(IsParsing());
+	WORD szSection = { a0sz };
+	local uchar a0dm[1];
+	if (a0br < 4) {
+		local string a0s[1];
+		a0s[0] = app_sig_str(0);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a0r_n = 5;
+		if (a0r_n > szSection - 2) a0r_n = szSection - 2;
+		if (a0r_n > 0) ReadBytes(a0dm, FTell(), a0r_n, a0s);
+	} else if (a0br < 8) {
+		local string a0s2[1];
+		a0s2[0] = app_sig_str(1);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a0r2_n = 5;
+		if (a0r2_n > szSection - 2) a0r2_n = szSection - 2;
+		if (a0r2_n > 0) ReadBytes(a0dm, FTell(), a0r2_n, a0s2);
+		// Tier B APP0.extension_code {0x10,0x11,0x13}: each is a separate arm
+		// of examine_app0's JFXX switch.  0x12 is out of set on purpose.
+		// Guarded by the signature so that it cannot fire against a real JFIF
+		// APP0, where this byte is one of the version bitfields.
+		// 0x10 is deliberately NOT generated: it embeds a complete nested
+		// JPEG datastream, libjpeg only logs the thumbnail type (so the
+		// nested bytes reach no decoder branch), and the nested JPGFILE would
+		// reset the generator state the enclosing file is still using.
+		local ubyte a0ec[8] = { 0x11, 0x11, 0x11, 0x13, 0x13, 0x13, 0x12, 0x11 };
+		local ubyte a0ev[1];
+		a0ev[0] = a0ec[(int)(nextrnd() % 8)];
+		if (ReadStringN(FTell(), 5) == "JFXX\0") {
+			local ubyte a0e = ReadUByte(FTell() + 5, a0ev);
+		}
+	}
+	// When the JFIF branch is taken without a thumbnail, pin the two dimension
+	// bytes to zero so the declared body length stays true (dependency 18).
+	if (a0br >= 2 && a0br < 4 && ReadStringN(FTell(), 5) == "JFIF\0") {
+		local ubyte a0z[1];
+		a0z[0] = 0;
+		local ubyte a0q1 = ReadUByte(FTell() + 14, a0z);
+		local ubyte a0q2 = ReadUByte(FTell() + 15, a0z);
+	}
+	SetEvilBit(evil_a0);
+
+	if (ReadStringN(FTell(), 5) == "JFIF\0") {
+		// JFIF Main
+		char  App0Type[5];
+		short versionHigh:8;
+		short versionLow:8;
+		ubyte units;
+		WORD Xdensity;
+		WORD Ydensity;
+		ubyte xThumbnail;
+		ubyte yThumbnail;
+		if (xThumbnail != 0 && yThumbnail != 0) {
+			struct {
+				uchar r, g, b;
+			} rgb[(ushort)xThumbnail * yThumbnail];
+		}
+	} else if(ReadStringN(FTell(), 5) == "JFXX\0") {
+		// JFIF Extension
+		char  App0Type[5];
+		byte extension_code <format=hex>;
+		switch (extension_code) {
+			case 0x10:
+				// NOT generated: libjpeg skips the whole APP0 body, so a
+				// nested datastream here reaches no decoder branch.  The code
+				// is kept for the parse direction (structure rule 21).
+				local quad JpegFileEnd2 = JpegFileEnd;
+				JpegFileEnd = FTell() + szSection - 8;
+				struct JPGFILE thumbnail;
+				JpegFileEnd = JpegFileEnd2;
+				break;
+			case 0x11:
+				ubyte xThumbnail;
+				ubyte yThumbnail;
+				struct {
+					uchar r, g, b;
+				} palette[256];
+				uchar pixel[szSection - 8];
+				break;
+			case 0x13:
+				ubyte xThumbnail;
+				ubyte yThumbnail;
+				struct {
+					uchar r, g, b;
+				} pixel[(ushort)xThumbnail * yThumbnail];
+				break;
+			default:
+				//Warning("Unknown JFXX");
+				char unknown[szSection - 8];
+		}
+	} else if((ReadStringN(FTell(), 2) == "II" || ReadStringN(FTell(), 2) == "MM")
+			&& ReadStringN(FTell() + 6, 8) == "HEAPJPGM") {
+		// Canon CIFF
+		local quad cDirSize  = 0;
+		local quad cDirOffset = 0;
+		local quad cifOffset = FTell();
+		//CIFF Header
+		char ByteOrder[2];
+		if(!Strncmp(ByteOrder,"II",2)) LittleEndian();
+		DWORD HeaderLength;
+		char type[4]; // "HEAP"
+		char subtype[4]; // "JPGM"
+
+		//Ciff Directory
+		cDirOffset  = HeaderLength + cifOffset;
+		cDirSize    = szSection - 2 - HeaderLength;
+		CDIR  APP0_Ciff;
+		BigEndian();
+		FSeek(cifOffset + szSection - 2);
+	}
+	else {
+		//Warning("Unknown APP0");
+		char unknown[szSection - 2];
+	}
+} APP0;
+
+typedef struct tgAPP1 {
+	M_ID marker;
+	// Tier A calculated_value.  The Exif branch commits the segment to a
+	// complete TIFF block (dependency 22): an 8-byte TIFF header then an IFD.
+	// The IFD is emitted with zero entries, which is well formed and - unlike
+	// a populated one - cannot send the template's own offset-following parser
+	// seeking outside the segment.  libjpeg skips APP1 entirely, so nothing
+	// deeper would reach a decoder branch.
+	local int a1br = (int)(nextrnd() % 10);
+	local WORD a1sz = 22;
+	if (a1br < 5)      a1sz = 22;                             // Exif + empty IFD
+	else if (a1br < 8) a1sz = (WORD)(32 + (nextrnd() % 40));  // XMP
+	else               a1sz = (WORD)(32 + (nextrnd() % 60));  // unrecognised
+	// output_budget: a segment is only as long as what is left for it
+	local int64 a1room = JpegFileEnd - FTell();
+	if (a1sz > a1room && a1br < 5) {
+		a1br = 9;
+		a1sz = 31;
+	}
+	if (a1sz > a1room) a1sz = 31;
+	if (a1sz > a1room) a1sz = 22;
+	local int evil_a1 = SetEvilBit(IsParsing());
+	WORD szSection = { a1sz };
+	local uchar a1dm[1];
+	if (a1br < 5) {
+		local string a1s[1];
+		a1s[0] = app_sig_str(2);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a1r_n = 6;
+		if (a1r_n > szSection - 2) a1r_n = szSection - 2;
+		if (a1r_n > 0) ReadBytes(a1dm, FTell(), a1r_n, a1s);
+		// the TIFF header and an empty IFD: align, 0x002A, offset 8, count 0,
+		// next-IFD 0.  Tier A fixed_value APP1.tagMark and calculated
+		// offsetFirstIFD / nextIFDoffset.
+		local string a1t[1];
+		a1t[0] = tiff_empty_str();
+		if (ReadStringN(FTell(), 5) == "Exif\0")
+		ReadBytes(a1dm, FTell() + 6, 14, a1t);
+	} else if (a1br < 8) {
+		local string a1s2[1];
+		a1s2[0] = app_sig_str(3);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a1r2_n = 29;
+		if (a1r2_n > szSection - 2) a1r2_n = szSection - 2;
+		if (a1r2_n > 0) ReadBytes(a1dm, FTell(), a1r2_n, a1s2);
+	}
+	SetEvilBit(evil_a1);
+
+	if (ReadStringN(FTell(), 5) == "Exif\0") {
+		char EXIF[6];
+		local quad offset = FTell();
+		byte align[2];
+		if(align[0]=='I') { LittleEndian(); }
+		WORD tagMark; // 0x002a
+		DWORD offsetFirstIFD;
+		if(offsetFirstIFD!=8)
+			FSeek(offset + offsetFirstIFD);
+		ChangeColor(0);
+		Stack_push(stack_IFD_dirtype, IFD_TYPE_EXIF);
+		IFD ifdMainImage;
+		Stack_pop(stack_IFD_dirtype);
+		if(ifdMainImage.nextIFDoffset) {
+			FSeek(offset + ifdMainImage.nextIFDoffset);
+			ChangeColor(0);
+			Stack_push(stack_IFD_dirtype, IFD_TYPE_EXIF);
+			IFD ifdThumbnailImage;
+			Stack_pop(stack_IFD_dirtype);
+			local int i = 0;
+			local int thumbOffset = 0;
+			local int thumbLength = 0;
+			local int compression = 10;
+			for(;i<ifdThumbnailImage.nDirEntry;i++) {
+				switch(ifdThumbnailImage.dirEntry[i].tagNumber) {
+					case Compression:
+						compression = ifdThumbnailImage.dirEntry[i].usValue;
+						break;
+					case ThumbnailOffset:
+					case StripOffsets:
+						thumbOffset = ifdThumbnailImage.dirEntry[i].ulValue;
+						break;
+					case ThumbnailLength:
+					case StripByteCounts:
+						thumbLength = ifdThumbnailImage.dirEntry[i].ulValue;
+						break;
+				}
+			}
+			if(thumbLength && thumbOffset) {
+				FSeek(offset + thumbOffset);
+				Printf("Thumbnail Offset = %#Lx\n",offset + thumbOffset);
+				if(compression == 6) {
+					local quad JpegFileEnd2 = JpegFileEnd;
+					JpegFileEnd = FTell() + thumbLength;
+					struct JPGFILE thumbnail;
+					JpegFileEnd = JpegFileEnd2;
+				}
+				else
+					char imageData[thumbLength];
+			}
+		}
+		FSeek(offset + szSection - 8);
+		if(align[0]=='I') { BigEndian(); }
+	} else if (ReadStringN(FTell(), 29) == "http://ns.adobe.com/xap/1.0/\0") {
+		// http://www.adobe.com/products/xmp/
+		char XAP[29];
+		char remain[szSection - 31];
+	} else {
+		//Warning("Unknown APP1");
+		char unknown[szSection - 2];
+	}
+} APP1;
+
+typedef struct tgAPP2 {
+	M_ID marker;
+	// Tier A calculated_value.  The ICC branch carries one chunk of an ICC
+	// profile; block_num / block_total are Tier A and must form an exact
+	// 1..total sequence (dependency 31), and the profile itself is the
+	// 132-byte minimal v2 profile the JSON spells out byte for byte.
+	local int a2br = (int)(nextrnd() % 10);
+	local WORD a2sz = 148;
+	if (a2br < 4)      a2sz = 148;                            // ICC_PROFILE
+	else if (a2br < 7) a2sz = (WORD)(16 + (nextrnd() % 40));  // FPXR
+	else               a2sz = (WORD)(16 + (nextrnd() % 50));  // unrecognised
+	// output_budget: a segment is only as long as what is left for it
+	local int64 a2room = JpegFileEnd - FTell();
+	if (a2sz > a2room) a2sz = 20;
+	if (a2sz > a2room) a2sz = 2;
+	local int evil_a2 = SetEvilBit(IsParsing());
+	WORD szSection = { a2sz };
+	local uchar a2dm[1];
+	if (a2br < 4) {
+		local string a2s[1];
+		a2s[0] = app_sig_str(5);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a2r_n = 12;
+		if (a2r_n > szSection - 2) a2r_n = szSection - 2;
+		if (a2r_n > 0) ReadBytes(a2dm, FTell(), a2r_n, a2s);
+		local string a2p[1];
+		a2p[0] = icc_chunk_str();
+		local int64 a2pn = 0;
+		if (ReadStringN(FTell(), 12) == "ICC_PROFILE\0")
+			a2pn = szSection - 14;
+		if (a2pn > 134) a2pn = 134;
+		if (a2pn > 0) {
+			a2p[0] = SubStr(a2p[0], 0, a2pn);
+			ReadBytes(a2dm, FTell() + 12, a2pn, a2p);
+		}
+	} else if (a2br < 7) {
+		local string a2s2[1];
+		a2s2[0] = app_sig_str(4);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a2r2_n = 5;
+		if (a2r2_n > szSection - 2) a2r2_n = szSection - 2;
+		if (a2r2_n > 0) ReadBytes(a2dm, FTell(), a2r2_n, a2s2);
+	}
+	SetEvilBit(evil_a2);
+
+	if (ReadStringN(FTell(), 5) == "FPXR\0") {
+			char FPXR[5];
+			uchar version;
+			char remain[szSection - 8];
+			//Warning("Unknown FPXR");
+	} else if (ReadStringN(FTell(), 12) == "ICC_PROFILE\0") {
+			char ICC_PROFILE[12];
+			uchar block_num;
+			uchar block_total;
+			char data[szSection - 16];
+	} else {
+		//Warning("Unknown APP2");
+		char unknown[szSection - 2];
+	}
+} APP2;
+
+typedef struct tagAPP12 {
+	M_ID marker;
+	// Tier A calculated_value.  The Ducky chain is terminated by an explicit
+	// DK_End tag rather than by a byte count (structure rule 12), so the
+	// terminator is always emitted.
+	local int a12br = (int)(nextrnd() % 10);
+	local WORD a12sz = 9;
+	if (a12br < 5) a12sz = 9;                                 // Ducky + DK_End
+	else           a12sz = (WORD)(9 + (nextrnd() % 40));      // unrecognised
+	// output_budget: a segment is only as long as what is left for it
+	local int64 a12room = JpegFileEnd - FTell();
+	if (a12sz > a12room) a12sz = 20;
+	if (a12sz > a12room) a12sz = 2;
+	local int evil_a12 = SetEvilBit(IsParsing());
+	WORD szSection = { a12sz };
+	local uchar a12dm[1];
+	if (a12br < 5) {
+		local string a12s[1];
+		a12s[0] = app_sig_str(6) + ducky_end_str();
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a12r_n = 7;
+		if (a12r_n > szSection - 2) a12r_n = szSection - 2;
+		if (a12r_n > 0) ReadBytes(a12dm, FTell(), a12r_n, a12s);
+	}
+	SetEvilBit(evil_a12);
+
+	if (ReadStringN(FTell(), 5) == "Ducky") {
+		// refer to ExifTool APP12.pm
+		char Ducky[5];
+		local WORD s = szSection;
+		while (s > 0) {
+			struct {
+				enum <uint16> {
+					DK_End,
+					DK_Quality,
+					DK_Comment,
+					DK_Copyright,
+				} tag;
+				if (tag == DK_End)
+					break;
+
+				uint16 len;
+
+				switch (tag) {
+					case DK_End:
+						break;
+					case DK_Quality:
+						uint32 value;
+						break;
+					case DK_Comment:
+						uint32 count;
+						char comment[len - 4];
+						break;
+					case DK_Copyright:
+						uint32 count;
+						char comment[len - 4];
+						break;
+					default:
+						char unknown[len];
+						break;
+				}
+			} entry;
+			if (entry.tag == DK_End)
+				break;
+			s -= sizeof(entry);
+		}
+	} else {
+		//Warning("Unknown APP12");
+		char unknown[szSection - 2];
+	}
+} APP12;
+
+typedef struct tagAPP13 {
+	M_ID marker;
+	// Tier A calculated_value.  szSection - 16 is the template's remainsize,
+	// so 16 means an empty Image Resource Block chain (structure rule 13).
+	local int a13br = (int)(nextrnd() % 10);
+	local WORD a13sz = 16;
+	if (a13br < 5)      a13sz = 16;                           // Photoshop, no blocks
+	else if (a13br < 8) a13sz = 16;                           // Adobe_CM
+	else                a13sz = (WORD)(16 + (nextrnd() % 40));// unrecognised
+	// output_budget: a segment is only as long as what is left for it
+	local int64 a13room = JpegFileEnd - FTell();
+	if (a13sz > a13room) a13sz = 20;
+	if (a13sz > a13room) a13sz = 2;
+	local int evil_a13 = SetEvilBit(IsParsing());
+	WORD szSection = { a13sz };
+	local uchar a13dm[1];
+	if (a13br < 5) {
+		local string a13s[1];
+		a13s[0] = app_sig_str(7);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a13r_n = 14;
+		if (a13r_n > szSection - 2) a13r_n = szSection - 2;
+		if (a13r_n > 0) ReadBytes(a13dm, FTell(), a13r_n, a13s);
+	} else if (a13br < 8) {
+		local string a13s2[1];
+		a13s2[0] = app_sig_str(8);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a13r2_n = 9;
+		if (a13r2_n > szSection - 2) a13r2_n = szSection - 2;
+		if (a13r2_n > 0) ReadBytes(a13dm, FTell(), a13r2_n, a13s2);
+	}
+	SetEvilBit(evil_a13);
+
+	if (ReadStringN(FTell(), 14) == "Photoshop 3.0\0") {
+		// refer to ExifTool Photoshop.pm
+		char photoshop30[14];
+		local int remainsize = szSection - 16;
+		while (remainsize > 0) {
+			struct {
+				char type[4];
+				if (type == "8BIM") {
+				} else if (type == "PHUT" || type == "DCSR" || type == "AgHg") {
+				} else {
+					char unknown[remainsize - 4];
+					break;
+				}
+				enum <uint16> {
+					PS_IPTCData = 0x0404,
+					PS_JPEG_Quality = 0x0406,
+					PS_PhotoshopBGRThumbnail = 0x0409,
+					PS_CopyrightFlag = 0x040a,
+					PS_URL = 0x040b,
+					PS_PhotoshopThumbnail = 0x040c,
+					PS_ICC_Profile = 0x040f,
+					PS_GlobalAltitude = 0x0419,
+					PS_EXIFInfo = 0x0422,
+					PS_XMP = 0x0424,
+					PS_IPTCDigest = 0x0425,
+					PS_ClippingPathName = 0x0bb7,
+				} tag;
+				uchar namelen;
+				if (namelen)
+					char name[namelen];
+				if (namelen % 2 != 1)
+					char padding;
+				uint32 size;
+				if (size)
+					char data[size];
+				if (size % 2 != 0)
+					char padding;
+			} block;
+			remainsize -= sizeof(block);
+		}
+	} else if (ReadStringN(FTell(), 9) == "Adobe_CM\0") {
+		char adobe_cm[9];
+		uchar AdobeCMType;
+		if (szSection != 12)
+			char unknown[szSection - 12];
+	} else {
+		//Warning("Unknown APP13");
+		char unknown[szSection - 2];
+	}
+} APP13;
+
+typedef struct tagAPP14 {
+	M_ID marker;
+	// Tier A calculated_value.  This is the one application segment besides
+	// APP0 whose body libjpeg really parses: examine_app14 records the
+	// transform code, and dependency 33 ties its meaning to the frame's
+	// component count - 0/1 select RGB or YCbCr at three components, 0/2 CMYK
+	// or YCCK at four - which decides which converter jdcolor installs.
+	local int a14br = (int)(nextrnd() % 10);
+	local WORD a14sz = 14;
+	if (a14br < 7) a14sz = 14;                                // Adobe
+	else           a14sz = (WORD)(9 + (nextrnd() % 30));      // unrecognised
+	// output_budget: a segment is only as long as what is left for it
+	local int64 a14room = JpegFileEnd - FTell();
+	if (a14sz > a14room) a14sz = 20;
+	if (a14sz > a14room) a14sz = 2;
+	local int evil_a14 = SetEvilBit(IsParsing());
+	WORD szSection = { a14sz };
+	local uchar a14dm[1];
+	if (a14br < 7) {
+		local string a14s[1];
+		a14s[0] = app_sig_str(9);
+		// clamped to the declared length: in the parse direction this
+		// struct's szSection is the file's own, not the planned one.
+		local int64 a14r_n = 5;
+		if (a14r_n > szSection - 2) a14r_n = szSection - 2;
+		if (a14r_n > 0) ReadBytes(a14dm, FTell(), a14r_n, a14s);
+		// Tier B APP14.color_transform_code {0,1,2}
+		local ubyte a14c[6] = { 0, 1, 1, 2, 0, 1 };
+		local ubyte a14v[1];
+		a14v[0] = a14c[(int)(nextrnd() % 6)];
+		if (ReadStringN(FTell(), 5) == "Adobe") {
+			local ubyte a14t = ReadUByte(FTell() + 11, a14v);
+		}
+	}
+	SetEvilBit(evil_a14);
+
+	if (ReadStringN(FTell(), 5) == "Adobe") {
+		// http://partners.adobe.com/public/developer/en/ps/sdk/5116.DCT_Filter.pdf
+		char adobe[5];
+		uint16 version;
+		uint16 flag0;
+		uint16 flag1;
+		uchar color_transform_code;
+		if (FTell() < szSection + startof(szSection)) char unknown[szSection + startof(szSection) - FTell()];
+	} else {
+		//Warning("Unknown APP14");
+		char unknown[szSection - 2];
+	}
+} APP14;
+
+// ============================================================================
+// ADDED: generator state, the Huffman table builder and the entropy-coded
+// segment emitter.  Nothing here writes a field; these only decide what the
+// declarations further down carry.
+// ============================================================================
+
+local uint  g_rnd;              // derived PRNG
+local int64 g_budget;           // bytes still available for segments
+local int   g_phase;            // 0 need SOI, 1 headers, 2 have SOF, 3 done
+local int   g_nseg;
+local int   g_fill;             // 0xFF fill bytes still to emit before a marker
+
+// --- the frame, as planned ---
+local int   g_fmark;            // frame marker that will be emitted
+local int   g_prec;             // sample precision
+local int64 g_X;                // samples per line
+local int64 g_Y;                // number of lines
+local int   g_nf;               // components in frame
+local int   g_H[12];
+local int   g_V[12];
+local int   g_Tq[12];
+local int   g_Cid[12];
+local int   g_Hmax;
+local int   g_Vmax;
+local int   g_arith;            // arithmetic-coded frame
+local int   g_prog;             // progressive frame
+local int   g_loss;             // lossless frame
+local int   g_Ri;               // restart interval in effect
+local int   g_dac;              // emit a DAC segment
+
+// --- the scan, as planned ---
+local int   g_ns;               // components in scan
+local int   g_sc[4];            // frame component index of each scan component
+local int   g_sd[4];            // table destination used by each
+local int   g_Ss;
+local int   g_Se;
+local int   g_Ah;
+local int   g_Al;
+
+// --- tables, as planned.  index = class*4 + destination ---
+local int   g_htdef[8];         // 1 once this table has been emitted
+local int   g_htL[8];           // bit length of the all-zero first codeword
+local int   g_htn[8];           // number of symbols = sum(length[])
+local int   g_htwant[8];        // 1 if the scan needs this table
+local int   g_dqtwant[4];
+local int   g_nohuff;           // deliberately omit the DHT
+
+// --- the entropy-coded segment ---
+local int64 g_scanLen;
+local int   g_noeoi;            // omit the EOI marker
+local int   g_sdc[4];           // DC table destination per scan component
+local int   g_sac[4];           // AC table destination per scan component
+local int   g_htemit[8];        // tables this file's DHT segment defines
+local int   g_dqtpq[4];
+local int   g_maxhdr;
+local int   g_haveSOF;
+local int   g_haveSOS;
+local int   g_haveDQT;
+local int   g_haveDHT;
+local ushort g_mkset[32];
+
+// A plain LCG's low bits have very short periods, which biases every % draw
+// taken from them; the avalanche step is what makes the low bits usable.
+uint nextrnd()
+{
+    g_rnd = g_rnd * 1103515245 + 12345;
+    local uint x = g_rnd;
+    x = (x ^ (x >> 16)) * 2246822519;
+    x = (x ^ (x >> 13)) * 3266489917;
+    return x ^ (x >> 16);
+}
+
+// --------------------------------------------------------------------------
+// Tier A payload_wellformedness: Huffmann_Table.length.
+// The sixteen counts are a canonical Huffman code specification, and
+// libjpeg validates them in jpeg_make_d_derived_tbl before decoding
+// anything: with c_0 = 0 and c_l = (c_{l-1} << 1) + n_l, every c_l must be
+// STRICTLY less than 2^l, because T.81 reserves the all-ones codeword.
+// Random counts overflow that space with probability very close to 1.
+//
+// The shape used here puts the first codeword at a freely chosen length L
+// with a freely chosen count n <= 2^L - 1, which makes the first symbol's
+// codeword L zero bits - the one fact the scan emitter needs.  L may be
+// anywhere in 1..16, so the corpus reaches both jdhuff's fast multi-bit
+// lookup (L <= 8) and jpeg_huff_decode's slow bit-at-a-time path (L > 8).
+uint ht_plan(int cls, int dest)
+{
+    local int k = cls * 4 + dest;
+    local int L = 1 + (int)(nextrnd() % 10);
+    if ((nextrnd() % 6) == 0)
+        L = 11 + (int)(nextrnd() % 6);          // force the slow-path lengths
+    local int lim = 1;
+    local int j = 0;
+    for (j = 0; j < L; j++)
+        lim = lim * 2;                          // 2^L
+    local int n = 1 + (int)(nextrnd() % 4);
+    if (n > lim - 1) n = lim - 1;
+    if (n < 1) n = 1;
+    g_htL[k] = L;
+    g_htn[k] = n;
+    return 0;
+}
+
+// --------------------------------------------------------------------------
+// Tier A payload_wellformedness: JPGFILE.scanData.
+// MCU count, derived from the frame geometry, the sampling factors and the
+// scan's component count - never the other way round.  blk is 8 for a DCT
+// frame and 1 for a lossless frame, whose data unit is a single sample rather
+// than an 8x8 block.
+int64 scan_mcus()
+{
+    local int blk = 8;
+    if (g_loss) blk = 1;
+    local int c = g_sc[0];
+    if (g_X <= 0 || g_Y <= 0) return 0;
+    if (g_Hmax <= 0 || g_Vmax <= 0) return 0;
+    if (g_ns > 1) {
+        // interleaved: ceil(X / (blk*Hmax)) by ceil(Y / (blk*Vmax))
+        return ((g_X + blk * g_Hmax - 1) / (blk * g_Hmax))
+             * ((g_Y + blk * g_Vmax - 1) / (blk * g_Vmax));
+    }
+    // non-interleaved: the component's own dimensions, one data unit per MCU
+    local int64 cw = (g_X * g_H[c] + g_Hmax - 1) / g_Hmax;
+    local int64 ch = (g_Y * g_V[c] + g_Vmax - 1) / g_Vmax;
+    return ((cw + blk - 1) / blk) * ((ch + blk - 1) / blk);
+}
+
+// Bits one data unit of scan component i costs in the all-zeros
+// construction.  Every codeword emitted is the FIRST symbol of its table,
+// whose canonical codeword is exactly g_htL zero bits; magnitude category 0
+// needs no additional bits, and AC symbol 0x00 is EOB, so the block ends
+// there.  A progressive DC refinement scan carries one raw bit per unit and
+// no codeword at all.
+int scan_bits_unit(int i)
+{
+    local int ldc = g_htL[g_sdc[i]];
+    local int lac = g_htL[4 + g_sac[i]];
+    if (g_nohuff) { ldc = 2; lac = 2; }         // libjpeg's Annex K defaults
+    if (g_loss)  return ldc;                    // one DC code per sample
+    if (g_prog) {
+        if (g_Ah > 0 && g_Ss == 0) return 1;    // DC refinement: one raw bit
+        if (g_Ss == 0)             return ldc;  // DC first scan
+        return lac;                             // AC first or refinement scan
+    }
+    return ldc + lac;                           // sequential: DC code then EOB
+}
+
+// Bits one MCU costs: for an interleaved scan, Hi*Vi data units of each
+// component in turn; for a non-interleaved scan, a single data unit.
+int64 scan_bits_mcu()
+{
+    local int64 b = 0;
+    local int   i = 0;
+    if (g_ns > 1) {
+        for (i = 0; i < g_ns; i++)
+            b += (int64)g_H[g_sc[i]] * g_V[g_sc[i]] * scan_bits_unit(i);
+        return b;
+    }
+    return scan_bits_unit(0);
+}
+
+// Tier A payload_wellformedness: JPGFILE.scanData / unterminatedScanData.
+// The entropy-coded segment, returned as the exact byte string the file will
+// carry.  All-zero bits, so no 0xFF ever appears in the coded data and the
+// byte-stuffing rule of clause B.1.1.5 holds by construction; the last partial
+// byte of every restart interval is padded with 1-bits as T.81 requires, and a
+// restart marker is NOT stuffed.  `room` is what the output budget left, so a
+// scan that does not fit is cut at a byte boundary - which libjpeg reports as
+// "premature end of data segment" and still decodes to a full image.
+// The trailing FF D9 is part of the string unless this file is deliberately
+// left unterminated, which is how the unterminatedScanData branch is selected.
+string scan_str(int64 room)
+{
+    local string s = "";
+    local int64 mcus = scan_mcus();
+    local int64 bpm  = scan_bits_mcu();
+    local int64 pos  = 0;
+    local int64 left = mcus;
+    local int64 per  = mcus;
+    local int64 gbits = 0;
+    local int64 gb   = 0;
+    local int64 j    = 0;
+    local int   i    = 0;
+    local int   rst  = 0;
+    local int64 cap  = room - 2;
+
+    g_scanLen = 0;
+    // output_budget.  Besides the file-size budget, the forward search that
+    // sizes this array costs one lookahead per byte, and FormatFuzzer's
+    // MAX_RAND_SIZE of 131072 is what that spends - so the segment is also
+    // capped at 16 KB.  This is a runtime limit on the PAYLOAD, not a bound on
+    // any field: the geometry stays free and a scan that does not fit is cut
+    // at a byte boundary, which libjpeg reports as "premature end of data
+    // segment" and still decodes to a full image.
+    if (cap > 6000) cap = 6000;
+    if (mcus > 0 && bpm > 0 && cap > 0) {
+        if (g_Ri > 0) per = g_Ri;
+        while (left > 0 && pos < cap) {
+            local int64 ug = per;
+            if (ug > left) ug = left;
+            gbits = ug * bpm;
+            gb = gbits / 8;
+            for (j = 0; j < gb; j++) {
+                if (pos >= cap) break;
+                s += (char)0;
+                pos++;
+            }
+            if ((gbits % 8) != 0 && pos < cap) {
+                local int r = (int)(gbits % 8);
+                local int pad = 1;
+                for (i = 0; i < 8 - r; i++) pad = pad * 2;
+                s += (char)(pad - 1);           // 1-bit padding to the boundary
+                pos++;
+            }
+            left -= ug;
+            if (left > 0 && g_Ri > 0 && pos + 2 <= cap) {
+                s += (char)0xFF;                // RSTn, deliberately unstuffed
+                s += (char)(0xD0 + (rst % 8));
+                pos += 2;
+                rst++;
+            } else if (left > 0) {
+                break;
+            }
+        }
+    }
+    g_scanLen = pos;
+    if (g_noeoi) {
+        // fill the rest of the file so no EOI can follow: this is what selects
+        // JPGFILE.unterminatedScanData and libjpeg's synthetic-EOI path.
+        while (pos < room) { s += (char)0; pos++; }
+        g_scanLen = pos;
+    } else {
+        s += (char)0xFF;
+        s += (char)0xD9;
+    }
+    return s;
+}
+
+// --------------------------------------------------------------------------
+// ADDED: segment bodies, returned as byte strings and reserved with a
+// lookahead so that every one of the original's own declarations reads them
+// back unchanged.  This is what lets the structs below keep their exact field
+// lists while still being generative.
+
+// SOFx / arithmetic-SOF component specifications: Ci, Hi<<4|Vi, Tqi.
+string sof_comp_str()
+{
+    local string s = "";
+    local int i = 0;
+    for (i = 0; i < g_nf; i++) {
+        s += (char)g_Cid[i];
+        s += (char)((g_H[i] << 4) | g_V[i]);
+        s += (char)g_Tq[i];
+    }
+    return s;
+}
+
+// SOS component specifications: Cs, Td<<4|Ta.  T.81 puts the DC selector in
+// the high nibble; the template's COMPSOS declares the field it calls AC
+// first, so the name order in the parse tree is reversed relative to the
+// specification.  The bytes written here follow the specification.
+string sos_comp_str()
+{
+    local string s = "";
+    local int i = 0;
+    for (i = 0; i < g_ns; i++) {
+        s += (char)g_Cid[g_sc[i]];
+        s += (char)((g_sdc[i] << 4) | g_sac[i]);
+    }
+    return s;
+}
+
+// One scan component's Cs byte: a compId the frame header really declared
+// (dependency 14).
+string sos_id_str(int i)
+{
+    local string s = "";
+    local int c = i;
+    if (c >= g_nf) c = 0;
+    if (c < 0) c = 0;
+    s += (char)g_Cid[c];
+    return s;
+}
+
+// The scan's Ss and Se bytes.
+string sos_sse_str()
+{
+    local string s = "";
+    s += (char)g_Ss;
+    s += (char)g_Se;
+    return s;
+}
+
+// The trailing three bytes of the SOS header: Ss, Se, Ah<<4|Al.
+string sos_tail_str()
+{
+    local string s = "";
+    s += (char)g_Ss;
+    s += (char)g_Se;
+    s += (char)((g_Ah << 4) | g_Al);
+    return s;
+}
+
+// One DHT segment holding every table this file defines.
+string dht_body_str()
+{
+    local string s = "";
+    local int k = 0;
+    local int i = 0;
+    for (k = 0; k < 8; k++) {
+        if (!g_htemit[k]) continue;
+        // Tier A enumerated_values Huffmann_Table.htInfo: class<<4 | destination
+        s += (char)(((k / 4) << 4) | (k % 4));
+        for (i = 0; i < 16; i++) {
+            if (i == g_htL[k] - 1) s += (char)g_htn[k];
+            else                   s += (char)0;
+        }
+        for (i = 0; i < g_htn[k]; i++) {
+            if (i == 0)     s += (char)0;           // DC category 0 / AC EOB
+            else if (k < 4) s += (char)(i & 15);    // dependency 29: DC <= 15
+            else            s += (char)((i * 17) & 0xFF);
+        }
+    }
+    return s;
+}
+
+int dht_size()
+{
+    local int n = 2;
+    local int k = 0;
+    for (k = 0; k < 8; k++)
+        if (g_htemit[k]) n += 17 + g_htn[k];
+    return n;
+}
+
+int dqt_size()
+{
+    local int n = 2;
+    local int k = 0;
+    for (k = 0; k < 4; k++)
+        if (g_dqtwant[k]) n += 1 + 64 * (g_dqtpq[k] + 1);
+    return n;
+}
+
+// Reserve the Pq/Tq byte of the next quantization table in the segment.  The
+// 64 coefficients themselves stay bare - QuanTable.qTable is Tier C, and
+// libjpeg dequantizes whatever is there.
+local int g_dqtcur;
+uint dqt_hdr()
+{
+    local int d = 0;
+    while (g_dqtcur < 4 && !g_dqtwant[g_dqtcur]) g_dqtcur++;
+    d = g_dqtcur;
+    if (d > 3) d = 3;
+    g_dqtcur++;
+    g_pq1[0] = (ubyte)g_dqtpq[d];
+    g_tq1[0] = (ubyte)d;
+    return 0;
+}
+
+// Tier A payload_wellformedness: UNKNOWN.unknown for 0xFFC9/0xFFCA/0xFFCB.
+// The identical layout to a Huffman frame header - P, Y, X, Nf, then Nf
+// triples - which is the ONLY route to libjpeg's arithmetic decoder, because
+// the dispatch switch routes only SOF0..SOF3 to the SOFx struct.
+string arith_sof_head()
+{
+    local string s = "";
+    s += (char)g_prec;
+    return s;
+}
+string arith_sof_tail()
+{
+    local string s = "";
+    s += (char)g_nf;
+    s += sof_comp_str();
+    return s;
+}
+
+// Tier A payload_wellformedness: UNKNOWN.unknown for 0xFFCC (DAC).
+// Pairs of Tc<<4|Tb and Cs.  For a DC table the low nibble of Cs must not
+// exceed its high nibble; for an AC table Cs must be 1..63.  A violation is
+// refused with "Bogus DAC value", so these are range-derived, not random.
+string dac_body_str()
+{
+    local string s = "";
+    local int i = 0;
+    local int n = 1 + (int)(nextrnd() % 4);
+    for (i = 0; i < n; i++) {
+        local int cls = (int)(nextrnd() % 2);
+        local int dst = (int)(nextrnd() % 4);
+        s += (char)((cls << 4) | dst);
+        if (cls == 0) {
+            local int hi = 1 + (int)(nextrnd() % 15);
+            local int lo = (int)(nextrnd() % (hi + 1));
+            s += (char)((hi << 4) | lo);
+        } else {
+            s += (char)(1 + (int)(nextrnd() % 63));
+        }
+    }
+    return s;
+}
+
+
+
+// Body of a segment the template does not model, for the marker values whose
+// bodies libjpeg actually parses.  0xFFCC is the arithmetic conditioning
+// table, 0xFFDC (DNL) is one 2-byte line count; everything else in the Tier B
+// UnknownMarker set is free-form, which is what the JSON records, so those get
+// bytes of a freely chosen length.
+string unk_body_str(int wmark)
+{
+    local string s = "";
+    local int i = 0;
+    local int n = 0;
+    if (wmark == 0xFFCC) return dac_body_str();
+    if (wmark == 0xFFDC) {
+        s += (char)((g_Y >> 8) & 0xFF);
+        s += (char)(g_Y & 0xFF);
+        return s;
+    }
+    n = 1 + (int)(nextrnd() % 40);
+    for (i = 0; i < n; i++) s += (char)0;
+    return s;
+}
+
+// DHP body after the declared Y and X: Nf, then one component specification.
+string dhp_body_str()
+{
+    local string s = "";
+    s += (char)1;                   // Nf
+    s += (char)1;                   // Ci
+    s += (char)0x11;                // Hi<<4 | Vi
+    s += (char)0;                   // Tqi - Tier A fixed_value 0
+    return s;
+}
+
+// --------------------------------------------------------------------------
+// ADDED: application-segment signatures.
+// Every one of the original's APPn structs selects its branch by probing with
+// ReadStringN, and some of those probes are LONGER than the body (APP1 reads
+// 29 bytes for the XMP signature, APP13 reads 14).  In the generate direction
+// a probe is a lookahead, so an under-sized segment reserves the bytes where
+// the NEXT marker belongs and the whole marker chain desynchronises.  Each
+// struct below therefore pins szSection to at least the longest probe its
+// branch evaluates, and reserves the signature bytes that select the branch -
+// everything after the signature stays bare, because it is Tier C.
+//
+// What this buys in libjpeg: APP0 reaches examine_app0, whose JFIF arm records
+// the version and density and whose JFXX arm switches on the extension code,
+// and APP14 reaches examine_app14, which sets the Adobe colour transform and
+// so changes which converter jdcolor installs.  Every other APPn is skipped by
+// skip_variable, so their bodies are deliberately left free.
+string app_sig_str(int which)
+{
+    local string s = "";
+    if (which == 0) { s += "JFIF"; s += (char)0; return s; }
+    if (which == 1) { s += "JFXX"; s += (char)0; return s; }
+    if (which == 2) { s += "Exif"; s += (char)0; s += (char)0; return s; }
+    if (which == 3) s = "http://ns.adobe.com/xap/1.0/"; s += (char)0; return s;
+    if (which == 4) { s += "FPXR"; s += (char)0; return s; }
+    if (which == 5) { s += "ICC_PROFILE"; s += (char)0; return s; }
+    if (which == 6) return "Ducky";
+    if (which == 7) { s += "Photoshop 3.0"; s += (char)0; return s; }
+    if (which == 8) { s += "Adobe_CM"; s += (char)0; return s; }
+    if (which == 9) return "Adobe";
+    return "";
+}
+
+
+// An 8-byte TIFF header followed by an IFD with no entries: align, 0x002A,
+// first-IFD offset 8, entry count 0, next-IFD offset 0.  Tier A fixed_value
+// APP1.tagMark and the two calculated offsets (dependency 22).
+string tiff_empty_str()
+{
+    local string s = "";
+    if ((nextrnd() % 2) == 0) {
+        s += "II";                      // Tier A enumerated_values APP1.align
+        s += (char)0x2A; s += (char)0x00;
+        s += (char)8; s += (char)0; s += (char)0; s += (char)0;
+        s += (char)0; s += (char)0;                     // nDirEntry = 0
+        s += (char)0; s += (char)0; s += (char)0; s += (char)0;
+    } else {
+        s += "MM";
+        s += (char)0x00; s += (char)0x2A;
+        s += (char)0; s += (char)0; s += (char)0; s += (char)8;
+        s += (char)0; s += (char)0;
+        s += (char)0; s += (char)0; s += (char)0; s += (char)0;
+    }
+    return s;
+}
+
+// Tier A payload_wellformedness APP2.data: one chunk carrying a complete
+// minimal ICC v2 profile - 132 bytes, tag count zero - preceded by its
+// block_num and block_total.  The profile's own size field at bytes 0..3 is
+// derived from the payload, and 'acsp' at byte 36 is the signature a
+// colour-managed consumer checks before it will parse anything at all.
+string icc_chunk_str()
+{
+    local string s = "";
+    local int i = 0;
+    s += (char)1;                       // block_num   (dependency 31)
+    s += (char)1;                       // block_total
+    s += (char)0; s += (char)0; s += (char)0; s += (char)0x84;   // size = 132
+    for (i = 0; i < 4; i++) s += (char)0;                        // preferred CMM
+    s += (char)0x02; s += (char)0x10; s += (char)0; s += (char)0; // version 2.1
+    s += "mntr";                        // device class
+    s += "RGB ";                        // data colour space
+    s += "XYZ ";                        // PCS
+    for (i = 0; i < 12; i++) s += (char)0;                       // date/time
+    s += "acsp";                        // THE fixed signature
+    for (i = 0; i < 24; i++) s += (char)0;                       // platform..intent
+    s += (char)0; s += (char)0; s += (char)0xF6; s += (char)0xD6; // D50 illuminant
+    s += (char)0; s += (char)0x01; s += (char)0; s += (char)0;
+    s += (char)0; s += (char)0; s += (char)0xD3; s += (char)0x2D;
+    for (i = 0; i < 48; i++) s += (char)0;                       // creator, reserved
+    for (i = 0; i < 4; i++) s += (char)0;                        // tag count = 0
+    return s;
+}
+
+// The Ducky chain's terminator (structure rule 12).
+string ducky_end_str()
+{
+    local string s = "";
+    s += (char)0; s += (char)0;         // DK_End
+    return s;
+}
+// --------------------------------------------------------------------------
+// ADDED: value sets for the bitfield-packed fields.
+// A lookahead reservation cannot cover a byte a bitfield declares - the
+// runtime refuses it with "bitfield lookahead not implemented" - so every
+// nibble-packed field carries its legal set as a <values=> attribute instead,
+// which is the documented idiom for exactly this.  Where the set has to be a
+// single planned value, the one-element array is written by the plan just
+// before the declaration; where the whole legal set applies, the generator
+// draws from it freely and the value is read back afterwards so the payload
+// can be derived from what was actually drawn.
+local ubyte g_hvset[4]  = { 1, 2, 3, 4 };   // Tier A DHP h_factor / v_factor
+// COMPS.Horz and COMPS.Vert carry the same Tier A set {1,2,3,4}, but libjpeg
+// additionally requires that every component's factor DIVIDE the frame's
+// maximum - otherwise it stops with "Fractional sampling not implemented yet"
+// before decoding anything.  The two sets below are therefore filled per file
+// with a divisor chain (1 / 1,k / 1,2,4), so every combination the generator
+// can draw from them satisfies that, while all four values still occur across
+// the corpus and mixed factors still produce real subsampling - which is what
+// selects h2v1_upsample, h2v2_upsample and the fancy variants.
+local ubyte g_hset[4];
+local ubyte g_vset[4];
+// Tier A COMPS.compNr and COMPSOS.AC / COMPSOS.DC: the legal set is {0,1,2,3}
+// and all four are reachable, but a destination the file never defines makes
+// libjpeg stop with "Quantization table 0x0N was not defined" or "Huffman
+// table 0x0N was not defined" before decoding - and when the DHT is omitted
+// entirely its Annex K fallback defines only destinations 0 and 1.  These two
+// sets are therefore narrowed per file to the destinations that file defines,
+// which is dependencies 12 and 13 rather than a bound on the field.
+local ubyte g_tqset[4];
+local ubyte g_dstset[4];
+local ubyte g_pq1[1];                       // Tier B QuanTable.Pq, per table
+local ubyte g_tq1[1];                       // Tier A QuanTable.Tq, per table
+local ubyte g_csset[4];                     // dependency 14: the frame's ids
+local ubyte g_ss1[1];                       // Tier B SOS.Ss, from the plan
+local ubyte g_se1[1];                       // Tier B SOS.Se, from the plan
+local ubyte g_ah1[1];                       // Tier B SOS.Ah, from the plan
+local ubyte g_al1[1];                       // Tier B SOS.Al, from the plan
+// (declared ubyte, not uchar: a `local uchar x[n]` compiles to std::string,
+//  which is what ReadBytes wants but not what a <values=> attribute wants.)
+
+// Fill one of the sampling-factor sets with a divisor chain.  Every pair of
+// members divides the larger, so any combination the generator draws keeps
+// max_h_samp_factor % h_samp_factor == 0, which is what libjpeg requires.
+uint samp_set(int k, int which)
+{
+    local ubyte a = 1;
+    local ubyte b = 1;
+    local ubyte c = 1;
+    local ubyte d = 1;
+    if (k == 1)      { a = 1; b = 1; c = 2; d = 2; }
+    else if (k == 2) { a = 1; b = 2; c = 2; d = 4; }
+    else if (k == 3) { a = 1; b = 1; c = 3; d = 3; }
+    else if (k == 4) { a = 1; b = 1; c = 4; d = 4; }
+    else if (k == 5) { a = 1; b = 2; c = 4; d = 4; }
+    if (which == 0) { g_hset[0] = a; g_hset[1] = b; g_hset[2] = c; g_hset[3] = d; }
+    else            { g_vset[0] = a; g_vset[1] = b; g_vset[2] = c; g_vset[3] = d; }
+    return 0;
+}
+
+// --------------------------------------------------------------------------
+// ADDED: the marker dispatch set.  This is the per-call-site lookahead the
+// format's segment ordering needs (structure rules 0 to 5): SOI first, then a
+// freely ordered run of table and application segments, then exactly one frame
+// header, then the scan.  The 32 slots carry repeats, which is how
+// preferred_value weighting is expressed.
+uint mk_fill(ushort v, int from, int to)
+{
+    local int i = 0;
+    for (i = from; i < to; i++) g_mkset[i] = v;
+    return 0;
+}
+
+ushort jpg_peek()
+{
+    local int budget_low = 0;
+    // the mandatory tail still to come is a DQT of up to 262 bytes, a DHT of
+    // up to about 200, the scan header, at least one scan byte and the EOI
+    if (JpegFileEnd - FTell() < 700) budget_low = 1;
+    if (g_nseg == 0) {
+        mk_fill(0xFFD8, 0, 32);                     // structure rule 0: SOI first
+    } else if (!g_haveSOF && (budget_low || g_nseg > g_maxhdr)) {
+        mk_fill((ushort)g_fmark, 0, 32);            // structure rule 1
+    } else if (g_haveSOF && !g_haveDQT) {
+        // structure rule 3: a DQT defining every destination a frame component
+        // named must precede the scan, or libjpeg stops with "Quantization
+        // table 0x00 was not defined" before any data is read.  It may appear
+        // anywhere before the scan, and the free header run above offers it
+        // too; this only guarantees it if the run did not.
+        mk_fill(0xFFDB, 0, 32);
+    } else if (g_haveSOF && !g_haveDHT && !g_nohuff) {
+        mk_fill(0xFFC4, 0, 32);                     // structure rule 4
+    } else if (g_haveSOF && (budget_low || g_nseg > g_maxhdr + 4)) {
+        mk_fill(0xFFDA, 0, 32);                     // structure rule 2
+    } else {
+        // table and parameter segments, freely ordered and freely repeated
+        mk_fill(0xFFDB, 0, 5);                      // DQT
+        mk_fill(0xFFC4, 5, 9);                      // DHT
+        mk_fill(0xFFDD, 9, 11);                     // DRI
+        mk_fill(0xFFE0, 11, 14);                    // APP0  -> examine_app0
+        mk_fill(0xFFEE, 14, 16);                    // APP14 -> examine_app14
+        mk_fill(0xFFFE, 16, 18);                    // COM
+        mk_fill(0xFFE1, 18, 19);                    // APP1
+        mk_fill(0xFFE2, 19, 20);                    // APP2
+        mk_fill(0xFFEC, 20, 21);                    // APP12
+        mk_fill(0xFFED, 21, 22);                    // APP13
+        mk_fill(0xFFDC, 22, 24);                    // DNL, tolerated and skipped
+        mk_fill(0xFFCC, 24, 26);                    // DAC   -> get_dac
+        mk_fill(0xFFE5, 26, 28);                    // unhandled APPn, skipped
+        mk_fill(0xFFFE, 28, 29);                    // COM
+        // The four markers below are each FATAL in libjpeg - DHP and SOF55 are
+        // refused outright, an unsupported SOF type stops the decode, and a
+        // standalone marker given a length by this template leaves bytes that
+        // drive next_marker's skip loop.  They are all in the Tier B
+        // UnknownMarker set and must appear, but they end the file wherever
+        // they land, so they are weighted down rather than dropped.
+        if ((nextrnd() % 5) == 0) {
+            mk_fill(0xFFDE, 22, 23);                // DHP
+            mk_fill(0xFFF7, 23, 24);                // JPGLS / SOF55
+            mk_fill(0xFFD0, 26, 27);                // a standalone marker
+            mk_fill(0xFFC5, 27, 28);                // an unsupported SOF type
+        }
+        if (!g_haveSOF) mk_fill((ushort)g_fmark, 29, 32);
+        else            mk_fill(0xFFDA, 29, 32);
+        if (g_dac) mk_fill(0xFFCC, 24, 26);
+    }
+    return ReadUShort(FTell(), g_mkset);
+}
+
+// --------------------------------------------------------------------------
+// The whole frame/scan plan.  Called once, before the first marker.
+uint jpg_plan()
+{
+    local int i = 0;
+    local int k = 0;
+
+    g_budget = JpegFileEnd;
+    g_phase  = 0;
+    g_nseg   = 0;
+    g_fill   = 0;
+    g_rnd    = 0x9E3779B9 ^ (uint)JpegFileEnd;
+    nextrnd();
+
+    // --- frame type.  Tier A enumerated_values on SOFx.marker, plus the three
+    // --- arithmetic frame markers which the dispatch switch does NOT route and
+    // --- which therefore can only be produced through the UNKNOWN struct.
+    // --- 0xFFC9/0xFFCA/0xFFCB are the only route to jdarith.c.
+    local uint fp = nextrnd() % 100;
+    g_fmark = 0xFFC0;
+    if (fp < 30)      g_fmark = 0xFFC0;     // baseline sequential   -> jdhuff
+    else if (fp < 42) g_fmark = 0xFFC1;     // extended sequential   -> jdhuff
+    else if (fp < 62) g_fmark = 0xFFC2;     // progressive           -> jdphuff
+    else if (fp < 74) g_fmark = 0xFFC3;     // lossless              -> jdlossls
+    else if (fp < 86) g_fmark = 0xFFC9;     // arithmetic sequential -> jdarith
+    else if (fp < 93) g_fmark = 0xFFCA;     // arithmetic progressive
+    else              g_fmark = 0xFFCB;     // arithmetic lossless
+
+    g_prog  = 0;
+    g_loss  = 0;
+    g_arith = 0;
+    if (g_fmark == 0xFFC2 || g_fmark == 0xFFCA) g_prog = 1;
+    if (g_fmark == 0xFFC3 || g_fmark == 0xFFCB) g_loss = 1;
+    if (g_fmark >= 0xFFC9) g_arith = 1;
+
+    // --- sample precision.  dependency 0: a DCT frame accepts 8 and 12 only;
+    // --- dependency 1: a lossless frame accepts 2..16.  8 and 12 select
+    // --- entirely separate compiled instantiations of libjpeg's sample
+    // --- pipeline, so both are worth reaching.
+    if (g_loss) {
+        g_prec = 2 + (int)(nextrnd() % 15);
+        if ((nextrnd() % 2) == 0) g_prec = 8;
+        else if ((nextrnd() % 3) == 0) g_prec = 16;
+    } else {
+        g_prec = 8;
+        if ((nextrnd() % 4) == 0) g_prec = 12;
+    }
+
+    // --- components in frame.  Tier A enumerated_values 1..10; 1 selects
+    // --- grayscale_convert and wrppm's PGM writer, 3 ycc_rgb_convert, 4
+    // --- ycck_cmyk_convert, and 5..10 the "too many components" rejection.
+    local uint np = nextrnd() % 100;
+    g_nf = 3;
+    if (np < 22)      g_nf = 1;
+    else if (np < 62) g_nf = 3;
+    else if (np < 76) g_nf = 4;
+    else if (np < 84) g_nf = 2;
+    else              g_nf = 5 + (int)(nextrnd() % 6);
+    if (g_nf > 10) g_nf = 10;
+
+    // --- sampling factors: a divisor chain, see g_hset
+    local int hk = (int)(nextrnd() % 6);
+    local int vk = (int)(nextrnd() % 6);
+    samp_set(hk, 0);
+    samp_set(vk, 1);
+
+    // --- sampling factors.  Tier A enumerated_values 1..4 each; they select
+    // --- h2v1_upsample, h2v2_upsample, the fancy variants or int_upsample and
+    // --- reorder the blocks inside decode_mcu.
+    g_Hmax = 1;
+    g_Vmax = 1;
+    for (i = 0; i < g_nf; i++) {
+        g_H[i] = 1;
+        g_V[i] = 1;
+        if (i == 0 && (nextrnd() % 3) == 0) {
+            g_H[i] = 1 + (int)(nextrnd() % 4);
+            g_V[i] = 1 + (int)(nextrnd() % 4);
+        } else if (i > 0 && (nextrnd() % 8) == 0) {
+            g_H[i] = 1 + (int)(nextrnd() % 2);
+            g_V[i] = 1 + (int)(nextrnd() % 2);
+        }
+        if (g_H[i] > g_Hmax) g_Hmax = g_H[i];
+        if (g_V[i] > g_Vmax) g_Vmax = g_V[i];
+        g_Cid[i] = i + 1;
+        g_Tq[i] = 0;
+        if ((nextrnd() % 5) == 0) g_Tq[i] = (int)(nextrnd() % 4);
+        g_dqtwant[g_Tq[i]] = 1;
+    }
+    // dependency 16: an interleaved MCU may hold at most ten data units
+    local int sum = 0;
+    for (i = 0; i < g_nf; i++) sum += g_H[i] * g_V[i];
+    if (sum > 10) {
+        for (i = 0; i < g_nf; i++) { g_H[i] = 1; g_V[i] = 1; }
+        g_Hmax = 1;
+        g_Vmax = 1;
+    }
+
+    // --- scan: how many components it codes.  Tier A enumerated_values 1..4,
+    // --- and never more than the frame declares (dependency 15).  ns == 1
+    // --- selects libjpeg's non-interleaved path, ns > 1 the interleaved one.
+    g_ns = 1;
+    if (g_nf > 1 && (nextrnd() % 3) != 0) {
+        g_ns = g_nf;
+        if (g_ns > 4) g_ns = 4;
+    }
+    for (i = 0; i < g_ns; i++) {
+        g_sc[i] = i;
+        g_sd[i] = 0;
+    }
+    // table destinations.  dependency 11: baseline permits only 0 and 1,
+    // every other frame type permits 0..3.
+    local int dmax = 4;
+    if (g_fmark == 0xFFC0) dmax = 2;
+    for (i = 0; i < g_ns; i++) {
+        g_sdc[i] = (int)(nextrnd() % dmax);
+        g_sac[i] = (int)(nextrnd() % dmax);
+        g_sd[i]  = g_sdc[i];
+        g_htwant[g_sdc[i]] = 1;
+        g_htwant[4 + g_sac[i]] = 1;
+    }
+
+    // --- spectral selection and successive approximation.
+    // --- dependencies 2-5 for a sequential frame, 6-8 for progressive,
+    // --- 9 for lossless (where Ss is the predictor selector 1..7).
+    g_Ss = 0;
+    g_Se = 63;
+    g_Ah = 0;
+    g_Al = 0;
+    if (g_loss) {
+        g_Ss = 1 + (int)(nextrnd() % 7);        // predictor 1..7
+        g_Se = 0;
+        g_Ah = 0;
+        g_Al = (int)(nextrnd() % 3);            // point transform
+    } else if (g_prog) {
+        local uint pk = nextrnd() % 100;
+        if (pk < 42) {
+            g_Ss = 0; g_Se = 0; g_Ah = 0;       // DC first  -> decode_mcu_DC_first
+            g_Al = (int)(nextrnd() % 3);
+        } else if (pk < 58) {
+            g_Ss = 0; g_Se = 0;                 // DC refine -> decode_mcu_DC_refine
+            g_Al = (int)(nextrnd() % 2);
+            g_Ah = g_Al + 1;
+        } else if (pk < 82) {
+            g_Ss = 1 + (int)(nextrnd() % 63);   // AC first  -> decode_mcu_AC_first
+            g_Se = g_Ss + (int)(nextrnd() % (64 - g_Ss));
+            g_Ah = 0;
+            g_Al = (int)(nextrnd() % 3);
+            g_ns = 1;                           // dependency 8
+        } else {
+            g_Ss = 1 + (int)(nextrnd() % 63);   // AC refine -> decode_mcu_AC_refine
+            g_Se = g_Ss + (int)(nextrnd() % (64 - g_Ss));
+            g_Al = (int)(nextrnd() % 2);
+            g_Ah = g_Al + 1;
+            g_ns = 1;                           // dependency 8
+        }
+    }
+
+    // --- restart interval.  Tier C and free; non-zero drives process_restart,
+    // --- the DC predictor reset and the resynchronisation path.
+    g_Ri = 0;
+    if ((nextrnd() % 3) == 0) g_Ri = 1 + (int)(nextrnd() % 12);
+
+    // --- whether a DHT is emitted at all.  Omitting it is worth doing: it
+    // --- reaches libjpeg's std_huff_tables fallback in jdhuff.c, which a
+    // --- conforming file never touches (structure rule 4).
+    g_nohuff = 0;
+    if (!g_arith && (nextrnd() % 9) == 0) g_nohuff = 1;
+    if (g_arith) g_nohuff = 1;                  // arithmetic uses no Huffman table
+    g_dac = 0;
+    if (g_arith && (nextrnd() % 2) == 0) g_dac = 1;
+
+    for (k = 0; k < 8; k++) {
+        g_htdef[k] = 0;
+        g_htemit[k] = 0;
+        ht_plan(k / 4, k % 4);
+    }
+    // Which tables the DHT segment defines: the ones the scan names, plus
+    // sometimes a spare, so redefinitions and unused destinations both occur.
+    // dependency 13: the scan's table destinations are drawn freely from all
+    // four, so every class/destination pair is defined.  One file in nine
+    // defines only destination 0, which is what reaches "Huffman table 0x01
+    // was not defined"; and when the DHT is omitted altogether libjpeg
+    // substitutes its Annex K defaults instead (structure rule 4).
+    for (k = 0; k < 8; k++) g_htemit[k] = 1;
+    local int htonly = 0;
+    if ((nextrnd() % 9) == 0) {
+        for (k = 0; k < 8; k++)
+            if ((k % 4) != 0) g_htemit[k] = 0;
+        htonly = 1;
+    }
+    // the table destinations the scan may name
+    for (k = 0; k < 4; k++) g_dstset[k] = (ubyte)k;
+    if (g_fmark == 0xFFC0) {
+        // dependency 11: baseline permits only two destinations per class
+        g_dstset[2] = 0;
+        g_dstset[3] = 1;
+    }
+    if (g_nohuff && !g_arith) {
+        // libjpeg's Annex K fallback defines destinations 0 and 1 only
+        g_dstset[2] = 0;
+        g_dstset[3] = 1;
+    }
+    if (htonly) { g_dstset[0] = 0; g_dstset[1] = 0; g_dstset[2] = 0; g_dstset[3] = 0; }
+    for (k = 0; k < 4; k++) {
+        g_dqtpq[k] = 0;
+        // Tier B QuanTable.Pq {0,1}; dependency 10 forbids 1 in a baseline frame
+        if (g_fmark != 0xFFC0 && (nextrnd() % 5) == 0) g_dqtpq[k] = 1;
+        // dependency 12: every destination a frame component can name must be
+        // defined by a DQT before the scan, and COMPS.compNr is drawn freely
+        // from all four - so all four are defined.  One file in nine leaves
+        // them out on purpose, which is the only way to reach libjpeg's
+        // "Quantization table 0x00 was not defined" exit.
+        g_dqtwant[k] = 1;
+    }
+    local int dqtonly = 0;
+    if ((nextrnd() % 9) == 0) {
+        g_dqtwant[1] = 0;
+        g_dqtwant[2] = 0;
+        g_dqtwant[3] = 0;
+        dqtonly = 1;
+    }
+    // the quantization destinations a frame component may name
+    for (k = 0; k < 4; k++) g_tqset[k] = (ubyte)k;
+    if (dqtonly) { g_tqset[0] = 0; g_tqset[1] = 0; g_tqset[2] = 0; g_tqset[3] = 0; }
+    g_noeoi = 0;
+    if ((nextrnd() % 12) == 0) g_noeoi = 1;
+    g_maxhdr = (int)(nextrnd() % 7);
+    g_haveSOF = 0;
+    g_haveSOS = 0;
+    g_haveDQT = 0;
+    g_haveDHT = 0;
+
+    for (i = 0; i < 4; i++) {
+        if (i < g_nf) g_csset[i] = (ubyte)g_Cid[i];
+        else          g_csset[i] = (ubyte)g_Cid[0];
+    }
+    // SOFx.X_image and SOFx.Y_image stay Tier C and bare; the struct that
+    // emits them records them into g_X / g_Y, and the scan is built from
+    // whatever was drawn (see scan_mcus).
+    g_X = 0;
+    g_Y = 0;
+    return 0;
+}
+
+// ------------------------------------------------------------
+// JPEG segments
+typedef struct tagSOS {
+	M_ID marker;
+	// Tier A calculated_value SOS.szSection = 6 + 2 * nr_comp.
+	local int evil_sos = SetEvilBit(IsParsing());
+	local WORD wsz = (WORD)(6 + 2 * g_ns);
+	WORD szSection = { wsz };
+	// Tier A enumerated_values SOS.nr_comp {1,2,3,4}, and never more than the
+	// frame declares (dependency 15).  1 selects libjpeg's non-interleaved
+	// path, >1 the interleaved one.
+	local ubyte wns = (ubyte)g_ns;
+	ubyte nr_comp = { wns };
+	SetEvilBit(evil_sos);
+	ChangeColor(0);
+	// Every field below carries a value set rather than a reservation.  A
+	// reservation here would have to be placed from the PLANNED component
+	// count, and against a real file whose nr_comp differs it lands on the
+	// AC/DC bitfield byte, which the runtime refuses outright - so the whole
+	// scan header is driven by <values=> instead.
+	// dependency 14: each Cs must be a compId the frame header really
+	// declared, so the set is filled from what the SOFx struct read back.
+	// Ss and Se come from dependencies 2-3 (sequential: 0 and 63), 6-7
+	// (progressive spectral selection) and 9 (lossless: Ss is the predictor
+	// selector 1..7); Ah and Al from dependencies 4-5 and the successive
+	// approximation levels.
+	// Tier A once the frame marker is known (dependencies 2-9), so the whole
+	// scan header is guarded: without this the 1/128 out-of-set draw puts a
+	// spectral range or a table destination in the file that the frame type does
+	// not allow, and libjpeg refuses the scan before decoding anything.
+	local int evil_sb = SetEvilBit(IsParsing());
+	g_ss1[0] = (uchar)g_Ss;
+	g_se1[0] = (uchar)g_Se;
+	g_ah1[0] = (ubyte)g_Ah;
+	g_al1[0] = (ubyte)g_Al;
+	// dependency 14, and libjpeg additionally refuses a scan that names the
+	// same component twice.  A shared <values=> set cannot express
+	// "distinct", so each Cs byte is reserved to one frame component - and
+	// the loop is bounded by the DECLARED nr_comp, not by the planned count,
+	// so in the parse direction it can never run past the component array and
+	// land on the AC/DC bitfield byte.
+	local int sj = 0;
+	local string sid[1];
+	local uchar sdm[1];
+	if (nr_comp == g_ns) {
+		for (sj = 0; sj < nr_comp && sj < 4; sj++) {
+			sid[0] = sos_id_str(sj);
+			ReadBytes(sdm, FTell() + 2 * sj, 1, sid);
+		}
+	}
+	struct COMPSOS {
+        ubyte compId;
+		ubyte AC:4 <values=g_dstset>;
+		ubyte DC:4 <values=g_dstset>;
+	} comp[nr_comp];
+	uchar Ss <values=g_ss1>;
+	uchar Se <values=g_se1>;
+	uchar Ah : 4 <values=g_ah1>;
+	uchar Al : 4 <values=g_al1>;
+	SetEvilBit(evil_sb);
+	// ADDED: read the destinations back.  T.81 puts the DC selector in the
+	// high nibble; this template declares the field it calls AC first, so the
+	// field named AC is the one that holds the DC table destination.
+	local int sk = 0;
+	g_ns = nr_comp;
+	if (g_ns > 4) g_ns = 4;
+	if (g_ns < 1) g_ns = 1;
+	for (sk = 0; sk < g_ns; sk++) {
+		g_sdc[sk] = comp[sk].AC;
+		g_sac[sk] = comp[sk].DC;
+		g_sd[sk]  = g_sdc[sk];
+	}
+} SOS;
+
+typedef struct tagUNK (int wmark) {
+	M_ID UnknownMarker;
+	//Warning("Unknown Section 0x%08x %s", UnknownMarker, EnumToString(UnknownMarker));
+	// Tier A payload_wellformedness UNKNOWN.unknown: for three marker values
+	// libjpeg parses this body as a real segment.  0xFFC9/0xFFCA/0xFFCB carry
+	// a frame header identical in layout to SOFx and are the ONLY route to
+	// jdarith.c, because the dispatch switch routes only SOF0..SOF3 to the
+	// SOFx struct.  0xFFCC carries arithmetic conditioning tables that are
+	// range-checked ("Bogus DAC value").  0xFFDC carries a 2-byte line count.
+	// dependency 34: the RSTn markers, SOI, EOI and TEM are standalone and
+	// have no length, so the two bytes written here are bytes the format does
+	// not define - which is what drives libjpeg's next_marker skip loop.
+	local int    uarith = 0;
+	local int    ubody  = 0;
+	local string ubs[1];
+	if (wmark >= 0xFFC9 && wmark <= 0xFFCB) {
+		uarith = 1;
+		ubody  = 6 + 3 * g_nf;
+		ubs[0] = "";
+	} else {
+		ubs[0] = unk_body_str(wmark);
+		ubody  = Strlen(ubs[0]);
+	}
+	local int evil_us = SetEvilBit(IsParsing());
+	local WORD wusz = (WORD)(2 + ubody);
+	WORD szSection = { wusz };
+	local uchar udm[1];
+	if (uarith) {
+		// Bytes 1..4 of the body are Y and X - the SOFx.Y_image / X_image
+		// diversity axis - and are deliberately left OUT of the reservation.
+		// They are drawn here through a lookahead carrying no value set, which
+		// is the same distribution a bare declaration uses, and the bare
+		// ubyte array below picks those same bytes up.  The scan is then
+		// derived from whatever was drawn.
+		local string uh[1];
+		uh[0] = arith_sof_head();
+		ReadBytes(udm, FTell(), 1, uh);
+		g_Y = (int64)ReadUShort(FTell() + 1);
+		g_X = (int64)ReadUShort(FTell() + 3);
+		local string ut[1];
+		ut[0] = arith_sof_tail();
+		ReadBytes(udm, FTell() + 5, 1 + 3 * g_nf, ut);
+		g_haveSOF = 1;
+	} else if (ubody > 0) {
+		ReadBytes(udm, FTell(), ubody, ubs);
+	}
+	SetEvilBit(evil_us);
+	if (FTell() + szSection - 2 >= JpegFileEnd) {
+		Warning("unknown section length pass the end of jpeg file");
+		ubyte unknown[JpegFileEnd - FTell()];
+	} else {
+		ubyte unknown[szSection-2];
+	}
+} UNKNOWN;
+
+typedef struct tagDHT {
+	M_ID marker;
+	// Tier A calculated_value: 2 + sum over the tables of (1 + 16 + sum(length)).
+	// The whole segment body is reserved from dht_body_str(), whose sixteen
+	// counts satisfy the code-space predicate libjpeg validates in
+	// jpeg_make_d_derived_tbl - random counts are refused with "Bogus Huffman
+	// table definition" and no output at all.
+	local int evil_dht = SetEvilBit(IsParsing());
+	local WORD wsz = (WORD)dht_size();
+	WORD szSection = { wsz };
+	local string dhs[1];
+	dhs[0] = dht_body_str();
+	local uchar dhm[1];
+	// clamped to the declared length, which in the parse direction is the
+	// file's own rather than the planned one.
+	local int64 dh_n = szSection - 2;
+	if (dh_n > Strlen(dhs[0])) dh_n = Strlen(dhs[0]);
+	if (dh_n > 0)
+		ReadBytes(dhm, FTell(), dh_n, dhs);
+	SetEvilBit(evil_dht);
+	local WORD huffsz = szSection - 2;
+	while(huffsz > 0) {
+		ChangeColor(0);
+		struct Huffmann_Table {
+			ubyte htInfo;
+			ubyte length[16];
+			local int sumLen = 0;
+			local int i = 0;
+			for(;i<16;i++) {
+				sumLen += length[i];
+			}
+			ubyte HTV[sumLen];
+		} huff_table;
+		huffsz -= sizeof(huff_table);
+	}
+} DHT;
+
+typedef struct tagDQT {
+	M_ID marker;
+	// Tier A calculated_value: 2 + sum over the tables of (1 + 64 * (Pq?2:1)).
+	local int evil_dqt = SetEvilBit(IsParsing());
+	local WORD wsz = (WORD)dqt_size();
+	WORD szSection = { wsz };
+	SetEvilBit(evil_dqt);
+	g_dqtcur = 0;
+	local WORD qtsz = szSection - 2;
+	while(qtsz > 0) {
+		ChangeColor(0);
+		// Pin this table's Pq/Tq byte (Tier B QuanTable.Pq, Tier A
+		// QuanTable.Tq); the 64 coefficients stay bare, because
+		// QuanTable.qTable is Tier C and libjpeg dequantizes whatever is there.
+		dqt_hdr();
+		local int evil_qt = SetEvilBit(IsParsing());
+		struct QuanTable {
+			uchar Pq : 4 <values=g_pq1>;
+			uchar Tq : 4 <values=g_tq1>;
+			if (Pq == 0)
+				byte qTable[64];
+			else
+				uint16 qTable[64];
+		} qtable;
+		SetEvilBit(evil_qt);
+		qtsz -= sizeof(qtable);
+	}
+} DQT;
+
+typedef struct tagDRI {
+	M_ID marker;
+	// Tier A calculated_value: the constant 4.
+	local int evil_dri = SetEvilBit(IsParsing());
+	WORD szSection = { 4 };
+	SetEvilBit(evil_dri);
+	WORD Ri;                        // Tier C - bare, a free restart interval
+	// ADDED: the entropy-coded segment is derived from whatever was drawn here
+	// (dependency 17).  Ri > 0 makes the decoder check for a restart marker
+	// after every interval, call process_restart and reset the DC predictors.
+	g_Ri = Ri;
+} DRI;
+
+typedef struct tagDHP {
+	M_ID marker;
+	// Tier A calculated_value DHP.szSection = 8 + 3 * Nf.  libjpeg refuses the
+	// hierarchical progression marker outright, which is its own branch.
+	local int evil_dhp = SetEvilBit(IsParsing());
+	local WORD wsz = (WORD)(8 + 3);
+	WORD szSection = { wsz };
+	// Tier B DHP.P {2..16}, preferring 8 and 12
+	local uchar wp[15] = { 8, 8, 8, 12, 12, 2, 3, 4, 5, 6, 7, 9, 10, 11, 16 };
+	local uchar wpv = wp[(int)(nextrnd() % 15)];
+	uchar P = { wpv };
+	SetEvilBit(evil_dhp);
+	uint16 Y;                       // Tier C - bare
+	uint16 X;                       // Tier C - bare
+	// one component specification, matching the declared length.  libjpeg
+	// refuses the hierarchical-progression marker before reading the body, so
+	// only the length has to be right.
+	local string dps[1];
+	dps[0] = "\x01";
+	local uchar dpm[1];
+	local int evil_dpc = SetEvilBit(IsParsing());
+	ReadBytes(dpm, FTell(), 1, dps);
+	SetEvilBit(evil_dpc);
+	uchar Nf;
+	struct {
+		uchar id;
+		// Tier B DHP.component_param.h_factor / v_factor {1,2,3,4}
+		uchar h_factor : 4 <values=g_hvset>;
+		uchar v_factor : 4 <values=g_hvset>;
+		uchar Tq;
+	} component_param[Nf];
+} DHP;
+
+typedef struct tgSOFx {
+	M_ID marker;
+	// Tier A calculated_value SOFx.szSection = 8 + 3 * nr_comp.
+	local int evil_sof = SetEvilBit(IsParsing());
+	local WORD wsz = (WORD)(8 + 3 * g_nf);
+	WORD szSection = { wsz };
+	// Tier A enumerated_values SOFx.precision: dependency 0 allows 8 and 12 in
+	// a DCT frame, dependency 1 allows 2..16 in a lossless one.  8 and 12
+	// select entirely separate compiled instantiations of libjpeg's pipeline.
+	local ubyte wprec = (ubyte)g_prec;
+	ubyte precision = { wprec };
+	SetEvilBit(evil_sof);
+	WORD Y_image;                   // Tier C - diversity axis, bare
+	WORD X_image;                   // Tier C - diversity axis, bare
+	// ADDED: record the freely drawn dimensions for the scan emitter.  The
+	// payload is computed from them; they are never narrowed to fit a payload.
+	g_Y = Y_image;
+	g_X = X_image;
+	// Tier A enumerated_values SOFx.nr_comp {1..10}: 1 selects
+	// grayscale_convert and wrppm's PGM writer, 3 ycc_rgb_convert,
+	// 4 ycck_cmyk_convert, 5 and above the "too many components" rejection.
+	local int evil_nc = SetEvilBit(IsParsing());
+	local ubyte wnf = (ubyte)g_nf;
+	ubyte nr_comp = { wnf };
+	SetEvilBit(evil_nc);
+	ChangeColor(0);
+	struct COMPS {
+		ubyte compId;                               // Tier C - bare
+		// Tier A enumerated_values {1,2,3,4}: 0 and 5 give "Bogus sampling
+		// factors".  Which member is drawn selects h2v1_upsample,
+		// h2v2_upsample, the fancy variants or int_upsample, and reorders the
+		// blocks inside decode_mcu.
+		ubyte Horz:4 <values=g_hset>;
+		ubyte Vert:4 <values=g_vset>;
+		// Tier A enumerated_values {0,1,2,3}: the quantization destination
+		ubyte compNr <values=g_tqset>;
+	} comp[nr_comp];
+	// ADDED: record what was drawn, so the entropy-coded segment is derived
+	// from the real geometry rather than from anything pinned.
+	local int ci = 0;
+	g_Hmax = 1;
+	g_Vmax = 1;
+	g_nf = nr_comp;
+	if (g_nf > 10) g_nf = 10;
+	local int csum = 0;
+	for (ci = 0; ci < g_nf; ci++) {
+		g_H[ci]   = comp[ci].Horz;
+		g_V[ci]   = comp[ci].Vert;
+		g_Tq[ci]  = comp[ci].compNr;
+		g_Cid[ci] = comp[ci].compId;
+		if (g_H[ci] > g_Hmax) g_Hmax = g_H[ci];
+		if (g_V[ci] > g_Vmax) g_Vmax = g_V[ci];
+	}
+	// dependency 16: an interleaved MCU may hold at most ten data units, and
+	// more than that is refused with "Sampling factors too large for
+	// interleaved scan".  The sampling factors are not touched - the SCAN is
+	// made non-interleaved instead, which is itself a legal and different
+	// decoder path.
+	// dependency 14: the ids the scan may name are exactly the ones declared
+	// here.  compId itself stays Tier C and bare.
+	for (ci = 0; ci < 4; ci++) {
+		if (ci < g_nf) g_csset[ci] = (ubyte)g_Cid[ci];
+		else           g_csset[ci] = (ubyte)g_Cid[0];
+	}
+	for (ci = 0; ci < g_nf; ci++) csum += g_H[ci] * g_V[ci];
+	if (csum > 10) g_ns = 1;
+	if (g_ns > g_nf) g_ns = g_nf;
+	if (g_ns > 4) g_ns = 4;
+	if (g_ns < 1) g_ns = 1;
+} SOFx;
+
+typedef struct tagCOMMENT {
+	M_ID CommentMarker;
+	// Tier A calculated_value: 2 + the length of the comment text, which is
+	// Tier C and free.  libjpeg skips it with skip_variable.
+	local int evil_com = SetEvilBit(IsParsing());
+	local WORD wsz = (WORD)(3 + (nextrnd() % 60));
+	WORD szSection = { wsz };
+	SetEvilBit(evil_com);
+	char comment[szSection-2];      // Tier C - bare
+
+
+	local char comments[szSection-1] = {0};
+	local int i = 0;
+	Memcpy(comments,comment,szSection-2);
+	for(i=0;i<szSection-1;i++) {
+		if(comments[i]==0) comments[i] = 'x';
+	}
+	comments[szSection-2] = 0;
+	Printf("\nCOMMENT :\n%s\n\n",comments);
+
+} COMMENT<read=ReadComment>;
+
+typedef struct tagJPGLS {
+    M_ID marker;
+    // Tier A calculated_value: 8 + 3 * Nf, which is 11 for the single
+    // component specification this struct declares.  libjpeg refuses SOF55.
+    local int evil_ls = SetEvilBit(IsParsing());
+    WORD szSection = { 11 };
+    // Tier B JPGLS.precision {2..16}, preferring 8
+    local uchar lsp[8] = { 8, 8, 8, 8, 2, 12, 16, 10 };
+    local uchar lspv = lsp[(int)(nextrnd() % 8)];
+    local string lss[1];
+    lss[0] = "";
+    SetEvilBit(evil_ls);
+
+    uchar precision = { lspv } <comment="bits per sample">;
+    WORD Y_numlines;
+    WORD X_numcols;
+    uchar Nf <comment="number of components in frame">;
+    uchar C_compID;
+    // Tier B bitmask_constraint JPGLS.sub_sampling: the legal H/V nibble pairs
+    local uchar lsub[16] = { 17, 18, 19, 20, 33, 34, 35, 36,
+                             49, 50, 51, 52, 65, 66, 67, 68 };
+    local uchar lsubv = lsub[(int)(nextrnd() % 16)];
+    uchar sub_sampling = { lsubv };
+    local int evil_lt = SetEvilBit(IsParsing());
+    uchar Tq = { 0 } <comment="always 0">;
+
+    SetEvilBit(evil_lt);
+    if (11 < szSection)
+		uchar uknown[szSection - 11];
+} JPGLS;
+
+string ReadComment( COMMENT &com )
+{
+	return com.comment;
+}
+
+JpegFileEnd = FileSize();
+
+// ADDED: decide the whole frame/scan plan before the first marker is written.
+// In the generate direction FileSize() above committed FormatFuzzer to a total
+// size drawn from [0, MAX_FILE_SIZE], and writing past it is an error - so it
+// is exactly the output budget the JSON's structure rules ask for, and every
+// decision below is made to fit inside it.
+jpg_plan();
+
+// ------------------------------------------------------------
+// JPEG file
+
+SetBackColor(jetMap[0]);
+typedef struct tgJPGFile {
+	local int was_bigendian = IsBigEndian();
+	BigEndian();
+	local WORD NextMarker;
+	local quad fpos2;
+    local quad endpos;
+	local byte bEOI = 0;
+	local string scst[1];
+	local uchar  scdm[1];
+	local int64 slen = 0;
+	while(FTell() < JpegFileEnd && !bEOI) {
+		// skip optional 0xff before marker
+		// ADDED: the lookahead that drives this loop carries a per-call-site
+		// value set (see jpg_peek), which is also what lets 0xFF fill bytes be
+		// emitted deliberately - libjpeg skips them in next_marker and warns,
+		// a path a file whose markers are tightly packed never reaches.
+		while (jpg_peek() == 0xffff) FSkip(1);
+
+		NextMarker  = jpg_peek();
+		g_nseg++;
+		switch(NextMarker) {
+		case M_SOI:
+			M_ID SOIMarker;
+			Printf("Start of Image Marker\n");
+			break;
+		case M_SOS:
+			SOS  scanStart;
+			Printf("Start of Scan Marker\n");
+			g_haveSOS = 1;
+			// ADDED: build the entropy-coded segment from the frame geometry,
+			// the sampling factors, the scan's component count, the restart
+			// interval and the Huffman tables declared above, and reserve it
+			// so the search below and the original's own array read it back.
+			scst[0] = scan_str(JpegFileEnd - FTell());
+			slen = Strlen(scst[0]);
+			if( slen > JpegFileEnd - FTell() )
+				slen = 0;
+			if( slen > 0 )
+				ReadBytes(scdm, FTell(), slen, scst);
+			// The original's FindFirst(M_EOI, ...) cannot size a derived scan:
+			// generating, bt.h plants the marker at start + rand_int(16) and
+			// returns that, so the length would be random and 0..15 bytes
+			// long.  This forward search is what FindFirst does in the PARSE
+			// direction - walk to the first FFD9 - and in the generate
+			// direction it walks the bytes just reserved, which end with
+			// exactly that marker unless the file is deliberately
+			// unterminated.  Both directions therefore get the true length.
+			slen = 0;
+			while (FTell() + slen < JpegFileEnd - 1
+			       && ReadUShort(FTell() + slen) != 0xFFD9)
+				slen++;
+			fpos2 = FTell() + slen;
+			if (FTell() + slen >= JpegFileEnd - 1)
+				fpos2 = -1;
+            if( fpos2 < 0 )
+            {
+			    char unterminatedScanData[JpegFileEnd - FTell()];
+			    Printf("Missing End of File marker\n");
+            }
+            else
+            {
+			    char scanData[fpos2 - FTell()];
+			    ChangeColor(1);
+			    M_ID EOIMarker;
+			    Printf("End of File Image\n");
+			    if(JpegFileEnd - FTell()) char unknownPadding[JpegFileEnd - FTell()] <bgcolor=cSilver>;
+            }
+			bEOI = 1;
+			break;
+		case M_APP0:
+			APP0 app0;
+			break;
+		case M_DHT:
+			DHT dht;
+			g_haveDHT = 1;
+			break;
+		case M_DQT:
+			DQT dqt;
+			g_haveDQT = 1;
+			break;
+		case M_DRI:
+			DRI dri;
+			break;
+		case M_DHP:
+			DHP dhp;
+			break;
+		case M_SOF0:
+			SOFx sof0;
+			g_haveSOF = 1;
+			break;
+		case M_SOF1:
+			SOFx sof1;
+			g_haveSOF = 1;
+			break;
+		case M_SOF2:
+			SOFx sof2;
+			g_haveSOF = 1;
+			break;
+		case M_SOF3:
+			SOFx sof3;
+			g_haveSOF = 1;
+			break;
+		case M_APP1:
+			APP1 app1;
+			break;
+		case M_APP2:
+			APP2 app2;
+			break;
+		case M_APP12:
+			APP12 app12;
+			break;
+		case M_APP13:
+			APP13 app13;
+			break;
+		case M_APP14:
+			APP14 app14;
+			break;
+		case M_COMM:
+			COMMENT comment;
+			break;
+        case M_JPGLS:
+            JPGLS jpgls;
+            break;
+		default:
+			if (ReadUByte(FTell()) == 0xff) {
+				UNKNOWN unknownSection(NextMarker);
+			} else {
+				char garbage;
+			}
+			break;
+		}
+		ChangeColor(!bEOI);
+	}
+	if (!was_bigendian)
+		LittleEndian();
+} JPGFILE;
+
+JPGFILE jpgfile <open=true>;

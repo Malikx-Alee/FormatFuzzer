@@ -1,0 +1,1497 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: PNG.bt
+//   Authors: Kevin O. Grover, RCS, Mister Wu
+//   Version: 2.3
+//   Purpose: Parse PNG (Portable Network Graphics) and APNG (Animated Portable Network Graphics) image files.
+//  Category: Image
+// File Mask: *.png,*.apng
+//  ID Bytes: 89 50 4E 47 //%PNG
+//   History:
+//   2.3   2018-08-17 K. Grover: Uniform type names.  Formatting/comments.
+//   2.2   2017-10-20 Mister Wu: Initial support of APNG chunks: acTL, fcTL, fdAT.
+//   2.1   2017-08-31 K. Grover: Better colors.  Alternate chunk colors.  Cleaned up messages.
+//   2.0   2016-02-10 SweetScape Software: Merged in extra chunks from PNG12Template.bt, updated header for repository submission.
+//   1.1   2009-02-23 K. Grover: Decode IHDR and tEXt chunks.
+//   1.0.1 2005-06-29 K. Grover: Fixed typos in comments.
+//   1.0   2005-05-11 K. Grover: Initial version.
+//
+// This template was written to the PNG 1.2 Specification:
+//     http://www.libpng.org/pub/png/spec/1.2/
+//
+// It includes chunks described in the APNG 1.0 Specification:
+//     https://wiki.mozilla.org/APNG_Specification
+//
+// Note however, that it does not check nor parse all chunk subdata, so it
+// should work with all future PNG specifications.
+//
+// Possible caveat: PNG encourages the chunk type to be mapped to
+// strings of the form "[a-zA-Z]{4}".  However, it's not a requirement.
+//
+// Summary of PNG Format:
+// A PNG file consists of an 8 byte ID followed by a series of chunks.
+// Each Chunk is
+//   length (4 bytes), chunk_type (4 bytes), data (length bytes), crc (4 bytes)
+//   CRC Does NOT include the length bytes.
+//------------------------------------------------
+//
+// FormatFuzzer GENERATIVE rewrite, tiered strategy, size-unrestricted variant.
+// Driven by llm_learned_specification/opus5-tiered/
+//            llm_reterived_constraints_png-llm_opus5-tiered.json
+//
+// The original is a parser: every chunk's payload is sized from the length
+// field it has just read.  A generator needs the opposite direction, so the
+// rewrite computes each chunk's data length FIRST (from the format rules and
+// from the fields already emitted) and declares
+//     uint32 length = { computed };
+// before the type and the payload.  The payload is then sized from length(),
+// which is the computed value while generating and the file's real value while
+// parsing, so one body serves both directions.  Every branch ends with a
+// residual consumer so the chunk boundary stays exact even when a real file
+// disagrees with the structure modelled here.
+//
+// Tiers (from the JSON):
+//   Tier A  pinned inside an evil-bit guard, or computed (length, CRC, zlib
+//           framing, APNG sequence numbers).
+//   Tier B  the complete valid_values set, as an enum type where the original
+//           declares one.
+//   Tier C  declared bare - no value set, no <min=>, no <max=>.
+//
+// Every Tier A guard is written SetEvilBit(IsParsing()) rather than
+// SetEvilBit(false).  While GENERATING the two are identical, so no Tier A
+// field can receive FormatFuzzer's 1/128 out-of-set value, which is what the
+// rule is for.  While PARSING it leaves the escape enabled, and that escape is
+// the only way a pinned or computed field can take the value a real file
+// actually holds: a real chunk length, a real Huffman-coded deflate stream, a
+// real keyword.  A literal false here makes the template reject every real PNG
+// (measured: 0 of the 31 files in testcases/png parsed; with IsParsing(), 31).
+//
+// Generated-file size is bounded ONLY by the output_budget counters below;
+// no dimension, count or repetition field is ever narrowed.
+//------------------------------------------------
+
+BigEndian();                  // PNG files are in Network Byte order
+
+// Helper Routine
+
+void error_message(string msg) {
+    Warning(msg);
+    Printf(msg + "\n");
+}
+
+// ---------------------------------------------------------------------------
+// output_budget (structure section of the JSON).  The JSON's figures are
+// 1 MiB total / 768 KiB IDAT / 256 KiB fdAT / 128 KiB text / 16 KiB sPLT;
+// FormatFuzzer's runtime caps a generated file at MAX_FILE_SIZE (65536 bytes)
+// and the decision string at MAX_RAND_SIZE (131072 bytes), so the figures are
+// scaled to the runtime ceiling while keeping the same proportions and the
+// same mechanism: a running byte counter that steers the chunk loop toward
+// IEND once the budget is spent.  These bound the FILE, never a field.
+// ---------------------------------------------------------------------------
+local int64 BUDGET_TOTAL = 32000;      // whole chunk sequence
+local int64 BUDGET_IDAT  = 16000;      // IDAT raw (uncompressed) bytes
+local int64 BUDGET_TEXT  = 5000;       // tEXt + zTXt + iTXt together
+local int64 BUDGET_SPLT  = 3000;       // sPLT chunks together
+local int64 BUDGET_FDAT  = 4000;       // fdAT raw bytes together
+
+local int64 g_total      = 0;          // bytes written so far
+local int64 g_idat_bytes = 0;
+local int64 g_text_bytes = 0;
+local int64 g_splt_bytes = 0;
+local int64 g_fdat_bytes = 0;
+
+// ---------------------------------------------------------------------------
+// Generation state.  g_rnd is a derived pseudo-random word: it is advanced by
+// an LCG and mixed with every chunk's CRC, so it costs no decision bytes and
+// no file bytes, and it takes the same value in both directions because it is
+// built only out of fields that have already been emitted or parsed.  It is
+// used for the free-form sizes (text lengths, palette entry counts, how the
+// zlib stream is cut into IDAT chunks) that no field in the file records.
+// ---------------------------------------------------------------------------
+local uint32 g_rnd   = 0x2545F491;
+local int    g_state = 0;    // 0 IHDR, 1 PLTE required, 2 pre-IDAT, 3 IDAT run, 4 post-IDAT
+local int    g_done  = 0;
+
+// IHDR values, remembered so every payload can be derived from them
+local int64  g_w         = 1;
+local int64  g_h         = 1;
+local int64  g_bits      = 8;
+local int64  g_color     = 0;
+local int64  g_interlace = 0;
+local int64  g_channels  = 1;
+local int64  g_pal       = 0;   // PLTE entries actually written
+
+// APNG state: one sequence counter shared by fcTL and fdAT (Tier A)
+local int64  g_seq   = 0;
+local int    g_actl  = 0;
+local int    g_fctl  = 0;
+local int64  g_fw    = 1;    // the last fcTL's frame dimensions; the fdAT
+local int64  g_fh    = 1;    // payload is derived from them, never they from it
+
+// Keyword / text shape for the chunk about to be written.  These are decided
+// before the length field so the length arithmetic is exact.
+local int    g_kwsel = 0;
+local int64  g_klen  = 5;
+local int64  g_glen  = 0;
+local int64  g_tklen = 0;
+local int    g_splt_count = 0;
+
+// IDAT zlib stream state.  The stream spans several chunks, so the Adler-32
+// accumulator and the scanline bookkeeping live here.
+local int64  g_raw_left   = 0;   // raw bytes of the image stream still to write
+local int64  g_blk_size   = 0;   // nominal stored-block size
+local int    g_first_idat = 1;
+local int64  g_s1         = 1;
+local int64  g_s2         = 0;
+local int64  g_rowleft    = 0;   // data bytes left in the current scanline
+local int64  g_cur_rb     = 0;   // current scanline's data byte count
+local int    g_pass       = 0;   // next Adam7 pass to open
+local int    g_npass      = 1;
+local int64  g_rows_left  = 0;   // scanlines left in the current pass
+local int64  pass_rows[7];
+local int64  pass_rb[7];
+
+// Adam7 tables (PNG 1.2 clause 2.6), used to shape the interlaced IDAT stream
+local int    adam7_x0[] = { 0, 4, 0, 2, 0, 1, 0 };
+local int    adam7_y0[] = { 0, 0, 4, 0, 2, 0, 1 };
+local int    adam7_dx[] = { 8, 8, 4, 4, 2, 2, 1 };
+local int    adam7_dy[] = { 8, 8, 8, 4, 4, 2, 2 };
+
+// iCCP profile Adler-32 accumulator (one iCCP chunk per file)
+local int64  g_ica1 = 1;
+local int64  g_ica2 = 0;
+local int64  g_icc_space = 0x52474220;   // 'RGB ' or 'GRAY', set from color_type
+
+// ---------------------------------------------------------------------------
+// Chunk-type selection.  structure/ordering is expressed as preferred/possible
+// sets that grow and shrink as the file's state changes: a single-occurrence
+// type is removed when it is written, a type that only becomes legal later is
+// added when its precondition is met.
+// ---------------------------------------------------------------------------
+local char   chunk_type[4];
+
+// clear ffcompile's auto-mined global lookahead values so that the
+// per-call-site sets below are the only ones in play
+const local ubyte ReadUByteInitValues[0];
+
+local string pref_ihdr[] = { "IHDR" };            // first_element
+local string poss_ihdr[] = { "IHDR" };
+local string pref_plte[] = { "PLTE" };            // required before IDAT when
+local string poss_plte[] = { "PLTE" };            // the colour type is 3
+local string pref_idat[] = { "IDAT" };            // contiguous IDAT run
+local string poss_idat[] = { "IDAT" };
+local string pref_iend[] = { "IEND" };            // last_element
+local string poss_iend[] = { "IEND" };
+
+local string pref_chunks[] = { "IDAT", "PLTE" };
+local string poss_chunks[] = {
+    "cHRM", "gAMA", "iCCP", "sBIT", "sRGB", "cICP", "mDCV", "cLLI",
+    "cLLi", "mDCv",
+    "PLTE", "hIST", "bKGD", "tRNS",
+    "pHYs", "sPLT", "oFFs", "pCAL", "sCAL", "sTER",
+    "tIME", "eXIf", "tEXt", "zTXt", "iTXt",
+    "acTL",
+    "gIFg", "gIFx", "gIFt", "fRAc", "prVt", "unKn", "vpAg",
+    "IDAT" };
+
+local string pref_post[] = { "IEND" };
+local string poss_post[] = {
+    "tEXt", "zTXt", "iTXt", "tIME", "eXIf",
+    "gIFg", "prVt", "unKn", "vpAg", "ABCD",
+    "IEND" };
+
+// PNG Data types
+typedef struct {
+    // Tier A, fixed_value: 89 50 4E 47 0D 0A 1A 0A.  The per-element values
+    // are mined from the signature check below, and the evil bit is held off
+    // for the whole array so none of the four words can be corrupted.
+    uint16 btPngSignature[4] <format=hex>;
+} PNG_SIGNATURE;
+
+typedef enum <byte> pngColorSpaceType {
+    GrayScale = 0,
+    TrueColor = 2,
+    Indexed = 3,
+    AlphaGrayScale = 4,
+    AlphaTrueColor = 6
+} PNG_COLOR_SPACE_TYPE;
+
+// Compression Methods
+typedef enum <byte> pngCompressionMethod {
+    Deflate = 0
+} PNG_COMPR_METHOD;
+
+// Filter Methods
+typedef enum <byte> pngFilterMethod {
+    AdaptiveFiltering = 0
+} PNG_FILTER_METHOD;
+
+// Interlace Methods
+typedef enum <byte> pngInterlaceMethod {
+    NoInterlace = 0,
+    Adam7Interlace = 1
+} PNG_INTERLACE_METHOD;
+
+typedef struct {
+    byte btRed <format=hex>;      // Tier C
+    byte btGreen <format=hex>;    // Tier C
+    byte btBlue <format=hex>;     // Tier C
+} PNG_PALETTE_PIXEL;
+
+typedef struct {
+    uint32 x;                     // Tier C: chromaticity, bare on purpose
+    uint32 y;                     // Tier C
+} PNG_POINT;
+
+typedef enum <byte> {
+    Perceptual = 0,
+    RelativeColorimetric = 1,
+    Saturation = 2,
+    AbsoluteColorimetric = 3
+} PNG_SRGB_CHUNK_DATA;
+
+typedef struct {
+    string profile_name;
+    ubyte red;
+} PNG_ICCP_CHUNK_DATA;
+
+typedef enum <byte> {
+    APNG_DISPOSE_OP_NONE = 0,
+    APNG_DISPOSE_OP_BACKGROUND = 1,
+    APNG_DISPOSE_OP_PREVIOUS = 2
+} APNG_DISPOSE_OP;
+
+typedef enum <byte> {
+    APNG_BLEND_OP_SOURCE = 0,
+    APNG_BLEND_OP_OVER = 1
+} APNG_BLEND_OP;
+
+// Chunk Type
+typedef union {
+    char    cname[4];           // character representation
+    uint32  ctype <format=hex>; // Chunk Type
+} CTYPE <read=readCTYPE>;
+
+string readCTYPE(local CTYPE &t) {
+    return t.cname;
+}
+
+// ---------------------------------------------------------------------------
+// Shared emitters added by the rewrite
+// ---------------------------------------------------------------------------
+
+// Tier B pattern_constraint for every PNG keyword (tEXt/zTXt/iTXt/iCCP).
+// The six registered keywords have lengths 5..10, so the caller computes
+// klen = 5 + sel and the chunk length arithmetic stays exact.  A keyword is
+// what lets png_handle_tEXt / _zTXt / _iTXt / _iCCP run at all instead of
+// their "bad keyword" rejection branch.
+struct PNG_KEYWORD (int sel) {
+    local int evil_kw = SetEvilBit(IsParsing());
+    if (sel == 0)
+        char keyword[5] = { "Title" };
+    else if (sel == 1)
+        char keyword[6] = { "Author" };
+    else if (sel == 2)
+        char keyword[7] = { "Comment" };
+    else if (sel == 3)
+        char keyword[8] = { "Software" };
+    else if (sel == 4)
+        char keyword[9] = { "Copyright" };
+    else
+        char keyword[10] = { "Disclaimer" };
+    ubyte keywordNul = { 0 };     // the single 0x00 that ends the keyword
+    SetEvilBit(evil_kw);
+};
+
+// payload_wellformedness, codec zlib/deflate (RFC 1950 + RFC 1951).
+// rawLen free bytes wrapped in stored DEFLATE blocks; avail is the exact
+// number of bytes the enclosing chunk has for this stream, so the parse
+// direction stays aligned on a real file whose stream is Huffman coded.
+// Reaches png_decompress_chunk -> png_inflate -> png_inflate_read and, for
+// zTXt/iTXt, png_set_text_2 and png_write_zTXt/png_write_iTXt instead of the
+// "invalid compressed text" branch.
+struct PNG_ZLIB_STREAM (int64 rawLen, int64 avail) {
+    local int64 zLeft = avail;
+    local int64 zs1 = 1;
+    local int64 zs2 = 0;
+    local int64 zRemain = rawLen;
+    local int64 zBlk = 0;
+    local int64 zi = 0;
+    local int   zMore = 1;
+    local ubyte zFin = 0;
+    local int   evil_z = SetEvilBit(IsParsing());
+    if (zLeft >= 2) {
+        ubyte  zCmf = { 0x78 };    // CM=8 (deflate), CINFO=7 (32K window)
+        ubyte  zFlg = { 0x01 };    // FDICT=0, FLEVEL=0; 0x7801 % 31 == 0
+        zLeft -= 2;
+    }
+    SetEvilBit(evil_z);
+    while (zMore && zLeft >= 5) {
+        zBlk = zRemain;
+        if (zBlk > 65535)      zBlk = 65535;
+        if (zBlk > zLeft - 5)  zBlk = zLeft - 5;
+        zFin = 0;
+        if (zRemain - zBlk <= 0) zFin = 1;
+        local int evil_b = SetEvilBit(IsParsing());
+        ubyte  zBhdr = { zFin };                 // BFINAL, BTYPE=00 (stored)
+        LittleEndian();                          // LEN/NLEN are little-endian
+        uint16 zLen  = { (uint16)zBlk };
+        uint16 zNlen = { (uint16)(65535 - zBlk) };
+        BigEndian();
+        SetEvilBit(evil_b);
+        zLeft -= 5;
+        zi = 0;
+        while (zi < zBlk) {
+            ubyte zRaw;                          // content_is_free: bare
+            zs1 = (zs1 + zRaw) % 65521;
+            zs2 = (zs2 + zs1) % 65521;
+            zi++;
+        }
+        zLeft -= zBlk;
+        zRemain -= zBlk;
+        if (zFin) zMore = 0;
+    }
+    if (zLeft >= 4) {
+        local int evil_a = SetEvilBit(IsParsing());
+        uint32 zAdler = { (uint32)((zs2 << 16) | zs1) };
+        SetEvilBit(evil_a);
+        zLeft -= 4;
+    }
+    while (zLeft > 0) { ubyte zPad; zLeft--; }    // parse-direction residual
+};
+
+// One byte of an embedded ICC profile, accumulated into the profile's
+// Adler-32 so the iCCP zlib stream can be sealed correctly.
+struct PNG_ICC_BYTE (int64 v) {
+    local int evil_ib = SetEvilBit(IsParsing());
+    ubyte icb = { (ubyte)(v & 0xFF) };
+    SetEvilBit(evil_ib);
+    g_ica1 = (g_ica1 + icb) % 65521;
+    g_ica2 = (g_ica2 + g_ica1) % 65521;
+};
+
+struct PNG_ICC_U32 (int64 v) {
+    PNG_ICC_BYTE icu3((v >> 24) & 0xFF);
+    PNG_ICC_BYTE icu2((v >> 16) & 0xFF);
+    PNG_ICC_BYTE icu1((v >> 8) & 0xFF);
+    PNG_ICC_BYTE icu0(v & 0xFF);
+};
+
+// Free profile bytes, Adler-32 accumulated.  content_is_free: only the header
+// fields libpng validates are fixed.
+struct PNG_ICC_FREE (int64 n) {
+    local int64 ifi = 0;
+    while (ifi < n) {
+        ubyte icf;
+        g_ica1 = (g_ica1 + icf) % 65521;
+        g_ica2 = (g_ica2 + g_ica1) % 65521;
+        ifi++;
+    }
+};
+
+// A 132-byte ICC profile header plus a tag table of ntag entries.  This is
+// what carries the decoder past png_handle_iCCP's decompression into
+// png_icc_check_length / png_icc_check_header / png_icc_check_tag_table and
+// png_set_iCCP, and from there into png_write_iCCP on the way back out.
+struct PNG_ICC_PROFILE (int64 nprof, int64 ntag) {
+    PNG_ICC_U32  iccSize(nprof);             //   0 profile size == its own length
+    PNG_ICC_FREE iccCmm(4);                  //   4 preferred CMM
+    PNG_ICC_U32  iccVersion(0x04300000);     //   8 version 4.3
+    PNG_ICC_U32  iccClass(0x6D6E7472);       //  12 'mntr' device class
+    PNG_ICC_U32  iccSpace(g_icc_space);      //  16 data colour space, from color_type
+    PNG_ICC_U32  iccPcs(0x58595A20);         //  20 'XYZ ' PCS
+    PNG_ICC_FREE iccDate(12);                //  24 creation date
+    PNG_ICC_U32  iccMagic(0x61637370);       //  36 'acsp' - checked by libpng
+    PNG_ICC_FREE iccPlatform(24);            //  40 platform/flags/manufacturer
+    PNG_ICC_U32  iccIntent(0);               //  64 rendering intent
+    PNG_ICC_FREE iccTail(60);                //  68 illuminant, creator, reserved
+    PNG_ICC_U32  iccTagCount(ntag);          // 128 tag count
+    PNG_ICC_FREE iccTagTable(12 * ntag);     // 132 tag table
+};
+
+// zlib wrapper around the ICC profile (alternate_payloads["iCCP"]).
+struct PNG_ICC_ZLIB (int64 nprof, int64 ntag, int64 avail) {
+    local int64 iLeft = avail;
+    local int   evil_iz = SetEvilBit(IsParsing());
+    if (iLeft >= 2) {
+        ubyte  iCmf = { 0x78 };
+        ubyte  iFlg = { 0x01 };
+        iLeft -= 2;
+    }
+    if (iLeft >= 5) {
+        ubyte  iBhdr = { 1 };                  // single final stored block
+        LittleEndian();
+        uint16 iLen  = { (uint16)nprof };
+        uint16 iNlen = { (uint16)(65535 - nprof) };
+        BigEndian();
+        iLeft -= 5;
+    }
+    SetEvilBit(evil_iz);
+    g_ica1 = 1;
+    g_ica2 = 0;
+    if (iLeft >= nprof && nprof > 0) {
+        PNG_ICC_PROFILE iccProfile(nprof, ntag);
+        iLeft -= nprof;
+    }
+    if (iLeft >= 4) {
+        local int evil_ia = SetEvilBit(IsParsing());
+        uint32 iAdler = { (uint32)((g_ica2 << 16) | g_ica1) };
+        SetEvilBit(evil_ia);
+        iLeft -= 4;
+    }
+    while (iLeft > 0) { ubyte iPad; iLeft--; }  // parse-direction residual
+};
+
+// iCCP - embedded ICC profile.  The original declares PNG_ICCP_CHUNK_DATA
+// (lines 95-98 of the original) but never instantiates it, so an iCCP chunk
+// falls through to the catch-all ubyte data[length]; this struct extends the
+// dispatch instead, honouring both constraints the JSON records for that
+// unreferenced struct: the keyword pattern on profile_name and the Tier A pin
+// on the byte the original misnames 'red', which is the compression method.
+struct PNG_CHUNK_ICCP (int kwsel, int64 nprof, int64 ntag, int64 chunkLen) {
+    PNG_KEYWORD iccpProfileName(kwsel);
+    local int evil_ic = SetEvilBit(IsParsing());
+    ubyte iccpComprMethod = { 0 };     // Tier A: deflate (0) is the only method
+    SetEvilBit(evil_ic);
+    local int64 an = chunkLen - g_klen - 2;
+    if (an < 0) an = 0;
+    PNG_ICC_ZLIB iccpProfileData(nprof, ntag, an);
+};
+
+// -- Specific Chunks
+
+// IHDR - Image Header
+typedef struct {
+    uint32   width;               // Tier C, diversity axis: declared bare
+    uint32   height;              // Tier C, diversity axis: declared bare
+    // dependencies: colour type decides which bit depths are legal.  Read the
+    // upcoming discriminator so bits is constrained before either is emitted.
+    local ubyte color_types[] = { 0, 2, 3, 4, 6 };
+    switch (ReadUByte(FTell() + 1, color_types)) {
+    case 0:                       // GrayScale: every depth PNG defines
+        ubyte bits = { 1, 2, 4, 8, 16 };
+        break;
+    case 2:                       // TrueColor: 8 and 16 only
+        ubyte bits = { 8, 16 };
+        break;
+    case 3:                       // Indexed: an index cannot exceed 8 bits
+        ubyte bits = { 1, 2, 4, 8 };
+        break;
+    case 4:                       // AlphaGrayScale: 8 and 16 only
+        ubyte bits = { 8, 16 };
+        break;
+    case 6:                       // AlphaTrueColor: 8 and 16 only
+        ubyte bits = { 8, 16 };
+        break;
+    default:
+        ubyte bits = { 1, 2, 4, 8, 16 };
+        break;
+    }
+    PNG_COLOR_SPACE_TYPE color_type;        // Tier B: enum carries 0,2,3,4,6
+    local int evil_ihdr = SetEvilBit(IsParsing());
+    PNG_COMPR_METHOD     compr_method;      // Tier A: Deflate = 0 only
+    PNG_FILTER_METHOD    filter_method;     // Tier A: AdaptiveFiltering = 0 only
+    SetEvilBit(evil_ihdr);
+    PNG_INTERLACE_METHOD interlace_method;  // Tier B: 0 and 1, both preferred
+} PNG_CHUNK_IHDR <read=readIHDR>;
+
+string readIHDR(local PNG_CHUNK_IHDR &ihdr) {
+    local string s;
+    SPrintf(s, "%i x %i (x%i)", ihdr.width, ihdr.height, ihdr.bits);
+    return s;
+}
+
+// tEXt - Text Data
+typedef struct {
+    PNG_KEYWORD label(g_kwsel);                // to the first NULL (including)
+    local int64 tn = length - g_klen - 1;
+    if (tn < 0) tn = 0;
+    if (tn > 0)
+        char   data[tn];                       // rest of the data - Tier C
+} PNG_CHUNK_TEXT <read=readtEXt>;
+
+string readtEXt(local PNG_CHUNK_TEXT &text) {
+    local string s;
+    SPrintf(s, "%s = %s", text.label, text.data);
+    return s;
+}
+
+struct PNG_CHUNK_PLTE (int32 chunkLen) {
+    // Tier C: the entry count comes from the chunk length, which the caller
+    // derived from a freely chosen count in 1..256 (and 1..2^bits for an
+    // indexed image, per the dependency rule).
+    PNG_PALETTE_PIXEL plteChunkData[chunkLen/3];
+};
+
+struct PNG_CHUNK_CHRM {
+    PNG_POINT white;              // all eight coordinates Tier C
+    PNG_POINT red;
+    PNG_POINT green;
+    PNG_POINT blue;
+};
+
+struct PNG_CHUNK_SRGB {
+    PNG_SRGB_CHUNK_DATA srgbChunkData;    // Tier B: enum carries 0,1,2,3
+};
+
+struct PNG_CHUNK_ITXT (int32 chunkLen) {
+    PNG_KEYWORD itxtIdChunkData(g_kwsel);           // Tier B keyword pattern
+    byte itxtCompressionFlag = { 0, 1 };            // Tier B, diversity axis
+    local int evil_im = SetEvilBit(IsParsing());
+    PNG_COMPR_METHOD itxtComprMethod;               // Tier A: 0
+    SetEvilBit(evil_im);
+    // Tier B pattern: RFC 3066 tag.  The empty tag is legal and is its own
+    // case for the length arithmetic, so all three widths are generated.
+    local int evil_lt = SetEvilBit(IsParsing());
+    if (g_glen == 2)
+        char itxtLanguageTag[2] = { "en", "de", "fr", "ja" };
+    else if (g_glen == 5)
+        char itxtLanguageTag[5] = { "en-GB", "en-US", "zh-CN" };
+    ubyte itxtLanguageNul = { 0 };
+    SetEvilBit(evil_lt);
+    if (g_tklen > 0)
+        char itxtTranslatedKeyword[g_tklen];        // Tier C: free UTF-8
+    local int evil_tk = SetEvilBit(IsParsing());
+    ubyte itxtTranslatedNul = { 0 };
+    SetEvilBit(evil_tk);
+    local int64 vn = chunkLen - g_klen - 1 - 1 - 1 - g_glen - 1 - g_tklen - 1;
+    if (vn < 0) vn = 0;
+    local int64 vr = vn - 11;
+    if (vr < 0) vr = 0;
+    if (itxtCompressionFlag == 1)
+        PNG_ZLIB_STREAM itxtValStream(vr, vn);      // payload_wellformedness
+    else if (vn > 0)
+        char itxtValChunkData[vn];                  // raw UTF-8, free
+};
+
+struct PNG_CHUNK_ZTXT (int32 chunkLen) {
+    PNG_KEYWORD ztxtIdChunkData(g_kwsel);           // Tier B keyword pattern
+    local int evil_zm = SetEvilBit(IsParsing());
+    PNG_COMPR_METHOD comprMethod;                   // Tier A: 0
+    SetEvilBit(evil_zm);
+    local int64 vn = chunkLen - g_klen - 2;
+    if (vn < 0) vn = 0;
+    local int64 vr = vn - 11;
+    if (vr < 0) vr = 0;
+    PNG_ZLIB_STREAM ztxtValChunkData(vr, vn);       // payload_wellformedness
+};
+
+struct PNG_CHUNK_TIME {
+    int16 timeYear  <format=decimal>;     // Tier C: out-of-range is a branch
+    byte  timeMonth <format=decimal>;     // Tier C
+    byte  timeDay   <format=decimal>;     // Tier C
+    byte  timeHour  <format=decimal>;     // Tier C
+    byte  timeMin   <format=decimal>;     // Tier C
+    byte  timeSec   <format=decimal>;     // Tier C
+};
+
+struct PNG_CHUNK_BKGD (int32 colorType) {
+    switch (colorType) {
+    case 3: // Indexed
+        ubyte bgColorPaletteIndex <format=hex>;     // Tier C: reaches the
+        break;                                      // 'bKGD: invalid index' check
+
+    case 0: // Grayscale
+    case 4: // Grayscale with alpha
+        uint16 bgGrayscalePixelValue <format=hex>;  // Tier C
+        break;
+
+    case 2: // TrueColor
+    case 6: // TrueColor with alpha
+        uint16 bgColorPixelRed <format=hex>;        // Tier C
+        uint16 bgColorPixelGreen <format=hex>;
+        uint16 bgColorPixelBlue <format=hex>;
+        break;
+
+    default:
+        error_message( "*WARNING: Unknown Color Model Type for background color chunk." );
+        return -4;
+    }
+};
+
+struct PNG_CHUNK_PHYS {
+    uint physPixelPerUnitX;               // Tier C: 0 reaches the guard branch
+    uint physPixelPerUnitY;               // Tier C
+    enum <byte> {
+        UnkownUnit = 0,
+        Meter = 1
+    } physUnitSpec;                       // Tier B: both values
+};
+
+struct PNG_CHUNK_SBIT (int32 colorType) {
+    switch (colorType) {
+    case 3: // Indexed
+        byte sbitRed;                     // all sBIT values Tier C: both the
+        byte sbitGreen;                   // in-range and the 'sBIT: invalid'
+        byte sbitBlue;                    // branch are worth generating
+        break;
+
+    case 0: // Grayscale
+        byte sbitGraySource;
+        break;
+
+    case 4: // Grayscale with alpha
+        byte sbitGrayAlphaSource;
+        byte sbitGrayAlphaSourceAlpha;
+        break;
+
+    case 2: // TrueColor
+        byte sbitColorRed;
+        byte sbitColorGreen;
+        byte sbitColorBlue;
+        break;
+
+    case 6: // TrueColor with alpha
+        byte sbitColorAlphaRed;
+        byte sbitColorAlphaGreen;
+        byte sbitColorAlphaBlue;
+        byte sbitColorAlphaAlpha;
+        break;
+
+    default:
+        error_message( "*WARNING: Unknown Color Model Type for background color chunk." );
+        return -4;
+    }
+};
+
+struct PNG_CHUNK_SPLT (int32 chunkLen) {
+    // Tier B pattern + the structure rule that the name is unique in the file:
+    // a three-character stem plus a per-chunk digit.
+    local int evil_sp = SetEvilBit(IsParsing());
+    char  paletteName[3] = { "spl" };
+    ubyte paletteNameIdx = { (ubyte)(48 + (g_splt_count % 10)) };
+    ubyte paletteNameNul = { 0 };
+    SetEvilBit(evil_sp);
+    byte sampleDepth = { 8, 16 };         // Tier B, diversity axis
+    // payload_wellformedness: the length must be a whole multiple of the entry
+    // size the depth implies (6 at depth 8, 10 at depth 16), which the caller
+    // has already built into chunkLen; the entry bytes themselves are free.
+    local int64 sn = chunkLen - 6;
+    if (sn < 0) sn = 0;
+    if (sn > 0)
+        byte spltData[sn];
+};
+
+struct PNG_CHUNK_ACTL {
+    uint32 num_frames;                    // Tier C, diversity axis
+    uint32 num_plays;                     // Tier C: 0 means loop forever
+};
+
+struct PNG_CHUNK_FCTL {
+    local int evil_fs = SetEvilBit(IsParsing());
+    uint32 sequence_number = { (uint32)g_seq };   // Tier A calculated_value
+    SetEvilBit(evil_fs);
+    uint32 width;                         // Tier C, diversity axis
+    uint32 height;                        // Tier C, diversity axis
+    uint32 x_offset;                      // Tier C, diversity axis
+    uint32 y_offset;                      // Tier C, diversity axis
+    int16  delay_num <format=decimal>;    // Tier C
+    int16  delay_den <format=decimal>;    // Tier C: 0 means 1/100 s
+    APNG_DISPOSE_OP dispose_op;           // Tier B: enum carries 0,1,2
+    APNG_BLEND_OP blend_op;               // Tier B: enum carries 0,1
+};
+
+struct PNG_CHUNK_FDAT (int64 avail) {
+    local int evil_fd = SetEvilBit(IsParsing());
+    uint32 sequence_number = { (uint32)g_seq };   // Tier A: shared counter
+    SetEvilBit(evil_fd);
+    // payload_wellformedness: the frame's zlib stream, its raw length DERIVED
+    // from this frame's fcTL width/height and the IHDR colour type and depth.
+    local int64 fn = avail - 4;
+    if (fn < 0) fn = 0;
+    local int64 fr = fn - 11;
+    if (fr < 0) fr = 0;
+    PNG_ZLIB_STREAM frame_data(fr, fn);
+};
+
+// IDAT - one stored DEFLATE block per chunk.  The zlib header goes in the
+// first chunk of the run and the Adler-32 in the last, so the data of all the
+// IDAT chunks concatenated is exactly one zlib stream, as the format requires.
+// This is the constraint that carries the decoder past png_read_start_row into
+// png_read_filter_row and the whole write-back pipeline.
+struct PNG_CHUNK_IDAT (int64 iblk, int ifirst, int ifinal, int64 avail) {
+    local int64 iLeft = avail;
+    local int   evil_i = SetEvilBit(IsParsing());
+    if (ifirst && iLeft >= 2) {
+        ubyte  zCmf = { 0x78 };           // CM=8 (deflate), CINFO=7 (32K window)
+        ubyte  zFlg = { 0x01 };           // FDICT=0; 0x7801 % 31 == 0
+        iLeft -= 2;
+    }
+    if (iLeft >= 5) {
+        ubyte  zBhdr = { (ubyte)ifinal }; // BFINAL, BTYPE=00 (stored)
+        LittleEndian();                   // LEN/NLEN are little-endian
+        uint16 zLen  = { (uint16)iblk };
+        uint16 zNlen = { (uint16)(65535 - iblk) };
+        BigEndian();
+        iLeft -= 5;
+    }
+    SetEvilBit(evil_i);
+    local int64 zi = 0;
+    while (zi < iblk && iLeft > 0) {
+        if (g_rowleft <= 0 && g_rows_left <= 0) {
+            // open the next non-empty Adam7 pass (or the single pass of a
+            // non-interlaced image)
+            while (g_pass < g_npass && g_rows_left <= 0) {
+                g_rows_left = pass_rows[g_pass];
+                g_cur_rb    = pass_rb[g_pass];
+                g_pass++;
+            }
+        }
+        if (g_rowleft <= 0 && g_rows_left > 0) {
+            // one filter-type byte per scanline; all five types are legal and
+            // each one is a different png_read_filter_row_* implementation.
+            // Part of the Tier A payload: a sixth value is the fatal
+            // 'bad adaptive filter value', so the evil bit is held off.
+            local int evil_f = SetEvilBit(IsParsing());
+            ubyte zFilt = { 0, 1, 2, 3, 4 };
+            SetEvilBit(evil_f);
+            g_s1 = (g_s1 + zFilt) % 65521;
+            g_s2 = (g_s2 + g_s1) % 65521;
+            g_rows_left--;
+            g_rowleft = g_cur_rb;
+        } else {
+            ubyte zRaw;                   // content_is_free: bare sample byte
+            g_s1 = (g_s1 + zRaw) % 65521;
+            g_s2 = (g_s2 + g_s1) % 65521;
+            g_rowleft--;
+        }
+        zi++;
+        iLeft--;
+    }
+    if (ifinal && iLeft >= 4) {
+        local int evil_a = SetEvilBit(IsParsing());
+        uint32 zAdler = { (uint32)((g_s2 << 16) | g_s1) };
+        SetEvilBit(evil_a);
+        iLeft -= 4;
+    }
+    // parse direction: a real IDAT holds a Huffman-coded stream, so consume
+    // whatever is left of length to keep the chunk boundary exact
+    while (iLeft > 0) { ubyte zExtra; iLeft--; }
+};
+
+// tRNS (alternate_payloads): one alpha byte per palette entry for colour type
+// 3, a 16-bit grey level for type 0, three 16-bit samples for type 2.
+struct PNG_CHUNK_TRNS (int64 nbytes) {
+    if (nbytes > 0)
+        ubyte trnsData[nbytes];
+};
+
+// gAMA (alternate_payloads): the gamma times 100000.  Left free, so both
+// png_colorspace_set_gamma's accept path and its 'gAMA: bad value' branch
+// (gamma 0) are generated.
+struct PNG_CHUNK_GAMA {
+    uint32 gamaValue;
+};
+
+// hIST (alternate_payloads): one uint16 per palette entry.
+struct PNG_CHUNK_HIST (int64 nbytes) {
+    if (nbytes > 1)
+        uint16 histData[nbytes / 2];
+};
+
+// eXIf (alternate_payloads): a minimal but well-formed TIFF/Exif IFD in both
+// byte orders.  libpng checks the II/MM magic and drops the chunk otherwise,
+// so this is what reaches png_set_eXIf_1 and png_write_eXIf.
+struct PNG_CHUNK_EXIF {
+    local int   evil_ex = SetEvilBit(IsParsing());
+    local ubyte exif_bo[] = { 0x4D, 0x49 };
+    if (ReadUByte(FTell(), exif_bo) == 0x4D) {
+        char   exifByteOrder[2] = { "MM" };
+        uint16 exifMagic = { 0x002A };
+        uint32 exifIfdOffset = { 8 };
+        uint16 exifIfdCount = { 0 };
+        uint32 exifNextIfd = { 0 };
+    } else {
+        char   exifByteOrder[2] = { "II" };
+        LittleEndian();
+        uint16 exifMagic = { 0x002A };
+        uint32 exifIfdOffset = { 8 };
+        uint16 exifIfdCount = { 0 };
+        uint32 exifNextIfd = { 0 };
+        BigEndian();
+    }
+    SetEvilBit(evil_ex);
+};
+
+// oFFs (alternate_payloads): two signed positions and a unit specifier.
+struct PNG_CHUNK_OFFS {
+    int32 offsPositionX;                  // free
+    int32 offsPositionY;                  // free
+    local int evil_of = SetEvilBit(IsParsing());
+    ubyte offsUnitSpec = { 0, 1 };        // 0 pixel, 1 micrometre
+    SetEvilBit(evil_of);
+};
+
+// pCAL: purpose, X0, X1, equation type, parameter count, unit name and the
+// parameter strings.  Equation type 0 takes exactly two parameters, which is
+// what png_handle_pCAL's 'invalid parameter count' check tests.
+struct PNG_CHUNK_PCAL {
+    local int evil_pc = SetEvilBit(IsParsing());
+    // "Dept " has a trailing space, which png_write_pCAL's png_check_keyword
+    // repairs and reports via png_warning_parameter/png_formatted_warning
+    char  pcalPurpose[5] = { "Depth", "Dept " };
+    ubyte pcalPurposeNul = { 0 };
+    SetEvilBit(evil_pc);
+    int32 pcalX0;                         // free
+    int32 pcalX1;                         // free
+    local int evil_pe = SetEvilBit(IsParsing());
+    ubyte pcalEquationType = { 0 };       // linear mapping
+    ubyte pcalNparams = { 2 };            // linear mapping takes 2 parameters
+    char  pcalUnitName[3] = { "cm ", "rad" };
+    ubyte pcalUnitNul = { 0 };
+    char  pcalParam0[3] = { "0.0" };      // must pass png_check_fp_string
+    ubyte pcalParam0Nul = { 0 };
+    char  pcalParam1[3] = { "1.0" };
+    ubyte pcalParam1Nul = { 0 };
+    SetEvilBit(evil_pe);
+};
+
+// sCAL: a unit specifier and two ASCII floating-point numbers separated by a
+// NUL, the second running to the end of the chunk, which is exactly what
+// png_handle_sCAL's png_check_fp_number pair requires.
+struct PNG_CHUNK_SCAL {
+    local int evil_sc = SetEvilBit(IsParsing());
+    ubyte scalUnitSpec = { 1, 2 };        // 1 metre, 2 radian
+    char  scalWidth[3] = { "1.0", "2.5", "0.5" };
+    ubyte scalWidthNul = { 0 };
+    char  scalHeight[3] = { "1.0", "4.0", "0.5" };
+    SetEvilBit(evil_sc);
+};
+
+// vpAg - ImageMagick's private "virtual page" chunk: nine bytes, two 31-bit
+// dimensions and a unit byte.  libpng has no handler, so this reaches
+// png_handle_unknown, and pngtest's read_user_chunk_callback recognises it and
+// writes it back out through its own write_vpAg_chunk.
+struct PNG_CHUNK_VPAG {
+    uint32 vpagWidth;                     // free, but png_get_uint_31 rejects
+    uint32 vpagHeight;                    // a set top bit, which is its own path
+    local int evil_vp = SetEvilBit(IsParsing());
+    ubyte  vpagUnits = { 0, 1 };
+    SetEvilBit(evil_vp);
+};
+
+// sTER: stereo image layout indicator (PNG extensions 1.5.0).  libpng has no
+// handler, so this reaches png_handle_unknown and png_set_unknown_chunks.
+struct PNG_CHUNK_STER {
+    local int evil_st = SetEvilBit(IsParsing());
+    ubyte sterMode = { 0, 1 };            // cross-fuse / diverging-fuse
+    SetEvilBit(evil_st);
+};
+
+// cICP (PNG v3): coding-independent code points.  matrix_coefficients must be
+// 0 for png_set_cICP to store the chunk and png_write_cICP to write it back.
+struct PNG_CHUNK_CICP {
+    ubyte cicpColourPrimaries  = { 1, 5, 9, 12 };
+    ubyte cicpTransferFunction = { 1, 8, 13, 16, 18 };
+    local int evil_ci = SetEvilBit(IsParsing());
+    ubyte cicpMatrixCoefficients = { 0 };
+    SetEvilBit(evil_ci);
+    ubyte cicpVideoFullRangeFlag = { 0, 1 };
+};
+
+// mDCV (PNG v3): mastering display colour volume.  The eight chromaticities
+// are uint16 in units of 1/50000 and the two luminances uint32 with the top
+// bit clear, which is what png_set_mDCV_fixed's range checks demand.
+struct PNG_CHUNK_MDCV {
+    local int evil_md = SetEvilBit(IsParsing());
+    uint16 mdcvRedX   = { 35400, 32000 };
+    uint16 mdcvRedY   = { 14600, 16500 };
+    uint16 mdcvGreenX = { 8500, 15000 };
+    uint16 mdcvGreenY = { 39850, 30000 };
+    uint16 mdcvBlueX  = { 6550, 7500 };
+    uint16 mdcvBlueY  = { 2300, 3000 };
+    uint16 mdcvWhiteX = { 15635 };
+    uint16 mdcvWhiteY = { 16450 };
+    uint32 mdcvMaxLum = { 10000000, 1000000, 0xFFFFFFFF };
+    uint32 mdcvMinLum = { 50, 1, 0 };
+    SetEvilBit(evil_md);
+};
+
+// cLLI (PNG v3): content light level information, both values scaled by
+// 10000 and limited to 0x7FFFFFFF by png_set_cLLI_fixed.
+struct PNG_CHUNK_CLLI {
+    local int evil_cl = SetEvilBit(IsParsing());
+    // the last value has the top bit set, which is png_set_cLLI_fixed's
+    // 'light level exceeds PNG limit' png_chunk_report branch
+    uint32 clliMaxCLL  = { 10000000, 1000000, 0, 0xFFFFFFFF };
+    uint32 clliMaxFALL = { 4000000, 500000, 0 };
+    SetEvilBit(evil_cl);
+};
+
+// -- End: Specific Chunks
+
+local uint32 CHUNK_CNT = 0;
+
+// Generic Chunks
+typedef struct {
+    // -----------------------------------------------------------------------
+    // structure/ordering: pick this chunk's type from the set that is legal at
+    // this position, reading the four type bytes ahead of the length field so
+    // the length can be computed for the type that was chosen.  The
+    // preferred/possible split makes the generator walk the format's state
+    // machine instead of picking sections at random.
+    // -----------------------------------------------------------------------
+    // ReadBytes restores the caller's evil bit before it picks from the
+    // possible set, so hold it off while GENERATING: an evil chunk type is a
+    // random four-byte name, and before IHDR or inside the IDAT run that ends
+    // the decode outright.  The unknown-chunk path is reached on purpose
+    // instead, through the private and unregistered names in the sets above.
+    // While PARSING the escape is left enabled, because it is what lets a real
+    // file carry a chunk type this state machine does not expect at this
+    // position (the ordering rules model the format, not every real encoder).
+    local int evil_ty = SetEvilBit(IsParsing());
+    if (g_state == 0)
+        ReadBytes(chunk_type, FTell() + 4, 4, pref_ihdr, poss_ihdr);
+    else if (g_state == 2 && g_total < BUDGET_TOTAL)
+        ReadBytes(chunk_type, FTell() + 4, 4, pref_chunks, poss_chunks);
+    else if (g_state == 2 && g_color == 3 && g_pal == 0)
+        // budget spent but an indexed image still owes its PLTE
+        ReadBytes(chunk_type, FTell() + 4, 4, pref_plte, poss_plte);
+    else if (g_state == 2)
+        ReadBytes(chunk_type, FTell() + 4, 4, pref_idat, poss_idat);
+    else if (g_state == 3)
+        ReadBytes(chunk_type, FTell() + 4, 4, pref_idat, poss_idat);
+    else if (g_total < BUDGET_TOTAL)
+        ReadBytes(chunk_type, FTell() + 4, 4, pref_post, poss_post);
+    else
+        ReadBytes(chunk_type, FTell() + 4, 4, pref_iend, poss_iend);
+    SetEvilBit(evil_ty);
+
+    // derived pseudo-random word: advanced per chunk, mixed with each CRC
+    g_rnd = g_rnd * 1103515245 + 12345;
+
+    local int64 dlen  = 0;
+    local int64 nent  = 0;
+    local int64 esize = 6;
+    local int64 iblk  = 0;
+    local int   ifirst = 0;
+    local int   ifinal = 0;
+    local int64 tn    = 0;
+    local int64 vn    = 0;
+    local int64 nprof = 0;
+    local int64 ntag  = 0;
+    local int64 mx    = 0;
+    local int   p     = 0;
+    local int64 pw    = 0;
+    local int64 ph    = 0;
+    local int64 rawLen = 0;
+    local int   gs    = 0;
+    local ubyte iflag = 0;
+
+    // ---- calculated_value: the chunk's data length, computed from the
+    // ---- payload this chunk is about to carry (never the other way round)
+    switch (chunk_type) {
+    case "IHDR":
+        dlen = 13;
+        break;
+
+    case "PLTE":
+        // Tier C entry count, sampled across the format's full 1..256 span;
+        // dependency: an indexed image cannot index past 2^bits entries
+        nent = 1 + ((g_rnd >> 9) % 256);
+        if (g_color == 3) {
+            mx = 1;
+            mx = mx << g_bits;
+            if (nent > mx) nent = mx;
+        }
+        dlen = 3 * nent;
+        break;
+
+    case "IDAT":
+        if (g_state != 3) {
+            // ---- first IDAT of the run: plan the whole zlib stream from the
+            // ---- IHDR fields.  derives_from width/height/bits/color_type/
+            // ---- interlace_method - the dimensions are never adjusted here.
+            if (g_color == 0)      g_channels = 1;
+            else if (g_color == 2) g_channels = 3;
+            else if (g_color == 3) g_channels = 1;
+            else if (g_color == 4) g_channels = 2;
+            else                   g_channels = 4;
+
+            p = 0;
+            while (p < 7) { pass_rows[p] = 0; pass_rb[p] = 0; p++; }
+
+            if (g_interlace == 1) {
+                g_npass = 7;
+                p = 0;
+                while (p < 7) {
+                    pw = 0;
+                    ph = 0;
+                    if (g_w > adam7_x0[p])
+                        pw = (g_w - adam7_x0[p] + adam7_dx[p] - 1) / adam7_dx[p];
+                    if (g_h > adam7_y0[p])
+                        ph = (g_h - adam7_y0[p] + adam7_dy[p] - 1) / adam7_dy[p];
+                    if (pw > 0 && ph > 0) {
+                        pass_rows[p] = ph;
+                        pass_rb[p] = (pw * g_channels * g_bits + 7) / 8;
+                    }
+                    p++;
+                }
+            } else {
+                g_npass = 1;
+                pass_rows[0] = g_h;
+                pass_rb[0] = (g_w * g_channels * g_bits + 7) / 8;
+            }
+
+            rawLen = 0;
+            p = 0;
+            while (p < g_npass) {
+                rawLen += pass_rows[p] * (1 + pass_rb[p]);
+                p++;
+            }
+            // output_budget: the stream is cut short when the budget is spent.
+            // The decoder still walks the zlib header, the stored-block framing
+            // and every complete scanline before it reports 'Not enough image
+            // data'.  The dimensions stay exactly as generated.
+            if (rawLen > BUDGET_IDAT) rawLen = BUDGET_IDAT;
+            if (rawLen > BUDGET_TOTAL - g_total) rawLen = BUDGET_TOTAL - g_total;
+            if (rawLen < 0) rawLen = 0;
+            g_raw_left = rawLen;
+
+            // how the stream is cut into chunks: one block each, so some files
+            // carry a single IDAT and others a long contiguous run, which is
+            // what exercises libpng's cross-chunk IDAT buffering
+            gs = (g_rnd >> 23) % 4;
+            if (gs == 0)      g_blk_size = rawLen;
+            else if (gs == 1) g_blk_size = 1 + pass_rb[0];
+            else if (gs == 2) g_blk_size = 1024;
+            else              g_blk_size = 101;
+            if (g_blk_size > 65535) g_blk_size = 65535;
+            if (g_blk_size < 1)     g_blk_size = 1;
+            // each IDAT chunk costs 12 bytes of framing, so keep the run to at
+            // most ~64 chunks: this is part of the same output_budget, not a
+            // bound on any field
+            if (g_blk_size < rawLen / 64) g_blk_size = rawLen / 64;
+
+            g_pass = 0;
+            g_rows_left = 0;
+            g_rowleft = 0;
+            g_s1 = 1;
+            g_s2 = 0;
+            g_first_idat = 1;
+            g_state = 3;
+        }
+        iblk = g_blk_size;
+        if (iblk > g_raw_left) iblk = g_raw_left;
+        ifirst = g_first_idat;
+        ifinal = 0;
+        if (iblk == g_raw_left) ifinal = 1;
+        // output_budget: once the chunk sequence has spent its budget this
+        // block becomes the final one, so the stream is sealed (BFINAL and a
+        // correct Adler-32 over what was written) and the run ends
+        if (g_total + iblk + 12 >= BUDGET_TOTAL) {
+            ifinal = 1;
+            g_raw_left = iblk;
+        }
+        dlen = iblk + 5;
+        if (ifirst) dlen += 2;
+        if (ifinal) dlen += 4;
+        break;
+
+    case "IEND":
+        dlen = 0;
+        break;
+
+    case "tRNS":
+        // alternate_payloads["tRNS"]: shape selected by the colour type
+        if (g_color == 3) {
+            nent = 1 + ((g_rnd >> 11) % 256);
+            if (g_pal > 0 && nent > g_pal) nent = g_pal;
+            dlen = nent;
+        } else if (g_color == 0) {
+            dlen = 2;
+        } else {
+            dlen = 6;
+        }
+        break;
+
+    case "cHRM": dlen = 32; break;
+    case "gAMA": dlen = 4;  break;
+    case "sRGB": dlen = 1;  break;
+    case "cICP": dlen = 4;  break;
+    case "mDCV": dlen = 24; break;
+    case "cLLI": dlen = 8;  break;
+    case "eXIf": dlen = 14; break;
+    case "pHYs": dlen = 9;  break;
+    case "tIME": dlen = 7;  break;
+    case "acTL": dlen = 8;  break;
+    case "fcTL": dlen = 26; break;
+    case "oFFs": dlen = 9;  break;
+    case "pCAL": dlen = 28; break;
+    case "sCAL": dlen = 8;  break;
+    case "sTER": dlen = 1;  break;
+    case "vpAg": dlen = 9;  break;
+
+    case "iCCP":
+        // alternate_payloads["iCCP"]: keyword, NUL, compression method, then a
+        // zlib stream carrying a 132-byte ICC header plus a tag table
+        g_kwsel = (g_rnd >> 5) % 6;
+        g_klen  = 5 + g_kwsel;
+        ntag    = (g_rnd >> 15) % 5;
+        nprof   = 132 + 12 * ntag;
+        dlen    = g_klen + 1 + 1 + nprof + 11;
+        break;
+
+    case "sBIT":
+        if (g_color == 0)      dlen = 1;
+        else if (g_color == 4) dlen = 2;
+        else if (g_color == 6) dlen = 4;
+        else                   dlen = 3;
+        break;
+
+    case "bKGD":
+        if (g_color == 3)                       dlen = 1;
+        else if (g_color == 0 || g_color == 4)  dlen = 2;
+        else                                    dlen = 6;
+        break;
+
+    case "hIST":
+        // alternate_payloads["hIST"]: exactly one uint16 per palette entry,
+        // derived from the palette written so far
+        dlen = 2 * g_pal;
+        break;
+
+    case "tEXt":
+        g_kwsel = (g_rnd >> 5) % 6;
+        g_klen  = 5 + g_kwsel;
+        tn = (g_rnd >> 3) % 97;
+        if (g_text_bytes >= BUDGET_TEXT) tn = 0;
+        dlen = g_klen + 1 + tn;
+        break;
+
+    case "zTXt":
+        g_kwsel = (g_rnd >> 5) % 6;
+        g_klen  = 5 + g_kwsel;
+        tn = (g_rnd >> 3) % 97;
+        if (g_text_bytes >= BUDGET_TEXT) tn = 0;
+        dlen = g_klen + 1 + 1 + tn + 11;
+        break;
+
+    case "iTXt":
+        g_kwsel = (g_rnd >> 5) % 6;
+        g_klen  = 5 + g_kwsel;
+        gs = (g_rnd >> 17) % 3;
+        if (gs == 0)      g_glen = 0;      // the empty language tag is legal
+        else if (gs == 1) g_glen = 2;
+        else              g_glen = 5;
+        g_tklen = (g_rnd >> 21) % 9;
+        tn = (g_rnd >> 3) % 97;
+        if (g_text_bytes >= BUDGET_TEXT) tn = 0;
+        // Tier B diversity axis: read the compression flag ahead so the text
+        // payload is DERIVED FROM the flag rather than the flag pinned to suit
+        // a fixed payload
+        local ubyte itxt_flags[] = { 0, 1 };
+        iflag = ReadUByte(FTell() + 9 + g_klen, itxt_flags);
+        dlen = g_klen + 1 + 1 + 1 + g_glen + 1 + g_tklen + 1 + tn;
+        if (iflag == 1) dlen += 11;        // zlib framing for the compressed form
+        break;
+
+    case "sPLT":
+        // payload_wellformedness: the data length must be a whole multiple of
+        // the entry size the sample depth implies, so read the depth ahead
+        local ubyte splt_depths[] = { 8, 16 };
+        esize = 6;
+        if (ReadUByte(FTell() + 13, splt_depths) == 16) esize = 10;
+        nent = 1 + ((g_rnd >> 19) % 12);
+        dlen = 6 + esize * nent;
+        break;
+
+    case "fdAT":
+        // payload_wellformedness: one complete zlib stream per fdAT chunk,
+        // sized from the frame dimensions the last fcTL declared
+        rawLen = g_fh * (1 + (g_fw * g_channels * g_bits + 7) / 8);
+        if (rawLen > BUDGET_FDAT - g_fdat_bytes) rawLen = BUDGET_FDAT - g_fdat_bytes;
+        if (rawLen < 0) rawLen = 0;
+        dlen = 4 + rawLen + 11;
+        break;
+
+    case "gIFg": dlen = 4;  break;         // GIF graphic control extension
+    case "gIFx": dlen = 11; break;         // GIF application extension
+    case "gIFt": dlen = 24; break;         // GIF plain text extension
+
+    default:
+        // unregistered / private / unmodelled types: free data bytes
+        dlen = (g_rnd >> 7) % 17;
+        break;
+    }
+
+    // Tier A calculated_value: an evil length would re-size every payload
+    // below (they are all sized from length(), which is what makes the parse
+    // direction work) and run the file past the generator's size ceiling.
+    local int evil_len = SetEvilBit(IsParsing());
+    uint32  length = { (uint32)dlen };
+    SetEvilBit(evil_len);
+    local int64 pos_start = FTell();
+    CTYPE   type <fgcolor=cDkBlue>;      // Type of chunk; pinned by the lookahead
+    if (type.cname == "IHDR") {
+        PNG_CHUNK_IHDR    ihdr;
+        // remember the header: every payload below is derived from these
+        g_w         = ihdr.width;
+        g_h         = ihdr.height;
+        g_bits      = ihdr.bits;
+        g_color     = ihdr.color_type;
+        g_interlace = ihdr.interlace_method;
+        if (g_color == 0 || g_color == 4) g_icc_space = 0x47524159;   // 'GRAY'
+        else                              g_icc_space = 0x52474220;   // 'RGB '
+        pref_chunks -= "IHDR";
+        poss_chunks -= "IHDR";
+        // dependency: PLTE is required for colour type 3 and forbidden for the
+        // two greyscale types; tRNS is forbidden where there is already alpha
+        if (g_color == 0 || g_color == 4) {
+            pref_chunks -= "PLTE";
+            poss_chunks -= "PLTE";
+        }
+        if (g_color == 4 || g_color == 6) {
+            poss_chunks -= "tRNS";
+        }
+        if (g_color == 3) {
+            // ordering: for an indexed image PLTE is required and bKGD, hIST
+            // and tRNS all have to follow it, so none of them - nor IDAT - is
+            // legal yet.  They are given back in the PLTE branch.
+            pref_chunks -= "IDAT";
+            poss_chunks -= "IDAT";
+            poss_chunks -= "bKGD";
+            poss_chunks -= "tRNS";
+            poss_chunks -= "hIST";
+        }
+        g_state = 2;
+    }
+    else if (type.cname == "tEXt") {
+        PNG_CHUNK_TEXT    text;
+        g_text_bytes += dlen;
+    }
+    else if (type.cname == "PLTE") {
+        PNG_CHUNK_PLTE    plte(length);
+        g_pal = length / 3;
+        // ordering: the colour-space chunks must precede PLTE, so they stop
+        // being legal here; bKGD/hIST/tRNS become legal only now
+        pref_chunks -= "PLTE";
+        poss_chunks -= "PLTE";
+        poss_chunks -= "cHRM";
+        poss_chunks -= "gAMA";
+        poss_chunks -= "iCCP";
+        poss_chunks -= "sBIT";
+        poss_chunks -= "sRGB";
+        poss_chunks -= "cICP";
+        poss_chunks -= "mDCV";
+        poss_chunks -= "cLLI";
+        if (g_color == 3) {               // the preconditions are met now
+            pref_chunks += "IDAT";
+            poss_chunks += "IDAT";
+            poss_chunks += "bKGD";
+            poss_chunks += "tRNS";
+            poss_chunks += "hIST";
+        }
+        g_state = 2;
+    }
+    else if (type.cname == "cHRM") {
+        PNG_CHUNK_CHRM    chrm;
+        poss_chunks -= "cHRM";
+    }
+    else if (type.cname == "sRGB") {
+        PNG_CHUNK_SRGB    srgb;
+        poss_chunks -= "sRGB";
+        poss_chunks -= "iCCP";            // mutually_exclusive with iCCP
+    }
+    else if (type.cname == "iTXt") {
+        PNG_CHUNK_ITXT    itxt(length);
+        g_text_bytes += dlen;
+    }
+    else if (type.cname == "zTXt") {
+        PNG_CHUNK_ZTXT    ztxt(length);
+        g_text_bytes += dlen;
+    }
+    else if (type.cname == "tIME") {
+        PNG_CHUNK_TIME    time;
+        poss_chunks -= "tIME";
+        poss_post   -= "tIME";
+    }
+    else if (type.cname == "pHYs") {
+        PNG_CHUNK_PHYS    phys;
+        poss_chunks -= "pHYs";
+    }
+    else if (type.cname == "bKGD") {
+        PNG_CHUNK_BKGD    bkgd(g_color);
+        poss_chunks -= "bKGD";
+        pref_chunks -= "PLTE";            // PLTE may not follow bKGD
+        poss_chunks -= "PLTE";
+    }
+    else if (type.cname == "sBIT") {
+        PNG_CHUNK_SBIT    sbit(g_color);
+        poss_chunks -= "sBIT";
+    }
+    else if (type.cname == "sPLT") {
+        PNG_CHUNK_SPLT    splt(length);
+        g_splt_count++;
+        g_splt_bytes += dlen;
+        // structure: each sPLT name must be unique in the file, and the stem
+        // plus one digit gives ten of them
+        if (g_splt_bytes >= BUDGET_SPLT || g_splt_count >= 10) poss_chunks -= "sPLT";
+    }
+    else if (type.cname == "acTL") {
+        PNG_CHUNK_ACTL    actl;
+        poss_chunks -= "acTL";
+        g_actl = 1;
+        poss_post += "fcTL";              // requires: acTL needs an fcTL
+        pref_post += "fcTL";
+    }
+    else if (type.cname == "fcTL") {
+        PNG_CHUNK_FCTL    fctl;
+        g_seq++;                          // Tier A shared sequence counter
+        g_fctl++;
+        g_fw = fctl.width;                // the frame payload derives from these
+        g_fh = fctl.height;
+        pref_post -= "fcTL";
+        poss_post += "fdAT";              // fdAT only after its fcTL
+    }
+    else if (type.cname == "fdAT") {
+        PNG_CHUNK_FDAT    fdat(length);
+        g_seq++;
+        g_fdat_bytes += dlen;
+        if (g_fdat_bytes >= BUDGET_FDAT) poss_post -= "fdAT";
+    }
+    else if (type.cname == "IDAT") {
+        PNG_CHUNK_IDAT    idat(iblk, ifirst, ifinal, length);
+        g_first_idat = 0;
+        g_raw_left -= iblk;
+        g_idat_bytes += iblk;
+        if (ifinal) {
+            // the run is complete: IEND becomes legal (it may not precede IDAT)
+            g_state = 4;
+            poss_post += "IEND";
+        }
+    }
+    else if (type.cname == "IEND") {
+        g_done = 1;                       // last_element
+    }
+    else if (type.cname == "tRNS") {
+        PNG_CHUNK_TRNS    trns(length);
+        poss_chunks -= "tRNS";
+        pref_chunks -= "PLTE";            // PLTE may not follow tRNS
+        poss_chunks -= "PLTE";
+    }
+    else if (type.cname == "gAMA") {
+        PNG_CHUNK_GAMA    gama;
+        poss_chunks -= "gAMA";
+    }
+    else if (type.cname == "iCCP") {
+        PNG_CHUNK_ICCP    iccp(g_kwsel, nprof, ntag, length);
+        poss_chunks -= "iCCP";
+        poss_chunks -= "sRGB";            // mutually_exclusive with sRGB
+    }
+    else if (type.cname == "hIST") {
+        PNG_CHUNK_HIST    hist(length);
+        poss_chunks -= "hIST";
+    }
+    else if (type.cname == "eXIf") {
+        PNG_CHUNK_EXIF    exif;
+        poss_chunks -= "eXIf";
+        poss_post   -= "eXIf";
+    }
+    else if (type.cname == "oFFs") {
+        PNG_CHUNK_OFFS    offs;
+        poss_chunks -= "oFFs";
+    }
+    else if (type.cname == "pCAL") {
+        PNG_CHUNK_PCAL    pcal;
+        poss_chunks -= "pCAL";
+    }
+    else if (type.cname == "sCAL") {
+        PNG_CHUNK_SCAL    scal;
+        poss_chunks -= "sCAL";
+    }
+    else if (type.cname == "sTER") {
+        PNG_CHUNK_STER    ster;
+        poss_chunks -= "sTER";
+        poss_post   -= "sTER";
+    }
+    else if (type.cname == "vpAg") {
+        PNG_CHUNK_VPAG    vpag;
+        poss_chunks -= "vpAg";
+        poss_post   -= "vpAg";
+    }
+    else if (type.cname == "cICP") {
+        PNG_CHUNK_CICP    cicp;
+        poss_chunks -= "cICP";
+    }
+    else if (type.cname == "mDCV") {
+        PNG_CHUNK_MDCV    mdcv;
+        poss_chunks -= "mDCV";
+    }
+    else if (type.cname == "cLLI") {
+        PNG_CHUNK_CLLI    clli;
+        poss_chunks -= "cLLI";
+    }
+    else if( length > 0 )
+        ubyte   data[length];       // Data (or not present)
+
+    // Keep the chunk boundary exact: in the generating direction every branch
+    // above wrote exactly `length` bytes, in the parsing direction a real file
+    // may carry more than the structure modelled here.
+    local int64 rem = length - (FTell() - pos_start - 4);
+    if (rem > 0)
+        ubyte extra[rem];
+
+    local int64 data_size = FTell() - pos_start;
+    local uint32 crc_calc = Checksum(CHECKSUM_CRC32, pos_start, data_size);
+    local int evil_crc = SetEvilBit(IsParsing());
+    uint32  crc = { crc_calc } <format=hex, fgcolor=cDkPurple>;  // Tier A
+    SetEvilBit(evil_crc);
+    if (crc != crc_calc) {
+        local string msg;
+        SPrintf(msg, "*ERROR: CRC Mismatch @ chunk[%d]; in data: %08x; expected: %08x", CHUNK_CNT, crc, crc_calc);
+        error_message( msg );
+    }
+    CHUNK_CNT++;
+    g_total += data_size + 8;
+    g_rnd += crc;                   // mix the chunk's free bytes into the state
+} PNG_CHUNK <read=readCHUNK>;
+
+
+// Chunks can be in any order: HOWEVER, IHDR must be first, IEND must be last
+// Bit 5s in chunk type bytes are used to flag some things:
+//    Ancillary bit: bit 5 of 1st byte: 0=Critical, 1=Ancillary
+//      Private bit: bit 5 of 2nd byte: 0=Public, 1=Private
+//     Reserved bit: bit 5 of 3rd byte: MUST be 0
+// Safe to Copy bit: bit 5 of 4th byte: 0=Unsafe to Copy, 1=Safe to Copy
+string readCHUNK(local PNG_CHUNK &c) {
+    local string s;
+    s=readCTYPE(c.type)+"  (";
+    s += (c.type.cname[0] & 0x20) ? "Ancillary, "      : "Critical, ";
+    s += (c.type.cname[1] & 0x20) ? "Private, "        : "Public, ";
+    s += (c.type.cname[2] & 0x20) ? "ERROR_RESERVED, " : "";
+    s += (c.type.cname[3] & 0x20) ? "Safe to Copy)"    : "Unsafe to Copy)";
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// MAIN  --  Here's where we really allocate the data
+// ---------------------------------------------------------------------------
+
+local int evil_sig = SetEvilBit(IsParsing());
+PNG_SIGNATURE sig <bgcolor=cLtPurple>;
+SetEvilBit(evil_sig);
+
+if (sig.btPngSignature[0] != 0x8950 ||
+        sig.btPngSignature[1] != 0x4E47 ||
+        sig.btPngSignature[2] != 0x0D0A ||
+        sig.btPngSignature[3] != 0x1A0A) {
+    error_message( "*ERROR: File is not a PNG image. Template stopped." );
+    return -1;
+}
+
+local int32 chunk_count = 0;
+while(!g_done) {
+    SetBackColor( (chunk_count++ % 2) ? cNone : cLtGray);
+    PNG_CHUNK chunk;
+}
+
+if (CHUNK_CNT > 1) {
+    if ( chunk[0].type.cname != "IHDR" ) {
+        error_message( "*ERROR: Chunk IHDR must be first chunk." );
+    }
+    if ( chunk[CHUNK_CNT-1].type.cname != "IEND" ) {
+        error_message( "*ERROR: Chunk IEND must be last chunk." );
+    }
+}
